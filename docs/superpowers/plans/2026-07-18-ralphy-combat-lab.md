@@ -261,7 +261,8 @@ test("reports rolling three-second and peak DPS", () => {
   metrics = recordHit(metrics, 100, 1, "dummy-1");
   metrics = recordHit(metrics, 50, 2, "dummy-1");
   expect(summarizeMetrics(metrics, 3).rollingDps).toBe(50);
-  expect(summarizeMetrics(metrics, 5.1).rollingDps).toBeCloseTo(50 / 3);
+  expect(summarizeMetrics(metrics, 4.9).rollingDps).toBeCloseTo(50 / 3);
+  expect(summarizeMetrics(metrics, 5.1).rollingDps).toBe(0);
   expect(summarizeMetrics(metrics, 6).rollingDps).toBe(0);
 });
 
