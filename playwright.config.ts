@@ -15,9 +15,10 @@ export default defineConfig({
 			: undefined,
 	},
 	webServer: {
-		command: "bun run dev -- --port 4174",
+		command:
+			"bun run build && bun run vite preview --host 127.0.0.1 --port 4174",
 		url: "http://127.0.0.1:4174",
-		reuseExistingServer: !process.env.CI,
+		reuseExistingServer: false,
 		timeout: 30_000,
 	},
 });

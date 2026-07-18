@@ -10,6 +10,10 @@ function required<T extends Element>(root: ParentNode, selector: string): T {
 	return element;
 }
 
+function setText(element: Element, value: string): void {
+	if (element.textContent !== value) element.textContent = value;
+}
+
 const canvas = required<HTMLCanvasElement>(document, "#game");
 const hud = required<HTMLElement>(document, "#hud");
 const hudHealth = required<HTMLElement>(hud, ".hud-health");
@@ -150,8 +154,8 @@ async function start(): Promise<void> {
 				pressed.has("d"));
 		renderGame(context, state, assets, { moving, reducedMotion });
 		updateLab(state);
-		hudHealth.textContent = `HP ${state.player.health}`;
-		hudAmmo.textContent = `${state.reload.ammo}/${state.reload.capacity}`;
+		setText(hudHealth, `HP ${state.player.health}`);
+		setText(hudAmmo, `${state.reload.ammo}/${state.reload.capacity}`);
 		pauseLabel.hidden = !state.paused;
 		quickdraw.hidden = state.time >= state.reload.buffUntil;
 		const activeReloadStartedAt =

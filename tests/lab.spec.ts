@@ -20,9 +20,10 @@ test("builds a loadout, damages a dummy, and auto-reloads", async ({
 	await page.mouse.move(box.x + box.width * 0.75, box.y + box.height * 0.5);
 	for (let shot = 0; shot < 6; shot += 1) {
 		await page.mouse.down();
-		await page.waitForTimeout(40);
+		await page.waitForTimeout(50);
 		await page.mouse.up();
-		await page.waitForTimeout(320);
+		await expect(page.locator("[data-stat=ammo]")).toHaveText(`${5 - shot}/6`);
+		if (shot < 5) await page.waitForTimeout(360);
 	}
 	await expect(page.locator("#reload")).toBeVisible();
 	await expect
@@ -40,6 +41,44 @@ test("builds a loadout, damages a dummy, and auto-reloads", async ({
 			Number(await page.locator('[data-stat="peak-dps"]').textContent()),
 		)
 		.toBeGreaterThan(0);
+	expect(errors).toEqual([]);
+});
+
+test("misses then lands the Deadeye active reload", async ({ page }) => {
+	const errors: string[] = [];
+	page.on("console", (message) => {
+		if (message.type() === "error") errors.push(message.text());
+	});
+	page.on("pageerror", (error) => errors.push(error.message));
+	await page.goto("/");
+	await page.getByRole("button", { name: "Add Deadeye" }).click();
+
+	const canvas = page.locator("#game");
+	const box = await canvas.boundingBox();
+	if (!box) throw new Error("game canvas is not visible");
+	await page.mouse.move(box.x + box.width * 0.75, box.y + box.height * 0.5);
+	await page.mouse.down();
+	await page.waitForTimeout(40);
+	await page.mouse.up();
+	await expect(page.locator("[data-stat=ammo]")).toHaveText("5/6");
+
+	await page.keyboard.press("r");
+	const reload = page.locator("#reload");
+	await expect(reload).toBeVisible();
+	await page.waitForTimeout(100);
+	await page.keyboard.press("r");
+	await expect(reload).not.toHaveClass(/success/);
+	await page.waitForFunction(
+		() => document.querySelector("#reload")?.classList.contains("in-zone"),
+		undefined,
+		{ polling: "raf", timeout: 2_000 },
+	);
+
+	await page.keyboard.press("r");
+	await expect(reload).toHaveClass(/success/);
+	await expect(reload).toContainText("QUICKDRAW");
+	await expect(page.locator("[data-stat=ammo]")).toHaveText("6/6");
+	await expect(page.locator("[data-stat=deadeye]")).toContainText("+20%");
 	expect(errors).toEqual([]);
 });
 
