@@ -289,12 +289,12 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   const survivingProjectiles: ProjectileState[] = [];
   for (const projectile of projectiles) {
     if (now - projectile.bornAt >= projectile.lifetime) {
-      metrics = recordProjectileOutcome(metrics, projectile.id, projectile.everHit);
+      metrics = recordProjectileOutcome(metrics, projectile.everHit);
       continue;
     }
     if (projectile.phase === "orbit") { survivingProjectiles.push(projectile); continue; }
     if (bounceOffWalls(projectile, state.room)) {
-      metrics = recordProjectileOutcome(metrics, projectile.id, projectile.everHit);
+      metrics = recordProjectileOutcome(metrics, projectile.everHit);
       continue;
     }
 
@@ -306,15 +306,16 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       if (projectile.freezeChance > 0 && state.rng() < projectile.freezeChance) {
         target.frozenUntil = Math.max(target.frozenUntil, now + projectile.freezeDuration);
       }
+      const firstHit = !projectile.everHit;
       projectile.everHit = true;
-      metrics = recordHit(metrics, projectile.damage, now, target.id, projectile.id);
+      metrics = recordHit(metrics, projectile.damage, now, target.id, firstHit);
       if (wasAlive && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
       projectile.hitTargetIds.push(target.id);
       if (projectile.remainingBounces > 0) bounceOffTarget(projectile, target);
       else consumed = true;
       break;
     }
-    if (consumed) metrics = recordProjectileOutcome(metrics, projectile.id, projectile.everHit);
+    if (consumed) metrics = recordProjectileOutcome(metrics, projectile.everHit);
     else survivingProjectiles.push(projectile);
   }
 
