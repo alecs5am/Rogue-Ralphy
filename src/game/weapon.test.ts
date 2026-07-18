@@ -48,6 +48,51 @@ describe("deriveWeapon", () => {
   });
 });
 
+describe("artifact formulas", () => {
+  test("Twin Chamber grows projectile count and caps spread", () => {
+    expect(deriveWeapon({ twinChamber: 1 }, 0)).toMatchObject({ projectileCount: 2, spread: 8 * Math.PI / 180 });
+    expect(deriveWeapon({ twinChamber: 2 }, 0)).toMatchObject({ projectileCount: 3, spread: 16 * Math.PI / 180 });
+    expect(deriveWeapon({ twinChamber: 20 }, 0).spread).toBeCloseTo(110 * Math.PI / 180);
+  });
+
+  test("Big Iron scales projectile radius", () => {
+    expect(deriveWeapon({ bigIron: 1 }, 0).radius).toBeCloseTo(6.25);
+    expect(deriveWeapon({ bigIron: 3 }, 0).radius).toBeCloseTo(8.75);
+  });
+
+  test("Hollow Point scales damage", () => {
+    expect(deriveWeapon({ hollowPoint: 1 }, 0).damage).toBeCloseTo(27);
+    expect(deriveWeapon({ hollowPoint: 3 }, 0).damage).toBeCloseTo(41);
+  });
+
+  test("Coldcaster caps chance while duration keeps growing", () => {
+    expect(deriveWeapon({ coldcaster: 1 }, 0)).toMatchObject({ freezeChance: 0.25, freezeDuration: 1.05 });
+    expect(deriveWeapon({ coldcaster: 2 }, 0)).toMatchObject({ freezeChance: 0.5, freezeDuration: 1.3 });
+    expect(deriveWeapon({ coldcaster: 5 }, 0)).toMatchObject({ freezeChance: 1, freezeDuration: 2.05 });
+  });
+
+  test("Pinball grants one retained-damage bounce per stack", () => {
+    expect(deriveWeapon({ pinball: 1 }, 0)).toMatchObject({ bounces: 1, bounceRetention: 0.9 });
+    expect(deriveWeapon({ pinball: 3 }, 0)).toMatchObject({ bounces: 3, bounceRetention: 0.9 });
+  });
+
+  test("Deadeye caps its window while buff strength and duration keep growing", () => {
+    expect(deriveWeapon({ deadeye: 1 }, 0)).toMatchObject({ activeWindow: 0.12, activeBuff: 0.2, activeBuffDuration: 2.25 });
+    expect(deriveWeapon({ deadeye: 2 }, 0)).toMatchObject({ activeWindow: 0.15, activeBuff: 0.4, activeBuffDuration: 2.5 });
+    expect(deriveWeapon({ deadeye: 20 }, 0)).toMatchObject({ activeWindow: 0.45, activeBuff: 4, activeBuffDuration: 7 });
+  });
+
+  test("Halo Chamber adds orbital copies and ring radius", () => {
+    expect(deriveWeapon({ haloChamber: 1 }, 0)).toMatchObject({ orbitDuration: 0.9, orbitExtraCopies: 0, orbitRadius: 30 });
+    expect(deriveWeapon({ haloChamber: 3 }, 0)).toMatchObject({ orbitDuration: 0.9, orbitExtraCopies: 2, orbitRadius: 50 });
+  });
+
+  test("Ghost Sight scales turn rate and acquisition radius", () => {
+    expect(deriveWeapon({ ghostSight: 1 }, 0)).toMatchObject({ homingTurnRate: Math.PI, homingRadius: 40 });
+    expect(deriveWeapon({ ghostSight: 3 }, 0)).toMatchObject({ homingTurnRate: Math.PI * 3, homingRadius: 120 });
+  });
+});
+
 describe("buildShot", () => {
   test("consumes one round while building a spread", () => {
     const shot = buildShot(deriveWeapon({ twinChamber: 2 }, 0), 0);
