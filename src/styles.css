@@ -127,6 +127,12 @@ button {
 #reload.in-zone {
 	border-color: #ffa630;
 }
+#reload.success {
+	border-color: #ffa630;
+}
+#reload.success .reload-fill {
+	background: #ffa630;
+}
 #reload span {
 	position: absolute;
 	inset: 50% auto auto 50%;

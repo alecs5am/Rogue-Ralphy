@@ -59,11 +59,15 @@ function centeredImage(
 	);
 }
 
-function ralphyKey(state: GameState): AssetKey {
+function ralphyKey(state: GameState, moving: boolean): AssetKey {
 	const dx = state.aim.x - state.player.x;
 	const dy = state.aim.y - state.player.y;
-	if (Math.abs(dx) > Math.abs(dy)) return dx < 0 ? "ralphyLeft" : "ralphyRight";
-	return dy < 0 ? "ralphyUp" : "ralphyDown";
+	if (Math.abs(dx) > Math.abs(dy)) {
+		if (dx < 0) return moving ? "ralphyLeftMove" : "ralphyLeft";
+		return moving ? "ralphyRightMove" : "ralphyRight";
+	}
+	if (dy < 0) return moving ? "ralphyUpMove" : "ralphyUp";
+	return moving ? "ralphyDownMove" : "ralphyDown";
 }
 
 function drawTargets(
@@ -157,7 +161,7 @@ function drawPlayer(
 	imageAt(
 		context,
 		assets,
-		ralphyKey(state),
+		ralphyKey(state, options.moving),
 		state.player.x - 48,
 		state.player.y - 55 + bob,
 		96,

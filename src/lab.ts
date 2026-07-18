@@ -56,7 +56,7 @@ function required<T extends Element>(root: ParentNode, selector: string): T {
 export function mountLab(
 	access: StateAccess,
 	missing: AssetKey[],
-): (state: GameState, paused: boolean) => void {
+): (state: GameState) => void {
 	const artifactsRoot = document.querySelector<HTMLElement>("#artifacts");
 	const spawnerRoot = document.querySelector<HTMLElement>("#spawner");
 	const statsRoot = document.querySelector<HTMLElement>("#stats");
@@ -198,9 +198,9 @@ export function mountLab(
 	required<HTMLElement>(statsRoot, "#asset-diagnostics").textContent =
 		missing.length
 			? `MISSING ASSETS: ${missing.join(", ")}`
-			: "ASSETS ONLINE · 26/26";
+			: `ASSETS ONLINE · ${Object.keys(ASSET_PATHS).length}/${Object.keys(ASSET_PATHS).length}`;
 
-	return (state, paused) => {
+	return (state) => {
 		for (const artifact of ARTIFACTS) {
 			const count = state.artifacts[artifact.id] ?? 0;
 			const control = artifactControls.get(artifact.id);
@@ -231,7 +231,7 @@ export function mountLab(
 			active: String(state.projectiles.length),
 			health: `${state.player.health}/${state.player.maxHealth}`,
 			ammo: `${state.reload.ammo}/${state.reload.capacity}`,
-			"reload-state": paused
+			"reload-state": state.paused
 				? `PAUSED · ${state.weapon.reloadDuration}s`
 				: state.reload.reloading
 					? `${Math.round(reloadProgress * 100)}% · ${state.weapon.reloadDuration}s`

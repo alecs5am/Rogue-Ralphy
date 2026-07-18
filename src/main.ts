@@ -17,6 +17,7 @@ const hudAmmo = required<HTMLElement>(hud, ".hud-ammo");
 const reloadBar = required<HTMLElement>(document, "#reload");
 const reloadFill = required<HTMLElement>(reloadBar, ".reload-fill");
 const reloadZone = required<HTMLElement>(reloadBar, ".reload-zone");
+const reloadLabel = required<HTMLElement>(reloadBar, "span");
 const pauseLabel = required<HTMLElement>(document, "#pause-label");
 const quickdraw = required<HTMLElement>(document, "#quickdraw");
 const context = (() => {
@@ -28,7 +29,6 @@ const context = (() => {
 async function start(): Promise<void> {
 	const assets = await loadAssets();
 	let state: GameState = createGame();
-	let paused = false;
 	let reloadPressed = false;
 	let firing = false;
 	const pressed = new Set<string>();
@@ -68,7 +68,7 @@ async function start(): Promise<void> {
 
 	canvas.addEventListener("pointermove", mapPointer);
 	canvas.addEventListener("pointerdown", (event) => {
-		if (event.button !== 0 || paused) return;
+		if (event.button !== 0 || state.paused) return;
 		mapPointer(event);
 		firing = true;
 		canvas.focus();
@@ -83,11 +83,11 @@ async function start(): Promise<void> {
 		if (["w", "a", "s", "d", "r", "escape"].includes(key))
 			event.preventDefault();
 		if (key === "escape" && !event.repeat) {
-			paused = !paused;
 			firing = false;
-			state = { ...state, paused };
+			state = { ...state, paused: !state.paused };
 			canvas.blur();
-		} else if (key === "r" && !event.repeat && !paused) reloadPressed = true;
+		} else if (key === "r" && !event.repeat && !state.paused)
+			reloadPressed = true;
 		pressed.add(key);
 	});
 	window.addEventListener("keyup", (event) =>
@@ -101,6 +101,8 @@ async function start(): Promise<void> {
 		if (document.hidden) {
 			pressed.clear();
 			firing = false;
+			reloadPressed = false;
+			state = { ...state, paused: true };
 		}
 		lastFrame = performance.now();
 		accumulator = 0;
@@ -115,7 +117,7 @@ async function start(): Promise<void> {
 			? 0
 			: Math.min(0.25, Math.max(0, (timestamp - lastFrame) / 1000));
 		lastFrame = timestamp;
-		if (!paused) {
+		if (!state.paused) {
 			accumulator += elapsed;
 			while (accumulator >= STEP) {
 				state = updateGame(
@@ -140,17 +142,26 @@ async function start(): Promise<void> {
 		}
 
 		const moving =
-			pressed.has("w") ||
-			pressed.has("a") ||
-			pressed.has("s") ||
-			pressed.has("d");
+			!state.paused &&
+			(pressed.has("w") ||
+				pressed.has("a") ||
+				pressed.has("s") ||
+				pressed.has("d"));
 		renderGame(context, state, assets, { moving, reducedMotion });
-		updateLab(state, paused);
+		updateLab(state);
 		hudHealth.textContent = `HP ${state.player.health}`;
 		hudAmmo.textContent = `${state.reload.ammo}/${state.reload.capacity}`;
-		pauseLabel.hidden = !paused;
+		pauseLabel.hidden = !state.paused;
 		quickdraw.hidden = state.time >= state.reload.buffUntil;
-		reloadBar.hidden = !state.reload.reloading;
+		const activeReloadStartedAt =
+			state.reload.buffUntil - state.weapon.activeBuffDuration;
+		const reloadSuccess =
+			state.reload.fireRateBuff > 0 &&
+			state.time >= activeReloadStartedAt &&
+			state.time < activeReloadStartedAt + 0.22;
+		reloadBar.hidden = !state.reload.reloading && !reloadSuccess;
+		reloadBar.classList.toggle("success", reloadSuccess);
+		reloadLabel.textContent = reloadSuccess ? "QUICKDRAW" : "RELOADING";
 		if (state.reload.reloading) {
 			const duration = state.reload.completesAt - state.reload.startedAt;
 			const progress = Math.max(
@@ -171,6 +182,10 @@ async function start(): Promise<void> {
 					state.time >= state.reload.sweetStart &&
 					state.time <= state.reload.sweetEnd,
 			);
+		} else if (reloadSuccess) {
+			reloadFill.style.width = "100%";
+			reloadZone.hidden = true;
+			reloadBar.classList.remove("in-zone");
 		}
 		requestAnimationFrame(frame);
 	}
