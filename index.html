@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0a0b" />
+    <link rel="icon" href="data:," />
+    <title>Ralphy Combat Lab</title>
+  </head>
+  <body>
+    <main id="app">
+      <section class="game-shell" aria-label="Ralphy combat room">
+        <canvas id="game" width="960" height="540" tabindex="0" aria-label="Combat room. Move with W A S D, aim and fire with the mouse, reload with R, pause with Escape."></canvas>
+        <div id="hud" aria-live="polite"><span class="hud-health"></span><span class="hud-ammo"></span></div>
+        <div id="quickdraw" hidden>QUICKDRAW</div>
+        <div id="pause-label" hidden>PAUSED</div>
+        <div id="reload" hidden aria-label="Reload progress">
+          <div class="reload-zone"></div>
+          <div class="reload-fill"></div>
+          <span>RELOADING</span>
+        </div>
+      </section>
+      <aside id="lab" aria-label="Combat laboratory controls">
+        <header>
+          <p>RALPHY COMBAT LAB</p>
+          <h1>Test range 01</h1>
+          <p class="controls">WASD MOVE · MOUSE FIRE · R RELOAD · ESC PAUSE</p>
+        </header>
+        <section id="artifacts" aria-labelledby="artifacts-title"></section>
+        <section id="spawner" aria-labelledby="spawner-title"></section>
+        <section id="stats" aria-labelledby="stats-title"></section>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
