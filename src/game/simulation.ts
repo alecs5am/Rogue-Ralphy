@@ -1,4 +1,4 @@
-import { createMetrics, recordHit, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, summarizeMetrics, type Metrics } from "./metrics";
+import { createMetrics, recordHit, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, attemptActiveReload, createReloadState, fireRateBuffAt, startReload, type ReloadState } from "./reload";
 import { buildShot, deriveWeapon, type ArtifactId, type ArtifactStacks, type DerivedWeapon, type ProjectileSpec } from "./weapon";
 
@@ -119,7 +119,10 @@ export function spawnWave(state: GameState): GameState {
   return next;
 }
 
-export const clearTargets = (state: GameState): GameState => ({ ...state, targets: [] });
+export function clearTargets(state: GameState): GameState {
+  const metrics = retainTargetMetrics(state.metrics, []);
+  return { ...state, targets: [], metrics, telemetry: summarizeMetrics(metrics, state.time) };
+}
 export const resetLab = (state: GameState): GameState => createGame(state.rng);
 
 function makeProjectile(spec: ProjectileSpec, state: GameState, aimAngle: number, now: number, id: number): ProjectileState {
@@ -308,7 +311,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       }
       const firstHit = !projectile.everHit;
       projectile.everHit = true;
-      metrics = recordHit(metrics, projectile.damage, now, target.id, firstHit);
+      metrics = recordHit(metrics, projectile.damage, now, target.id, firstHit, target);
       if (wasAlive && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
       projectile.hitTargetIds.push(target.id);
       if (projectile.remainingBounces > 0) bounceOffTarget(projectile, target);
@@ -320,6 +323,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   }
 
   targets = targets.filter((target) => target.kind === "dummy" || target.health > 0);
+  metrics = retainTargetMetrics(metrics, targets.map((target) => target.id));
   const telemetry = summarizeMetrics(metrics, now);
   return {
     ...state, player, aim, weapon, reload, projectiles: survivingProjectiles, targets, metrics, telemetry,

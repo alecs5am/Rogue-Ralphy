@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createMetrics, recordHit, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, resetMetrics, summarizeMetrics } from "./metrics";
+import { createMetrics, recordHit, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, resetMetrics, retainTargetMetrics, summarizeMetrics } from "./metrics";
 
 test("reports strict rolling three-second DPS globally and per target", () => {
   let metrics = createMetrics();
@@ -52,6 +52,21 @@ test("scans hit history once when summarizing many targets", () => {
 
   expect(summarizeMetrics(metrics, 1).rollingDps).toBe(70);
   expect(eventReads).toBe(eventCount);
+});
+
+test("drops inactive target breakdowns without changing global totals", () => {
+  let metrics = recordHit(createMetrics(), 10, 1, "gone", true);
+  metrics = recordHit(metrics, 20, 1, "active", true);
+
+  const retained = retainTargetMetrics(metrics, new Set(["active"]));
+
+  expect(retained.targetMetrics).toEqual({ active: { damage: 20, hits: 1, kills: 0 } });
+  expect(summarizeMetrics(retained, 1)).toMatchObject({ totalDamage: 30, hits: 2, targets: { active: { damage: 20 } } });
+});
+
+test("keeps hit coordinates for effects after a target is removed", () => {
+  const metrics = recordHit(createMetrics(), 20, 1, "chaser", true, { x: 640, y: 270 });
+  expect(metrics.hitEvents[0]).toMatchObject({ targetId: "chaser", x: 640, y: 270 });
 });
 
 test("counts ricochet impacts once for projectile accuracy and waits to resolve misses", () => {

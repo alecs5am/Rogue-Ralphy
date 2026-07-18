@@ -191,12 +191,20 @@ function drawDamage(
 		const target = state.targets.find(
 			(candidate) => candidate.id === event.targetId,
 		);
-		if (!target) continue;
-		const y = target.y - target.radius - 18 - (reducedMotion ? 0 : age * 28);
+		const point =
+			event.x === undefined || event.y === undefined
+				? target
+				: { x: event.x, y: event.y };
+		if (!point) continue;
+		const y =
+			point.y -
+			(target?.radius ?? 18) -
+			18 -
+			(reducedMotion ? 0 : age * 28);
 		context.globalAlpha = Math.max(0, 1 - age / 0.7);
-		centeredImage(context, assets, "impact", target, 34);
+		centeredImage(context, assets, "impact", point, 34);
 		context.fillStyle = "#f5f5f4";
-		context.fillText(`${Math.round(event.damage)}`, round(target.x), round(y));
+		context.fillText(`${Math.round(event.damage)}`, round(point.x), round(y));
 	}
 	context.globalAlpha = 1;
 	context.textAlign = "start";

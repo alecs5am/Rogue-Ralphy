@@ -99,6 +99,32 @@ test("Pinball wall bounce retains 90% damage and cleanup consumes the depleted p
   expect(game.telemetry).toMatchObject({ successfulProjectiles: 0, misses: 1, accuracy: 0 });
 });
 
+test("clearing targets drops per-target metrics but preserves global damage", () => {
+  let game = spawnDummy(createGame(() => 0), { x: 600, y: 270 });
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  game = { ...game, projectiles: game.projectiles.map((projectile) => ({ ...projectile, x: 573, y: 270 })) };
+  game = updateGame(game, idle, 0.001, 1.001);
+  expect(game.telemetry.totalDamage).toBe(20);
+  expect(Object.keys(game.telemetry.targets)).toEqual(["dummy-1"]);
+
+  game = clearTargets(game);
+  expect(game.telemetry.totalDamage).toBe(20);
+  expect(game.telemetry.targets).toEqual({});
+});
+
+test("a fatal hit keeps its coordinates after the chaser is removed", () => {
+  let game = spawnChaser(createGame(() => 0), { x: 600, y: 270 });
+  game = { ...game, targets: game.targets.map((target) => ({ ...target, health: 20, speed: 0 })) };
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  game = { ...game, projectiles: game.projectiles.map((projectile) => ({ ...projectile, x: 577, y: 270 })) };
+
+  game = updateGame(game, idle, 0.001, 1.001);
+
+  expect(game.targets).toHaveLength(0);
+  expect(game.metrics.hitEvents.at(-1)).toMatchObject({ targetId: "chaser-1", x: 600, y: 270 });
+  expect(game.telemetry).toMatchObject({ totalDamage: 20, kills: 1, targets: {} });
+});
+
 test("freeze stops a chaser until its status expires", () => {
   let game = spawnChaser(createGame(() => 0), { x: 600, y: 270 });
   game = setArtifact(game, "coldcaster", 4);

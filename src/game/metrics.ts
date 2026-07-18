@@ -1,4 +1,4 @@
-export type HitEvent = { time: number; damage: number; targetId: string };
+export type HitEvent = { time: number; damage: number; targetId: string; x?: number; y?: number };
 export type TargetMetrics = { damage: number; hits: number; kills: number };
 
 export type Metrics = {
@@ -23,8 +23,9 @@ export function recordProjectile(metrics: Metrics): Metrics {
   return { ...metrics, projectiles: metrics.projectiles + 1 };
 }
 
-export function recordHit(metrics: Metrics, damage: number, time: number, targetId: string, firstHit: boolean): Metrics {
-  const hitEvents = [...metrics.hitEvents.filter((event) => event.time > time - 3), { time, damage, targetId }];
+export function recordHit(metrics: Metrics, damage: number, time: number, targetId: string, firstHit: boolean, point?: { x: number; y: number }): Metrics {
+  const event = { time, damage, targetId, ...(point ?? {}) };
+  const hitEvents = [...metrics.hitEvents.filter((candidate) => candidate.time > time - 3), event];
   const rollingDps = hitEvents.reduce((total, event) => total + event.damage, 0) / 3;
   const target = metrics.targetMetrics[targetId] ?? { damage: 0, hits: 0, kills: 0 };
   return {
@@ -45,6 +46,12 @@ export function recordProjectileOutcome(metrics: Metrics, everHit: boolean): Met
 export function recordKill(metrics: Metrics, targetId: string): Metrics {
   const target = metrics.targetMetrics[targetId] ?? { damage: 0, hits: 0, kills: 0 };
   return { ...metrics, kills: metrics.kills + 1, targetMetrics: { ...metrics.targetMetrics, [targetId]: { ...target, kills: target.kills + 1 } } };
+}
+
+export function retainTargetMetrics(metrics: Metrics, activeTargetIds: Iterable<string>): Metrics {
+  const active = new Set(activeTargetIds);
+  const targetMetrics = Object.fromEntries(Object.entries(metrics.targetMetrics).filter(([targetId]) => active.has(targetId)));
+  return { ...metrics, targetMetrics };
 }
 
 export function summarizeMetrics(metrics: Metrics, now: number) {
