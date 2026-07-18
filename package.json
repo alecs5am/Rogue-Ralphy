@@ -1,0 +1,16 @@
+{
+  "name": "ralphy-combat-lab",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "test": "bun test",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "latest",
+    "typescript": "^5",
+    "vite": "latest"
+  }
+}
