@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Split a chroma-keyed imagegen atlas into square game-ready PNG sprites."""
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["Pillow==12.2.0"]
+# ///
+"""Split an imagegen atlas into sprites; run with `uv run scripts/split_atlas.py`."""
 
 from __future__ import annotations
 
