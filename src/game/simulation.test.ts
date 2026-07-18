@@ -28,6 +28,34 @@ test("empties six rounds then starts automatic reload", () => {
   expect(game.reload.reloading).toBe(true);
 });
 
+test("reload intent inside the Deadeye window refills ammo and applies its fire-rate buff", () => {
+  let game = setArtifact(createGame(() => 0), "deadeye", 1);
+  const baseFireRate = game.weapon.fireRate;
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  game = updateGame(game, { ...idle, reloadPressed: true }, 0, 1.1);
+  const activeAt = (game.reload.sweetStart + game.reload.sweetEnd) / 2;
+
+  game = updateGame(game, { ...idle, reloadPressed: true }, 0, activeAt);
+
+  expect(game.reload).toMatchObject({ ammo: 6, reloading: false, fireRateBuff: 0.2 });
+  expect(game.weapon.fireRate).toBeCloseTo(baseFireRate * 1.2);
+});
+
+test("reload intent outside the Deadeye window leaves normal reload intact", () => {
+  let game = setArtifact(createGame(() => 0), "deadeye", 1);
+  const baseFireRate = game.weapon.fireRate;
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  game = updateGame(game, { ...idle, reloadPressed: true }, 0, 1.1);
+  const completesAt = game.reload.completesAt;
+
+  game = updateGame(game, { ...idle, reloadPressed: true }, 0, game.reload.sweetStart - 0.01);
+  expect(game.reload).toMatchObject({ ammo: 5, reloading: true, completesAt, fireRateBuff: 0 });
+
+  game = updateGame(game, idle, 0, completesAt);
+  expect(game.reload).toMatchObject({ ammo: 6, reloading: false, fireRateBuff: 0 });
+  expect(game.weapon.fireRate).toBe(baseFireRate);
+});
+
 test("one homing ricochet reacquires, loses its target, and records two impacts once for accuracy", () => {
   let game = spawnDummy(createGame(() => 0), { x: 600, y: 270 });
   game = setArtifact(setArtifact(game, "ghostSight", 2), "pinball", 1);
@@ -54,6 +82,21 @@ test("one homing ricochet reacquires, loses its target, and records two impacts 
   game = updateGame(game, idle, 0.001, 1.041);
   expect(game.projectiles).toHaveLength(0);
   expect(game.telemetry).toMatchObject({ hits: 2, successfulProjectiles: 1, misses: 0, accuracy: 1 });
+});
+
+test("Pinball wall bounce retains 90% damage and cleanup consumes the depleted projectile", () => {
+  let game = setArtifact(createGame(() => 0), "pinball", 1);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+
+  game = updateGame(game, idle, 0.63, 1.63);
+  expect(game.projectiles).toHaveLength(1);
+  expect(game.projectiles[0]).toMatchObject({ remainingBounces: 0, damage: 18, everHit: false });
+  expect(game.projectiles[0]!.vx).toBeLessThan(0);
+  expect(game.telemetry.misses).toBe(0);
+
+  game = updateGame(game, idle, 1.34, 2.97);
+  expect(game.projectiles).toHaveLength(0);
+  expect(game.telemetry).toMatchObject({ successfulProjectiles: 0, misses: 1, accuracy: 0 });
 });
 
 test("freeze stops a chaser until its status expires", () => {
