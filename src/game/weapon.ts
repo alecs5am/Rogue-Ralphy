@@ -23,12 +23,13 @@ export type ShotSpec = { roundsConsumed: 1; projectiles: ProjectileSpec[] };
 
 const artifactIds: ArtifactId[] = ["twinChamber", "bigIron", "hollowPoint", "coldcaster", "pinball", "deadeye", "haloChamber", "ghostSight"];
 const degrees = Math.PI / 180;
+const perShotProjectileSafetyBudget = 10_000;
 
 export function deriveWeapon(stacks: ArtifactStacks, fireRateBuff: number): DerivedWeapon {
   for (const id of artifactIds) {
     const count = stacks[id];
-    if (count !== undefined && (!Number.isFinite(count) || !Number.isInteger(count) || count < 0)) {
-      throw new Error(`${id} must be a finite non-negative integer`);
+    if (count !== undefined && (!Number.isSafeInteger(count) || count < 0)) {
+      throw new Error(`${id} must be a non-negative safe integer`);
     }
   }
   if (!Number.isFinite(fireRateBuff)) throw new Error("fireRateBuff must be finite");
@@ -42,7 +43,7 @@ export function deriveWeapon(stacks: ArtifactStacks, fireRateBuff: number): Deri
   const haloChamber = stacks.haloChamber ?? 0;
   const ghostSight = stacks.ghostSight ?? 0;
 
-  return {
+  const weapon = {
     ...BASE_WEAPON,
     fireRate: BASE_WEAPON.fireRate * (1 + fireRateBuff),
     radius: BASE_WEAPON.radius * (1 + 0.25 * bigIron),
@@ -62,10 +63,17 @@ export function deriveWeapon(stacks: ArtifactStacks, fireRateBuff: number): Deri
     homingTurnRate: Math.PI * ghostSight,
     homingRadius: 40 * ghostSight,
   };
+  for (const [name, value] of Object.entries(weapon)) {
+    if (!Number.isFinite(value)) throw new Error(`derived ${name} must be finite`);
+  }
+  return weapon;
 }
 
 export function buildShot(weapon: DerivedWeapon, aimAngle: number): ShotSpec {
   const count = weapon.projectileCount + weapon.orbitExtraCopies;
+  if (count > perShotProjectileSafetyBudget) {
+    throw new Error(`projectile count ${count} exceeds the per-shot safety budget of ${perShotProjectileSafetyBudget}`);
+  }
   const projectiles = Array.from({ length: count }, (_, index) => {
     const orbiting = weapon.orbitDuration > 0;
     const heading = orbiting || weapon.projectileCount === 1

@@ -22,8 +22,16 @@ describe("deriveWeapon", () => {
 
   test("keeps unlimited counts meaningful while rejecting invalid counts", () => {
     expect(deriveWeapon({ twinChamber: 1000 }, 0).projectileCount).toBe(1001);
-    expect(() => deriveWeapon({ bigIron: -1 }, 0)).toThrow("bigIron must be a finite non-negative integer");
+    expect(() => deriveWeapon({ bigIron: -1 }, 0)).toThrow("bigIron must be a non-negative safe integer");
     expect(() => deriveWeapon({ bigIron: Number.POSITIVE_INFINITY }, 0)).toThrow();
+  });
+
+  test("rejects unsafe stack counts before they corrupt derived values", () => {
+    expect(() => deriveWeapon({ hollowPoint: 1e308 }, 0)).toThrow("hollowPoint must be a non-negative safe integer");
+  });
+
+  test("rejects finite inputs when a derived value would be non-finite", () => {
+    expect(() => deriveWeapon(none, Number.MAX_VALUE)).toThrow("derived fireRate must be finite");
   });
 
   test("derives status, reload, orbit, homing, and temporary buff values", () => {
@@ -59,5 +67,11 @@ describe("buildShot", () => {
       Math.PI * 6 / 5,
       Math.PI * 8 / 5,
     ]);
+  });
+
+  test("rejects infeasible projectile allocation with a deliberate error", () => {
+    const weapon = deriveWeapon({ twinChamber: 2 ** 32 }, 0);
+    expect(weapon.projectileCount).toBe(2 ** 32 + 1);
+    expect(() => buildShot(weapon, 0)).toThrow("projectile count 4294967297 exceeds the per-shot safety budget of 10000");
   });
 });
