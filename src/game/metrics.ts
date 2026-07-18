@@ -24,8 +24,8 @@ export function recordProjectile(metrics: Metrics): Metrics {
 }
 
 export function recordHit(metrics: Metrics, damage: number, time: number, targetId: string, firstHit: boolean): Metrics {
-  const hitEvents = [...metrics.hitEvents, { time, damage, targetId }];
-  const rollingDps = hitEvents.filter((event) => event.time > time - 3).reduce((total, event) => total + event.damage, 0) / 3;
+  const hitEvents = [...metrics.hitEvents.filter((event) => event.time > time - 3), { time, damage, targetId }];
+  const rollingDps = hitEvents.reduce((total, event) => total + event.damage, 0) / 3;
   const target = metrics.targetMetrics[targetId] ?? { damage: 0, hits: 0, kills: 0 };
   return {
     ...metrics,
@@ -48,13 +48,20 @@ export function recordKill(metrics: Metrics, targetId: string): Metrics {
 }
 
 export function summarizeMetrics(metrics: Metrics, now: number) {
-  const rollingDps = metrics.hitEvents.filter((event) => event.time > now - 3).reduce((total, event) => total + event.damage, 0) / 3;
+  const cutoff = now - 3;
+  let rollingDamage = 0;
+  const rollingDamageByTarget = new Map<string, number>();
+  for (const event of metrics.hitEvents) {
+    if (event.time > cutoff) {
+      rollingDamage += event.damage;
+      rollingDamageByTarget.set(event.targetId, (rollingDamageByTarget.get(event.targetId) ?? 0) + event.damage);
+    }
+  }
+  const rollingDps = rollingDamage / 3;
   const knownOutcomes = metrics.successfulProjectiles + metrics.misses;
   const targets = Object.fromEntries(Object.entries(metrics.targetMetrics).map(([targetId, target]) => [targetId, {
     ...target,
-    rollingDps: metrics.hitEvents
-      .filter((event) => event.targetId === targetId && event.time > now - 3)
-      .reduce((total, event) => total + event.damage, 0) / 3,
+    rollingDps: (rollingDamageByTarget.get(targetId) ?? 0) / 3,
   }]));
   return {
     totalDamage: metrics.totalDamage,

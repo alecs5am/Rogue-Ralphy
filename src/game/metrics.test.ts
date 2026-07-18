@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createMetrics, recordHit, recordProjectile, recordProjectileOutcome, recordTrigger, resetMetrics, summarizeMetrics } from "./metrics";
+import { createMetrics, recordHit, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, resetMetrics, summarizeMetrics } from "./metrics";
 
 test("reports strict rolling three-second DPS globally and per target", () => {
   let metrics = createMetrics();
@@ -12,6 +12,46 @@ test("reports strict rolling three-second DPS globally and per target", () => {
   expect(summarizeMetrics(metrics, 5.1).rollingDps).toBe(0);
   expect(summarizeMetrics(metrics, 5.1).targets["dummy-1"]?.rollingDps).toBe(0);
   expect(summarizeMetrics(metrics, 6).rollingDps).toBe(0);
+});
+
+test("prunes expired hit history without losing cumulative target totals", () => {
+  let metrics = recordHit(createMetrics(), 100, 1, "expired", true);
+  metrics = recordKill(metrics, "expired");
+  metrics = recordHit(metrics, 30, 4, "recent", true);
+
+  expect(metrics.hitEvents).toEqual([{ time: 4, damage: 30, targetId: "recent" }]);
+  expect(summarizeMetrics(metrics, 4)).toMatchObject({
+    totalDamage: 130,
+    hits: 2,
+    kills: 1,
+    rollingDps: 10,
+    peakDps: 100 / 3,
+    targets: {
+      expired: { damage: 100, hits: 1, kills: 1, rollingDps: 0 },
+      recent: { damage: 30, hits: 1, rollingDps: 10 },
+    },
+  });
+});
+
+test("scans hit history once when summarizing many targets", () => {
+  let metrics = createMetrics();
+  for (let index = 0; index < 20; index += 1) {
+    metrics = recordHit(metrics, index + 1, 1, `dummy-${index}`, true);
+  }
+  const eventCount = metrics.hitEvents.length;
+  let eventReads = 0;
+  metrics = {
+    ...metrics,
+    hitEvents: new Proxy(metrics.hitEvents, {
+      get(events, property, receiver) {
+        if (typeof property === "string" && /^\d+$/.test(property)) eventReads += 1;
+        return Reflect.get(events, property, receiver);
+      },
+    }),
+  };
+
+  expect(summarizeMetrics(metrics, 1).rollingDps).toBe(70);
+  expect(eventReads).toBe(eventCount);
 });
 
 test("counts ricochet impacts once for projectile accuracy and waits to resolve misses", () => {
