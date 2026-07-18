@@ -1,4 +1,4 @@
-import { createMetrics, recordHit, recordKill, recordProjectile, recordTrigger, summarizeMetrics, type Metrics } from "./metrics";
+import { createMetrics, recordHit, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, attemptActiveReload, createReloadState, fireRateBuffAt, startReload, type ReloadState } from "./reload";
 import { buildShot, deriveWeapon, type ArtifactId, type ArtifactStacks, type DerivedWeapon, type ProjectileSpec } from "./weapon";
 
@@ -23,7 +23,7 @@ export type ProjectileState = Point & {
   damage: number; speed: number; radius: number; lifetime: number; bornAt: number;
   remainingBounces: number; bounceRetention: number;
   freezeChance: number; freezeDuration: number;
-  homingTurnRate: number; homingRadius: number; hitTargetIds: string[];
+  homingTurnRate: number; homingRadius: number; hitTargetIds: string[]; everHit: boolean;
 };
 
 export type GameState = {
@@ -96,9 +96,11 @@ export function spawnDummy(state: GameState, position?: Point): GameState {
 }
 
 export function spawnChaser(state: GameState, position?: Point): GameState {
-  const offset = Math.floor(state.rng() * EDGE_POINTS.length) % EDGE_POINTS.length;
-  const point = position ?? Array.from({ length: EDGE_POINTS.length }, (_, index) => EDGE_POINTS[(offset + index) % EDGE_POINTS.length])
-    .find((candidate): candidate is Point => candidate !== undefined && canSpawn(state, candidate, 18));
+  const point = position ?? (() => {
+    const offset = Math.floor(state.rng() * EDGE_POINTS.length) % EDGE_POINTS.length;
+    return Array.from({ length: EDGE_POINTS.length }, (_, index) => EDGE_POINTS[(offset + index) % EDGE_POINTS.length])
+      .find((candidate): candidate is Point => candidate !== undefined && canSpawn(state, candidate, 18));
+  })();
   if (!point || !canSpawn(state, point, 18)) return state;
   const target: TargetState = {
     ...point, id: `chaser-${state.nextId}`, kind: "chaser", radius: 18,
@@ -147,6 +149,7 @@ function makeProjectile(spec: ProjectileSpec, state: GameState, aimAngle: number
     homingTurnRate: spec.homingTurnRate,
     homingRadius: spec.homingRadius,
     hitTargetIds: [],
+    everHit: false,
   };
 }
 
@@ -285,24 +288,34 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
 
   const survivingProjectiles: ProjectileState[] = [];
   for (const projectile of projectiles) {
-    if (now - projectile.bornAt >= projectile.lifetime) continue;
+    if (now - projectile.bornAt >= projectile.lifetime) {
+      metrics = recordProjectileOutcome(metrics, projectile.id, projectile.everHit);
+      continue;
+    }
     if (projectile.phase === "orbit") { survivingProjectiles.push(projectile); continue; }
-    if (bounceOffWalls(projectile, state.room)) continue;
+    if (bounceOffWalls(projectile, state.room)) {
+      metrics = recordProjectileOutcome(metrics, projectile.id, projectile.everHit);
+      continue;
+    }
 
     let consumed = false;
     for (const target of targets) {
       if (target.health <= 0 || projectile.hitTargetIds.includes(target.id) || !overlaps(projectile, target)) continue;
       const wasAlive = target.kind === "dummy" || target.health > 0;
       target.health -= projectile.damage;
-      target.frozenUntil = state.rng() < projectile.freezeChance ? Math.max(target.frozenUntil, now + projectile.freezeDuration) : target.frozenUntil;
-      metrics = recordHit(metrics, projectile.damage, now, target.id);
+      if (projectile.freezeChance > 0 && state.rng() < projectile.freezeChance) {
+        target.frozenUntil = Math.max(target.frozenUntil, now + projectile.freezeDuration);
+      }
+      projectile.everHit = true;
+      metrics = recordHit(metrics, projectile.damage, now, target.id, projectile.id);
       if (wasAlive && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
       projectile.hitTargetIds.push(target.id);
       if (projectile.remainingBounces > 0) bounceOffTarget(projectile, target);
       else consumed = true;
       break;
     }
-    if (!consumed) survivingProjectiles.push(projectile);
+    if (consumed) metrics = recordProjectileOutcome(metrics, projectile.id, projectile.everHit);
+    else survivingProjectiles.push(projectile);
   }
 
   targets = targets.filter((target) => target.kind === "dummy" || target.health > 0);
