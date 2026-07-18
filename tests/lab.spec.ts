@@ -7,6 +7,7 @@ test("builds a loadout, damages a dummy, and auto-reloads", async ({
 	page.on("console", (message) => {
 		if (message.type() === "error") errors.push(message.text());
 	});
+	page.on("pageerror", (error) => errors.push(error.message));
 	await page.goto("/");
 	await expect(
 		page.getByRole("heading", { name: "Test range 01" }),
@@ -53,6 +54,7 @@ for (const viewport of [
 		page.on("console", (message) => {
 			if (message.type() === "error") errors.push(message.text());
 		});
+		page.on("pageerror", (error) => errors.push(error.message));
 		await page.setViewportSize(viewport);
 		await page.goto("/");
 		await expect(page.locator("#asset-diagnostics")).toHaveText(
