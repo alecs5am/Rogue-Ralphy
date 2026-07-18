@@ -84,6 +84,7 @@ async function start(): Promise<void> {
 			event.preventDefault();
 		if (key === "escape" && !event.repeat) {
 			firing = false;
+			reloadPressed = false;
 			state = { ...state, paused: !state.paused };
 			canvas.blur();
 		} else if (key === "r" && !event.repeat && !state.paused)
@@ -162,7 +163,11 @@ async function start(): Promise<void> {
 		reloadBar.hidden = !state.reload.reloading && !reloadSuccess;
 		reloadBar.classList.toggle("success", reloadSuccess);
 		reloadLabel.textContent = reloadSuccess ? "QUICKDRAW" : "RELOADING";
-		if (state.reload.reloading) {
+		if (reloadSuccess) {
+			reloadFill.style.width = "100%";
+			reloadZone.hidden = true;
+			reloadBar.classList.remove("in-zone");
+		} else if (state.reload.reloading) {
 			const duration = state.reload.completesAt - state.reload.startedAt;
 			const progress = Math.max(
 				0,
@@ -182,10 +187,6 @@ async function start(): Promise<void> {
 					state.time >= state.reload.sweetStart &&
 					state.time <= state.reload.sweetEnd,
 			);
-		} else if (reloadSuccess) {
-			reloadFill.style.width = "100%";
-			reloadZone.hidden = true;
-			reloadBar.classList.remove("in-zone");
 		}
 		requestAnimationFrame(frame);
 	}
