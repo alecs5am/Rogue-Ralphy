@@ -25,6 +25,19 @@ describe("deriveWeapon", () => {
     expect(() => deriveWeapon({ bigIron: -1 }, 0)).toThrow("bigIron must be a finite non-negative integer");
     expect(() => deriveWeapon({ bigIron: Number.POSITIVE_INFINITY }, 0)).toThrow();
   });
+
+  test("derives status, reload, orbit, homing, and temporary buff values", () => {
+    const weapon = deriveWeapon({ coldcaster: 2, pinball: 1, deadeye: 2, haloChamber: 3, ghostSight: 2 }, 0.25);
+    expect(weapon.freezeDuration).toBeCloseTo(1.3);
+    expect(weapon.bounceRetention).toBe(0.9);
+    expect(weapon.activeWindow).toBeCloseTo(0.15);
+    expect(weapon.activeBuff).toBeCloseTo(0.4);
+    expect(weapon.activeBuffDuration).toBeCloseTo(2.5);
+    expect(weapon.orbitExtraCopies).toBe(2);
+    expect(weapon.orbitRadius).toBe(50);
+    expect(weapon.homingRadius).toBe(80);
+    expect(weapon.fireRate).toBeCloseTo(3.75);
+  });
 });
 
 describe("buildShot", () => {
@@ -39,5 +52,12 @@ describe("buildShot", () => {
     const shot = buildShot(deriveWeapon({ twinChamber: 2, haloChamber: 3 }, 0), 0);
     expect(shot.projectiles).toHaveLength(5);
     expect(shot.projectiles.every((projectile) => projectile.orbitDuration === 0.9)).toBe(true);
+    expect(shot.projectiles.map((projectile) => projectile.orbitAngle)).toEqual([
+      0,
+      Math.PI * 2 / 5,
+      Math.PI * 4 / 5,
+      Math.PI * 6 / 5,
+      Math.PI * 8 / 5,
+    ]);
   });
 });
