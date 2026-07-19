@@ -1,6 +1,6 @@
 import { createMetrics, recordHit, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, attemptActiveReload, createReloadState, fireRateBuffAt, startReload, type ReloadState } from "./reload";
-import { buildShot, deriveWeapon, type ArtifactId, type ArtifactStacks, type DerivedWeapon, type ProjectileSpec } from "./weapon";
+import { buildShot, deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon, type ProjectileSpec } from "./weapon";
 
 export type Point = { x: number; y: number };
 export type InputIntent = {
@@ -28,7 +28,7 @@ export type ProjectileState = Point & {
 
 export type GameState = {
   room: { width: 960; height: 540; minX: number; maxX: number; minY: number; maxY: number };
-  player: PlayerState; aim: Point; artifacts: ArtifactStacks; weapon: DerivedWeapon;
+  player: PlayerState; aim: Point; artifacts: ArtifactLoadout; weapon: DerivedWeapon;
   reload: ReloadState; projectiles: ProjectileState[]; targets: TargetState[];
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; nextShotAt: number; nextId: number; paused: boolean; rng: () => number;
@@ -51,7 +51,7 @@ const distanceSquared = (a: Point, b: Point) => (a.x - b.x) ** 2 + (a.y - b.y) *
 const overlaps = (a: Point & { radius: number }, b: Point & { radius: number }) => distanceSquared(a, b) < (a.radius + b.radius) ** 2;
 
 export function createGame(rng: () => number = Math.random): GameState {
-  const artifacts: ArtifactStacks = {};
+  const artifacts: ArtifactLoadout = {};
   const weapon = deriveWeapon(artifacts, 0);
   const metrics = createMetrics();
   return {
@@ -73,9 +73,15 @@ export function createGame(rng: () => number = Math.random): GameState {
   };
 }
 
-export function setArtifact(state: GameState, id: ArtifactId, count: number): GameState {
-  const artifacts = { ...state.artifacts, [id]: count };
-  return { ...state, artifacts, weapon: deriveWeapon(artifacts, fireRateBuffAt(state.reload, state.time)) };
+export function setArtifact(state: GameState, id: ArtifactId, enabled: boolean): GameState {
+  const artifacts = { ...state.artifacts };
+  if (enabled) artifacts[id] = true;
+  else delete artifacts[id];
+  return {
+    ...state,
+    artifacts,
+    weapon: deriveWeapon(artifacts, fireRateBuffAt(state.reload, state.time)),
+  };
 }
 
 function canSpawn(state: GameState, point: Point, radius: number): boolean {

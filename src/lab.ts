@@ -86,19 +86,10 @@ export function mountLab(
 		count.textContent = "0";
 		const add = button("+", "step");
 		add.setAttribute("aria-label", `Add ${artifact.name}`);
-		const change = (direction: -1 | 1, shift: boolean) => {
-			const state = access.get();
-			const current = state.artifacts[artifact.id] ?? 0;
-			access.set(
-				setArtifact(
-					state,
-					artifact.id,
-					Math.max(0, current + direction * (shift ? 5 : 1)),
-				),
-			);
-		};
-		remove.addEventListener("click", (event) => change(-1, event.shiftKey));
-		add.addEventListener("click", (event) => change(1, event.shiftKey));
+		const change = (enabled: boolean) =>
+			access.set(setArtifact(access.get(), artifact.id, enabled));
+		remove.addEventListener("click", () => change(false));
+		add.addEventListener("click", () => change(true));
 		stepper.append(remove, count, add);
 		grid.append(card);
 		artifactControls.set(artifact.id, { card, output: count });
@@ -111,18 +102,13 @@ export function mountLab(
 	const giveAll = button("Give all ×1");
 	giveAll.addEventListener("click", () => {
 		let next = access.get();
-		for (const artifact of ARTIFACTS)
-			next = setArtifact(
-				next,
-				artifact.id,
-				(next.artifacts[artifact.id] ?? 0) + 1,
-			);
+		for (const artifact of ARTIFACTS) next = setArtifact(next, artifact.id, true);
 		access.set(next);
 	});
 	const clearArtifacts = button("Clear artifacts");
 	clearArtifacts.addEventListener("click", () => {
 		let next = access.get();
-		for (const artifact of ARTIFACTS) next = setArtifact(next, artifact.id, 0);
+		for (const artifact of ARTIFACTS) next = setArtifact(next, artifact.id, false);
 		access.set(next);
 	});
 	artifactActions.append(giveAll, clearArtifacts);
@@ -202,7 +188,7 @@ export function mountLab(
 
 	return (state) => {
 		for (const artifact of ARTIFACTS) {
-			const count = state.artifacts[artifact.id] ?? 0;
+			const count = state.artifacts[artifact.id] ? 1 : 0;
 			const control = artifactControls.get(artifact.id);
 			if (!control) continue;
 			if (control.output.value !== String(count))
@@ -239,9 +225,7 @@ export function mountLab(
 			"move-speed": `${state.player.speed} px/s`,
 			damage: format.number(state.weapon.damage),
 			rate: `${format.number(state.weapon.fireRate, 2)}/s`,
-			count: String(
-				state.weapon.projectileCount + state.weapon.orbitExtraCopies,
-			),
+			count: String(state.weapon.projectileCount),
 			spread: format.degrees(state.weapon.spread),
 			size: `${format.number(state.weapon.radius)} px`,
 			speed: `${state.weapon.speed} px/s`,

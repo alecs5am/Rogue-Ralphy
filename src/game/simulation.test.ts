@@ -6,10 +6,10 @@ const heading = (velocity: { vx: number; vy: number }) => Math.atan2(velocity.vy
 
 test("one trigger consumes one round and orbiters release toward the current aim", () => {
   let game = createGame(() => 0);
-  game = setArtifact(setArtifact(game, "twinChamber", 2), "haloChamber", 3);
+  game = setArtifact(setArtifact(game, "twinChamber", true), "haloChamber", true);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   expect(game.reload.ammo).toBe(5);
-  expect(game.projectiles).toHaveLength(5);
+  expect(game.projectiles).toHaveLength(2);
   expect(game.projectiles.every((projectile) => projectile.phase === "orbit")).toBe(true);
 
   game = updateGame(game, idle, 0.89, 1.89);
@@ -29,7 +29,7 @@ test("empties six rounds then starts automatic reload", () => {
 });
 
 test("reload intent inside the Deadeye window refills ammo and applies its fire-rate buff", () => {
-  let game = setArtifact(createGame(() => 0), "deadeye", 1);
+  let game = setArtifact(createGame(() => 0), "deadeye", true);
   const baseFireRate = game.weapon.fireRate;
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   game = updateGame(game, { ...idle, reloadPressed: true }, 0, 1.1);
@@ -42,7 +42,7 @@ test("reload intent inside the Deadeye window refills ammo and applies its fire-
 });
 
 test("reload intent outside the Deadeye window leaves normal reload intact", () => {
-  let game = setArtifact(createGame(() => 0), "deadeye", 1);
+  let game = setArtifact(createGame(() => 0), "deadeye", true);
   const baseFireRate = game.weapon.fireRate;
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   game = updateGame(game, { ...idle, reloadPressed: true }, 0, 1.1);
@@ -58,7 +58,7 @@ test("reload intent outside the Deadeye window leaves normal reload intact", () 
 
 test("one homing ricochet reacquires, loses its target, and records two impacts once for accuracy", () => {
   let game = spawnDummy(createGame(() => 0), { x: 600, y: 270 });
-  game = setArtifact(setArtifact(game, "ghostSight", 2), "pinball", 1);
+  game = setArtifact(setArtifact(game, "ghostSight", true), "pinball", true);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   const projectileId = game.projectiles[0]!.id;
   game = { ...game, projectiles: game.projectiles.map((projectile) => ({ ...projectile, x: 573, y: 270, vx: 620, vy: 0 })) };
@@ -85,7 +85,7 @@ test("one homing ricochet reacquires, loses its target, and records two impacts 
 });
 
 test("Pinball wall bounce retains 90% damage and cleanup consumes the depleted projectile", () => {
-  let game = setArtifact(createGame(() => 0), "pinball", 1);
+  let game = setArtifact(createGame(() => 0), "pinball", true);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
 
   game = updateGame(game, idle, 0.63, 1.63);
@@ -127,7 +127,7 @@ test("a fatal hit keeps its coordinates after the chaser is removed", () => {
 
 test("freeze stops a chaser until its status expires", () => {
   let game = spawnChaser(createGame(() => 0), { x: 600, y: 270 });
-  game = setArtifact(game, "coldcaster", 4);
+  game = setArtifact(game, "coldcaster", true);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   game = { ...game, projectiles: game.projectiles.map((projectile) => ({ ...projectile, x: 577, y: 270, vx: 620, vy: 0 })) };
   game = updateGame(game, idle, 0.001, 1.001);
@@ -162,11 +162,23 @@ test("wave uses one RNG sample and creates five non-overlapping chasers", () => 
 test("all artifacts compose on every projectile", () => {
   let game = createGame(() => 0.5);
   for (const id of ["twinChamber", "bigIron", "hollowPoint", "coldcaster", "pinball", "deadeye", "haloChamber", "ghostSight"] as const) {
-    game = setArtifact(game, id, 2);
+    game = setArtifact(game, id, true);
   }
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
-  expect(game.projectiles).toHaveLength(4);
-  expect(game.projectiles.every((projectile) => projectile.damage === 34 && projectile.remainingBounces === 2)).toBe(true);
+  expect(game.projectiles).toHaveLength(2);
+  expect(game.projectiles.every((projectile) => projectile.damage === 27 && projectile.remainingBounces === 1)).toBe(true);
+});
+
+test("taking an owned artifact again cannot strengthen it", () => {
+  let game = setArtifact(createGame(() => 0), "hollowPoint", true);
+  const damage = game.weapon.damage;
+  game = setArtifact(game, "hollowPoint", true);
+  expect(game.weapon.damage).toBe(damage);
+  expect(game.artifacts).toEqual({ hollowPoint: true });
+
+  game = setArtifact(game, "hollowPoint", false);
+  expect(game.weapon.damage).toBe(20);
+  expect(game.artifacts).toEqual({});
 });
 
 test("pause preserves simulation state", () => {

@@ -1,5 +1,5 @@
 export type ArtifactId = "twinChamber" | "bigIron" | "hollowPoint" | "coldcaster" | "pinball" | "deadeye" | "haloChamber" | "ghostSight";
-export type ArtifactStacks = Partial<Record<ArtifactId, number>>;
+export type ArtifactLoadout = Partial<Record<ArtifactId, true>>;
 
 export const BASE_WEAPON = { capacity: 6, damage: 20, fireRate: 3, speed: 620, radius: 5, reloadDuration: 1.5, lifetime: 8 } as const;
 
@@ -8,7 +8,7 @@ export type DerivedWeapon = {
   reloadDuration: number; lifetime: number; projectileCount: number; spread: number;
   freezeChance: number; freezeDuration: number; bounces: number; bounceRetention: number;
   activeWindow: number; activeBuff: number; activeBuffDuration: number;
-  orbitDuration: number; orbitRadius: number; orbitExtraCopies: number;
+  orbitDuration: number; orbitRadius: number;
   homingTurnRate: number; homingRadius: number;
 };
 
@@ -21,47 +21,44 @@ export type ProjectileSpec = {
 
 export type ShotSpec = { roundsConsumed: 1; projectiles: ProjectileSpec[] };
 
-const artifactIds: ArtifactId[] = ["twinChamber", "bigIron", "hollowPoint", "coldcaster", "pinball", "deadeye", "haloChamber", "ghostSight"];
 const degrees = Math.PI / 180;
-const perShotProjectileSafetyBudget = 10_000;
 
-export function deriveWeapon(stacks: ArtifactStacks, fireRateBuff: number): DerivedWeapon {
-  for (const id of artifactIds) {
-    const count = stacks[id];
-    if (count !== undefined && (!Number.isSafeInteger(count) || count < 0)) {
-      throw new Error(`${id} must be a non-negative safe integer`);
-    }
-  }
+function owns(loadout: ArtifactLoadout, id: ArtifactId): boolean {
+  const value = loadout[id];
+  if (value !== undefined && value !== true) throw new Error(`${id} must be true when present`);
+  return value === true;
+}
+
+export function deriveWeapon(loadout: ArtifactLoadout, fireRateBuff: number): DerivedWeapon {
   if (!Number.isFinite(fireRateBuff)) throw new Error("fireRateBuff must be finite");
 
-  const twinChamber = stacks.twinChamber ?? 0;
-  const bigIron = stacks.bigIron ?? 0;
-  const hollowPoint = stacks.hollowPoint ?? 0;
-  const coldcaster = stacks.coldcaster ?? 0;
-  const pinball = stacks.pinball ?? 0;
-  const deadeye = stacks.deadeye ?? 0;
-  const haloChamber = stacks.haloChamber ?? 0;
-  const ghostSight = stacks.ghostSight ?? 0;
+  const twinChamber = owns(loadout, "twinChamber");
+  const bigIron = owns(loadout, "bigIron");
+  const hollowPoint = owns(loadout, "hollowPoint");
+  const coldcaster = owns(loadout, "coldcaster");
+  const pinball = owns(loadout, "pinball");
+  const deadeye = owns(loadout, "deadeye");
+  const haloChamber = owns(loadout, "haloChamber");
+  const ghostSight = owns(loadout, "ghostSight");
 
   const weapon = {
     ...BASE_WEAPON,
     fireRate: BASE_WEAPON.fireRate * (1 + fireRateBuff),
-    radius: BASE_WEAPON.radius * (1 + 0.25 * bigIron),
-    damage: BASE_WEAPON.damage * (1 + 0.35 * hollowPoint),
-    projectileCount: 1 + twinChamber,
-    spread: Math.min(110, 8 * twinChamber) * degrees,
-    freezeChance: Math.min(1, 0.25 * coldcaster),
-    freezeDuration: coldcaster ? 0.8 + 0.25 * coldcaster : 0,
-    bounces: pinball,
+    radius: bigIron ? 6.25 : BASE_WEAPON.radius,
+    damage: hollowPoint ? 27 : BASE_WEAPON.damage,
+    projectileCount: twinChamber ? 2 : 1,
+    spread: twinChamber ? 8 * degrees : 0,
+    freezeChance: coldcaster ? 0.25 : 0,
+    freezeDuration: coldcaster ? 1.05 : 0,
+    bounces: pinball ? 1 : 0,
     bounceRetention: 0.9,
-    activeWindow: deadeye ? Math.min(0.45, 0.12 + 0.03 * (deadeye - 1)) : 0,
-    activeBuff: 0.2 * deadeye,
-    activeBuffDuration: deadeye ? 2 + 0.25 * deadeye : 0,
+    activeWindow: deadeye ? 0.12 : 0,
+    activeBuff: deadeye ? 0.2 : 0,
+    activeBuffDuration: deadeye ? 2.25 : 0,
     orbitDuration: haloChamber ? 0.9 : 0,
-    orbitRadius: haloChamber ? 30 + 10 * (haloChamber - 1) : 0,
-    orbitExtraCopies: Math.max(0, haloChamber - 1),
-    homingTurnRate: Math.PI * ghostSight,
-    homingRadius: 40 * ghostSight,
+    orbitRadius: haloChamber ? 30 : 0,
+    homingTurnRate: ghostSight ? Math.PI : 0,
+    homingRadius: ghostSight ? 40 : 0,
   };
   for (const [name, value] of Object.entries(weapon)) {
     if (!Number.isFinite(value)) throw new Error(`derived ${name} must be finite`);
@@ -70,10 +67,7 @@ export function deriveWeapon(stacks: ArtifactStacks, fireRateBuff: number): Deri
 }
 
 export function buildShot(weapon: DerivedWeapon, aimAngle: number): ShotSpec {
-  const count = weapon.projectileCount + weapon.orbitExtraCopies;
-  if (count > perShotProjectileSafetyBudget) {
-    throw new Error(`projectile count ${count} exceeds the per-shot safety budget of ${perShotProjectileSafetyBudget}`);
-  }
+  const count = weapon.projectileCount;
   const projectiles = Array.from({ length: count }, (_, index) => {
     const orbiting = weapon.orbitDuration > 0;
     const heading = orbiting || weapon.projectileCount === 1
