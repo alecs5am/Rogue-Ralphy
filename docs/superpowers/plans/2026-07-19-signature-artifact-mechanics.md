@@ -45,12 +45,16 @@
 - Modify: `src/game/trigger.test.ts`
 - Modify: `src/game/cylinder.ts`
 - Modify: `src/game/cylinder.test.ts`
+- Modify: `src/game/weapon.ts`
+- Modify: `src/game/weapon.test.ts`
+- Modify: `src/game/projectiles.ts`
+- Modify: `src/game/combat-effects.ts`
 - Modify: `src/game/simulation.ts`
 
 **Interfaces:**
 
-- Produces: Twin convergence metadata, Deadeye echo scheduling, Last Bell pulses, Grave Echo, Fan scheduling, and Dealer cadence.
-- Consumes: `TriggerContext`, `CombatBuild.triggers`, ordered cylinder slots, scheduler, and VFX commands.
+- Produces: Twin convergence metadata, Deadeye echo scheduling, Last Bell pulse metadata, Grave Echo, Fan scheduling, Dealer cadence, numeric schedule ordinals, and explicit emission provenance.
+- Consumes: `TriggerContext`, neutral pre-arrangement projectile values, `CombatBuild.triggers`, ordered cylinder slots, wall-clock scheduler, area phase, and VFX commands.
 
 - [ ] **Step 1: Write one failing signature test per artifact**
 
@@ -69,6 +73,12 @@ const ROW_ONE = [
 
 Explicitly test that the Twin pair follows `±18 × sin(π × progress)`, Tesla adds one center shot at `0.70`, Last Bell selects lowest stable ID, Dealer applies only to the first Fan volley, and Deadeye/Grave copy the finished generation-zero values without copying a Locket orbital.
 
+`TriggerContext` snapshots the muzzle-to-cursor distance in addition to the aim angle; clamp it once to `96–480 px` for Twin convergence. Tesla consumes exactly one `< 0.33` roll only when owned and reuses that result for every Fan volley; it consumes no RNG call when absent. With Twin, its pair shares the exact volley heading and Tesla is a center third. Without Twin, a successful Tesla proc creates the ordinary/Tesla pair at `−4°/+4°`; a failed proc leaves one center shot. Halo phase is separate motion metadata and never changes these headings.
+
+Use numeric `rootIndex` and `localOrdinal` fields for schedule ordering; string lineage IDs remain provenance, not numeric sort keys. Create all nine chronological Fan logical shots first, then append Dealer `aim−35°` and `aim+35°` shots with ordinals `9/10` at first-volley time. Last Bell selects ordinal `0`; a due Locket selects the highest non-bell ordinal (`10` in the all-row case). Dealer's counter increments on accepted roots while owned, persists across reloads and dormant time, fires on transition to three, and resets only with a new laboratory run.
+
+Do not feed already arranged `DerivedWeapon` values back through signature transforms. Add one neutral projectile-base snapshot containing unrelated accepted numeric/behavior traits before Twin, Tesla, Stillwater, Bell, Locket, and Big Iron arrangement transforms. Update legacy `buildShot`/weapon tests so the trigger reducer is the single owner of those multipliers; this prevents Big Iron radius and arrangement damage from being applied twice.
+
 - [ ] **Step 2: Write the all-row expansion boundary test**
 
 ```ts
@@ -81,9 +91,18 @@ test("row-one composition launches eleven generation-zero projectiles for one ca
   }));
   expect(result.projectiles.filter(({ generation }) => generation === 0)).toHaveLength(11);
   expect(result.roundsConsumed).toBe(1);
-  expect(result.scheduled.filter(({ at }) => at > result.now).map(({ at }) => at)).toContain(result.now + 0.28);
+  expect(result.projectiles.filter(({ generation }) => generation === 0).map(({ at }) => at - result.now)).toEqual([
+    0, 0, 0, 0.09, 0.09, 0.09, 0.18, 0.18, 0.18, 0, 0,
+  ]);
+  expect(result.projectiles.filter(({ effectIds }) => effectIds.includes("graveEcho.copy")).map(({ at }) => at)).toContain(result.now + 0.28);
 });
 ```
+
+The `11` consists of three Fan volleys of a Twin pair plus one successful Tesla center (`9`) and exactly two Dealer shots on the first volley (`2`). The nine logical shots use `0.70 × 0.45 = 0.315` base damage; Dealer shots use `0.55` base and receive neither Twin nor Fan scale. The eleven are all scheduled generation-zero entries for one cartridge, even though only five are due at `t=0`.
+
+Deadeye is governed by the consumed `round.echo` snapshot, not by current ownership after the cartridge was charged. For each generation-zero source, schedule Deadeye at `source.at + 0.12` and Grave Echo at `source.at + 0.28`; Fan therefore creates staggered echo batches rather than one collapsed root-time batch. Echoes are generation one, reuse the root and parent lineage, start at the original trigger origin/heading, copy the fully transformed generation-zero speed/radius/damage and compatible motion, penetration, direct-status, Tesla, and bounce traits, then apply only `0.35`/`0.40` damage. They carry no split/other emission payload and cannot copy a Locket orbital or create a fresh lineage. Refunds remain ordinary and cannot revoke an echo already queued.
+
+Keep the effect that created a copy as explicit top-level emission provenance (`artifactId`/`effectId` or one equivalent closed record), separate from inherited `activatedEffectIds`. That list may describe compatible inherited behavior but cannot make generation one eligible to emit or run kill reactions.
 
 - [ ] **Step 3: Run tests and confirm failure**
 
@@ -107,11 +126,13 @@ const fan = hasFan ? [
 
 Create logical-volley projectiles first, add Dealer side shots to the first volley only, apply Stillwater → Last Bell → Locket → Big Iron hooks, then snapshot Deadeye and Grave Echo. Store `dealerCounter`, Last Bell ring schedule, and echo-cartridge consumption explicitly.
 
+Last Bell stores pulse state on the live bell rather than scheduling fake projectiles. Its area pulses occur at the bell's own materialized `bornAt + 0.25/0.50/0.75`, only while it is still alive; exact-time physical removal wins before the area phase. Each pulse uses `25%` of the bell's then-current damage, is secondary area damage, and cannot proc impacts. Locket uses explicit `armed/cadence` state: health above `40` resets it, a due bell-only trigger leaves it armed, and converting a projectile removes that source from Big Iron, Deadeye, and Grave snapshots.
+
 - [ ] **Step 5: Run tests and commit**
 
 ```bash
-bun test src/game/trigger.test.ts src/game/cylinder.test.ts src/game/simulation.test.ts
-git add src/game/trigger.ts src/game/trigger.test.ts src/game/cylinder.ts src/game/cylinder.test.ts src/game/simulation.ts
+bun test src/game/trigger.test.ts src/game/cylinder.test.ts src/game/weapon.test.ts src/game/projectiles.test.ts src/game/combat-effects.test.ts src/game/simulation.test.ts
+git add src/game/trigger.ts src/game/trigger.test.ts src/game/cylinder.ts src/game/cylinder.test.ts src/game/weapon.ts src/game/weapon.test.ts src/game/projectiles.ts src/game/combat-effects.ts src/game/simulation.ts
 git commit -m "feat: add signature trigger artifacts"
 ```
 
