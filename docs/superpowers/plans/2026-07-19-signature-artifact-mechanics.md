@@ -348,13 +348,20 @@ git commit -m "feat: resolve bounded impact emissions"
 - Create: `src/game/statuses.ts`
 - Create: `src/game/statuses.test.ts`
 - Modify: `src/game/combat-effects.ts`
+- Modify: `src/game/combat-effects.test.ts`
 - Modify: `src/game/simulation.ts`
+- Modify: `src/game/simulation.test.ts`
 - Modify: `src/game/metrics.ts`
+- Modify: `src/game/metrics.test.ts`
+- Modify: `src/game/motions.ts`
+- Modify: `src/game/motions.test.ts`
+- Modify: `src/game/combat-build.ts`
+- Modify: `src/game/combat-build.test.ts`
 
 **Interfaces:**
 
-- Produces: `TargetEffects`, `applyDirectStatuses`, `advanceStatuses`, `selectBrandTarget`, and status VFX commands.
-- Consumes: sorted direct impacts, source provenance, area damage, and fixed time.
+- Produces: the canonical extended `TargetEffects`, `applyDirectStatuses`, `advanceStatuses`, one global Wanted Brand, Snare areas, ordered kill reactions, `selectBrandTarget`, and bounded status VFX commands.
+- Consumes: Task-3 sorted direct impacts and `KillContext`, source provenance/eligibility, area damage, fixed time, and Task-2 steering input.
 
 - [ ] **Step 1: Write six failing signature tests**
 
@@ -371,6 +378,12 @@ const ROW_FOUR = [
 
 Cover exact deadlines, stronger-burn refresh preserving an earlier next tick, generation-one completing freeze without shatter, generation-zero consuming freeze, brand nonreplacement/jump, fifth Ledger notch, root-scoped Snare, and Hex allow/exclusion lists.
 
+Deadlines are active only while `now < deadline`; at equality they expire. Periodic work is due at `nextTickAt <= now`. Direct status reducers run in catalog phase order `Hollow 20 → Chill 30 → Burn 31 → Brand 32 → Ledger 33 → Snare 34 → Hex 35`; Hex therefore observes the source target's post-hit chill/burn. Phase-5 reapplication precedes phase-7 ticks. Drain every crossed burn/pool tick at its scheduled timestamp, globally sorted by timestamp then stable effect/root/target identity. A newly applied burn starts at `now + 0.4`; Snare starts at `now + 0.1` and its terminal tick at `expiresAt` is resolved before pruning to produce exactly fifteen ticks.
+
+Coldcaster is deterministic: remove the legacy `0.25` freeze chance and consume no freeze RNG. The third chill stack freezes without shattering. Only a later generation-zero direct hit on an already frozen target consumes it, queues four next-step shards, and still applies that hit's ordinary new chill stack. Generation-one direct hits may add chill and complete a freeze but cannot consume it or emit shards.
+
+Generation zero and one may apply inherited direct chill, burn, Brand, Ledger, Snare-first-hit, and Hex cadence. Only generation zero may steer through Brand, consume freeze, or queue shatter. Generation-one kill contexts are never reactive-eligible for Cinder even at depth zero; keep generation/reactive eligibility separate from `killReactionDepth`.
+
 - [ ] **Step 2: Write simultaneous-order and slow-composition tests**
 
 ```ts
@@ -386,6 +399,10 @@ test("overlapping slows choose the smallest multiplier", () => {
 });
 ```
 
+Keep exactly one runtime Wanted Brand `{ targetId, expiresAt }`, one global Hex counter, root-scoped Snare creation history, and per-`effectId + rootTriggerId` kill-reaction history. Brand is not duplicated in target effects. It persists through phase 8 even when its target dies earlier in the step, then jumps from the death position to the nearest live target at inclusive `240 px` by distance and stable ID while preserving expiry. Motion priority remains relay → retained Ghost → Brand → ordinary Ghost, using the highest steering cap.
+
+Apply direct statuses to a target even when that hit is lethal, then capture/remove it in phase 8. A Cinder hit may therefore create a burn-backed ring and a lethal Brand hit may jump. Record each target kill once. Cinder reacts once per eligible `effectId + rootTriggerId`, uses the victim burn's stored origin power, creates `source: "reactive"` depth-one damage, and cannot recursively trigger Cinder/Harvester/Bonanza. Prune root activation history only when no live/scheduled/pending/projectile/area/status record references it.
+
 - [ ] **Step 3: Run tests and confirm failure**
 
 Run: `bun test src/game/statuses.test.ts src/game/metrics.test.ts`
@@ -398,8 +415,11 @@ Expected: FAIL because target-effect reducers do not exist.
 export type TargetEffects = Readonly<{
   chill: Readonly<{ count: 0 | 1 | 2; expiresAt: number }>;
   frozenUntil: number;
-  burn?: Readonly<{ potency: number; remainingTicks: number; nextTickAt: number; originPower: number; rootTriggerId: string }>;
-  hollowPoint?: Readonly<{ damage: number; expiresAt: number; rootTriggerId: string }>;
+  burn?: Readonly<{
+    potency: number; remainingTicks: number; nextTickAt: number; originPower: number;
+    rootTriggerId: string; lineageId?: string; projectileId?: string; reactiveEligible: boolean;
+  }>;
+  hollowPoint?: TargetHollowPoint;
   ledger: Readonly<{ count: number; expiresAt: number }>;
   slows: readonly Readonly<{ effectId: string; multiplier: number; until: number }>[];
 }>;
@@ -407,11 +427,19 @@ export type TargetEffects = Readonly<{
 
 Status damage records `source: "status"`; pools/lines/rings record `area` or `reactive`. Apply kill reactions in phase 8 once per `effectId/rootTriggerId` and mark their damage depth one.
 
+Store full provenance on burn and Snare records. At every derivation boundary, `originPower` is the applying direct hit's current damage: burn/Snare store it, Ledger uses the fifth hit, and Cinder retains the burn source power. A stronger burn replaces potency and provenance; equal/weaker reapplication keeps the stronger provenance, resets four ticks, and preserves any earlier next tick. Hex copies that provenance and shared refresh semantics.
+
+Chill, freeze, burn, Task-3 Hollow, Ledger, and durable Hex slows live on targets. Snare is a geometric root-scoped `AreaState` with center/radius/damage/nextTickAt/origin/full provenance. Its `0.50` slow is transient membership, combined at movement time with durable Hex slows by selecting the smallest multiplier. Ledger line and Cinder ring are immediate area/reactive requests plus VFX; Hex pulse changes status only. Secondary damage never invokes direct-impact reducers.
+
+Hex copies chill count/deadline and burn potency/remaining ticks to other live targets within inclusive `80 px`, but never Brand, Hollow, Ledger, or freeze. It slows chasers only. A fresh copied burn schedules `now + 0.4`; existing destinations keep maximum count/potency, never shorten deadlines/tick count, and retain an earlier tick. Widow's Ledger guarantees its `120%` area-classified damage only to the living fifth-hit target from Ralphy's current position and emits line VFX; it is not an unspecified multi-target beam.
+
+Validate every finite status deadline/potency/counter and Snare's `40 px`, `1.5 s`, `10 Hz` geometry even though Snare compiles as an impact rule. Derive live bounds for status/area/VFX/root ledgers and upsert persistent status VFX instead of appending on refresh. Burn ticks are `status`, Ledger/Snare are `area`, Cinder ring is `reactive`, and shatter shards are generation-one direct; all affect DPS, but only each projectile's own direct contact affects accuracy.
+
 - [ ] **Step 5: Run tests and commit**
 
 ```bash
-bun test src/game/statuses.test.ts src/game/impacts.test.ts src/game/metrics.test.ts src/game/simulation.test.ts
-git add src/game/statuses.ts src/game/statuses.test.ts src/game/combat-effects.ts src/game/simulation.ts src/game/metrics.ts
+bun test src/game/statuses.test.ts src/game/impacts.test.ts src/game/combat-effects.test.ts src/game/motions.test.ts src/game/metrics.test.ts src/game/simulation.test.ts src/game/combat-build.test.ts
+git add src/game/statuses.ts src/game/statuses.test.ts src/game/combat-effects.ts src/game/combat-effects.test.ts src/game/simulation.ts src/game/simulation.test.ts src/game/metrics.ts src/game/metrics.test.ts src/game/motions.ts src/game/motions.test.ts src/game/combat-build.ts src/game/combat-build.test.ts
 git commit -m "feat: apply signature target statuses"
 ```
 
