@@ -21,6 +21,7 @@ export const ASSET_PATHS = {
 	heartEmpty: "/assets/generated/ui/heart-empty.png",
 	ammoLoaded: "/assets/generated/ui/ammo-loaded.png",
 	ammoEmpty: "/assets/generated/ui/ammo-empty.png",
+	ammoEcho: "/assets/generated/ui/ammo-echo.png",
 	coin: "/assets/generated/ui/coin.png",
 	bomb: "/assets/generated/ui/bomb.png",
 	key: "/assets/generated/ui/key.png",

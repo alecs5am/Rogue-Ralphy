@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { ammoCount } from "./cylinder";
 import { ARTIFACT_CATALOG } from "./artifacts";
 import { clampResource, clearTargets, createGame, resetLab, setArtifact, setArtifactLoadout, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
 import { ROOM_PROPS } from "./room";
@@ -65,12 +66,12 @@ test("dead player ignores intent while projectiles and targets keep updating", (
   game = updateGame(game, idle, 0, 2);
 
   const position = { x: game.player.x, y: game.player.y };
-  const ammo = game.reload.ammo;
+  const ammo = ammoCount(game.cylinder);
   const projectileX = game.projectiles[0]!.x;
   game = updateGame(game, { ...idle, moveX: 1, firing: true, reloadPressed: true }, 0.1, 2.1);
 
   expect(game.player).toMatchObject({ ...position, health: 0, vx: 0, vy: 0 });
-  expect(game.reload.ammo).toBe(ammo);
+  expect(ammoCount(game.cylinder)).toBe(ammo);
   expect(game.lastShotAt).toBe(1);
   expect(game.diedAt).toBe(2);
   expect(game.projectiles[0]!.x).not.toBe(projectileX);
@@ -121,7 +122,7 @@ test("Tesla Shotgun Spectral Halo and Ghost compose in one deterministic trigger
   for (let tick = 0; tick < 0.5 / STEP; tick += 1) afterBloom = updateGame(afterBloom, aim, STEP, afterBloom.time + STEP);
 
   expect(afterTrigger.projectiles).toHaveLength(2);
-  expect(afterTrigger.reload.ammo).toBe(5);
+  expect(ammoCount(afterTrigger.cylinder)).toBe(5);
   expect(afterBloom.projectiles.length).toBeGreaterThanOrEqual(8);
   expect(afterBloom.projectiles.every(({ behaviors, penetration }) =>
     behaviors.split === undefined && behaviors.tesla !== undefined && behaviors.homing !== undefined &&
@@ -247,7 +248,7 @@ test("Shotgun splits at the exact travelled distance without consuming another c
       && projectile.radius === 2.75
       && projectile.behaviors.split === undefined
   )).toBe(true);
-  expect(game.reload.ammo).toBe(5);
+  expect(ammoCount(game.cylinder)).toBe(5);
   expect(game.metrics).toMatchObject({ triggers: 1, projectiles: 9 });
 
   game = updateGame(game, idle, 129 / game.weapon.speed, game.time + 129 / game.weapon.speed);
@@ -394,7 +395,7 @@ test("one trigger consumes one round and Halo projectiles keep spiraling", () =>
   let game = createGame(() => 0);
   game = setArtifact(setArtifact(game, "twinChamber", true), "haloChamber", true);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
-  expect(game.reload.ammo).toBe(5);
+  expect(ammoCount(game.cylinder)).toBe(5);
   expect(game.projectiles).toHaveLength(2);
   const origins = game.projectiles.map((projectile) => projectile.spiralOrigin);
 
@@ -411,8 +412,8 @@ test("empties six rounds then starts automatic reload", () => {
     game = updateGame(game, { ...idle, firing: true }, 1 / 60, shot);
     game = updateGame(game, idle, 0.34, shot + 0.34);
   }
-  expect(game.reload.ammo).toBe(0);
-  expect(game.reload.reloading).toBe(true);
+  expect(ammoCount(game.cylinder)).toBe(0);
+  expect(game.cylinder.reloading).toBe(true);
 });
 
 test("reload intent inside the Deadeye window refills ammo and applies its fire-rate buff", () => {
@@ -420,11 +421,12 @@ test("reload intent inside the Deadeye window refills ammo and applies its fire-
   const baseFireRate = game.weapon.fireRate;
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   game = updateGame(game, { ...idle, reloadPressed: true }, 0, 1.1);
-  const activeAt = (game.reload.sweetStart + game.reload.sweetEnd) / 2;
+  const activeAt = (game.cylinder.sweetStart + game.cylinder.sweetEnd) / 2;
 
   game = updateGame(game, { ...idle, reloadPressed: true }, 0, activeAt);
 
-  expect(game.reload).toMatchObject({ ammo: 6, reloading: false, fireRateBuff: 0.2 });
+  expect(game.cylinder).toMatchObject({ reloading: false, fireRateBuff: 0.2 });
+  expect(ammoCount(game.cylinder)).toBe(6);
   expect(game.weapon.fireRate).toBeCloseTo(baseFireRate * 1.2);
 });
 
@@ -433,13 +435,15 @@ test("reload intent outside the Deadeye window leaves normal reload intact", () 
   const baseFireRate = game.weapon.fireRate;
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   game = updateGame(game, { ...idle, reloadPressed: true }, 0, 1.1);
-  const completesAt = game.reload.completesAt;
+  const completesAt = game.cylinder.completesAt;
 
-  game = updateGame(game, { ...idle, reloadPressed: true }, 0, game.reload.sweetStart - 0.01);
-  expect(game.reload).toMatchObject({ ammo: 5, reloading: true, completesAt, fireRateBuff: 0 });
+  game = updateGame(game, { ...idle, reloadPressed: true }, 0, game.cylinder.sweetStart - 0.01);
+  expect(game.cylinder).toMatchObject({ reloading: true, completesAt, fireRateBuff: 0 });
+  expect(ammoCount(game.cylinder)).toBe(5);
 
   game = updateGame(game, idle, 0, completesAt);
-  expect(game.reload).toMatchObject({ ammo: 6, reloading: false, fireRateBuff: 0 });
+  expect(game.cylinder).toMatchObject({ reloading: false, fireRateBuff: 0 });
+  expect(ammoCount(game.cylinder)).toBe(6);
   expect(game.weapon.fireRate).toBe(baseFireRate);
 });
 
@@ -761,7 +765,7 @@ test("taking an owned artifact again cannot strengthen it", () => {
 test("pause preserves simulation state", () => {
   const game = createGame(() => 0);
   const paused = updateGame(game, { ...idle, moveX: 1, firing: true, paused: true }, 2, 100);
-  expect(paused).toMatchObject({ player: game.player, reload: game.reload, metrics: game.metrics, time: game.time, paused: true });
+  expect(paused).toMatchObject({ player: game.player, cylinder: game.cylinder, metrics: game.metrics, time: game.time, paused: true });
   expect(paused.projectiles).toEqual([]);
   expect(updateGame(paused, { ...idle, paused: true }, 2, 102)).toBe(paused);
 });

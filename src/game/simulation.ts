@@ -1,5 +1,5 @@
 import { createMetrics, recordDamage, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
-import { advanceReload, attemptActiveReload, createReloadState, fireRateBuffAt, startReload, type ReloadState } from "./reload";
+import { advanceReload, ammoCount, attemptActiveReload, consumeRound, createCylinder, fireRateBuffAt, startReload, type CylinderState } from "./cylinder";
 import { compileCombatBuild, type CombatBuild } from "./combat-build";
 import { buildShot, deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon, type ProjectileSpec } from "./weapon";
 import { advanceTrajectory, buildTeslaLinks, splitProjectile, synchronizeSpiralState, type ProjectileState, type TeslaLink } from "./projectiles";
@@ -32,7 +32,7 @@ export type GameState = {
   room: { width: number; height: number; minX: number; maxX: number; minY: number; maxY: number };
   player: PlayerState; aim: Point; artifacts: ArtifactLoadout; build: CombatBuild; weapon: DerivedWeapon;
   resources: Resources;
-  reload: ReloadState; projectiles: ProjectileState[]; targets: TargetState[];
+  cylinder: CylinderState; projectiles: ProjectileState[]; targets: TargetState[];
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; nextShotAt: number; nextId: number; paused: boolean; rng: () => number;
@@ -100,7 +100,7 @@ export function createGame(rng: () => number = Math.random): GameState {
     build,
     resources: { coins: 0, bombs: 0, keys: 0 },
     weapon,
-    reload: createReloadState(weapon),
+    cylinder: createCylinder(weapon.capacity),
     projectiles: [],
     targets: [],
     teslaLinks: [],
@@ -133,7 +133,7 @@ export function setArtifactLoadout(state: GameState, loadout: ArtifactLoadout): 
     ...state,
     artifacts,
     build,
-    weapon: deriveWeapon(build, fireRateBuffAt(state.reload, state.time)),
+    weapon: deriveWeapon(build, fireRateBuffAt(state.cylinder, state.time)),
   };
 }
 
@@ -311,13 +311,13 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   let lastHurtAt = state.lastHurtAt;
   let diedAt = state.diedAt;
   const canAct = diedAt === null && state.player.health > 0;
-  let reload = advanceReload(state.reload, now);
-  if (now >= reload.buffUntil && reload.fireRateBuff !== 0) reload = { ...reload, fireRateBuff: 0, buffUntil: 0 };
-  let weapon = deriveWeapon(state.build, fireRateBuffAt(reload, now));
+  let cylinder = advanceReload(state.cylinder, now);
+  if (now >= cylinder.buffUntil && cylinder.fireRateBuff !== 0) cylinder = { ...cylinder, fireRateBuff: 0, buffUntil: 0 };
+  let weapon = deriveWeapon(state.build, fireRateBuffAt(cylinder, now));
   if (canAct && input.reloadPressed) {
-    if (reload.reloading && weapon.activeWindow > 0) reload = attemptActiveReload(reload, weapon, now);
-    else if (!reload.reloading && reload.ammo < reload.capacity) reload = startReload(reload, weapon, now);
-    weapon = deriveWeapon(state.build, fireRateBuffAt(reload, now));
+    if (cylinder.reloading && weapon.activeWindow > 0) cylinder = attemptActiveReload(cylinder, weapon, now);
+    else if (!cylinder.reloading && ammoCount(cylinder) < weapon.capacity) cylinder = startReload(cylinder, weapon, now, "manual");
+    weapon = deriveWeapon(state.build, fireRateBuffAt(cylinder, now));
   }
 
   const magnitude = Math.hypot(input.moveX, input.moveY);
@@ -348,18 +348,18 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   let nextId = state.nextId;
   let nextShotAt = state.nextShotAt;
 
-  if (canAct && input.firing && !reload.reloading && reload.ammo > 0 && now >= nextShotAt) {
+  if (canAct && input.firing && !cylinder.reloading && ammoCount(cylinder) > 0 && now >= nextShotAt) {
     const aimAngle = Math.atan2(input.aimY - player.y, input.aimX - player.x);
     const shot = buildShot(weapon, aimAngle, state.rng, `trigger-${nextId}`);
     if (shot.projectiles.length > 0) lastShotAt = now;
     const firingState = { ...state, player };
     const created = shot.projectiles.map((spec) => makeProjectile(spec, firingState, aimAngle, now, nextId++));
     projectiles = [...projectiles, ...created];
-    reload = { ...reload, ammo: reload.ammo - shot.roundsConsumed };
+    cylinder = consumeRound(cylinder).state;
     metrics = recordTrigger(metrics);
     for (const _ of created) metrics = recordProjectile(metrics);
     nextShotAt = now + 1 / weapon.fireRate;
-    if (reload.ammo === 0) reload = startReload(reload, weapon, now);
+    if (ammoCount(cylinder) === 0) cylinder = startReload(cylinder, weapon, now, "automatic");
   }
 
   const projectileStarts = new Map(projectiles.map((projectile) => [projectile.id, { x: projectile.x, y: projectile.y }]));
@@ -553,7 +553,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   metrics = retainTargetMetrics(metrics, targets.map((target) => target.id));
   const telemetry = summarizeMetrics(metrics, now);
   return {
-    ...state, player, aim, weapon, reload, projectiles: survivingProjectiles, targets, teslaLinks, teslaCooldowns, metrics, telemetry,
+    ...state, player, aim, weapon, cylinder, projectiles: survivingProjectiles, targets, teslaLinks, teslaCooldowns, metrics, telemetry,
     time: now, nextShotAt, nextId, paused: false, lastShotAt, lastHurtAt, diedAt,
   };
 }

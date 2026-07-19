@@ -64,9 +64,9 @@ function timedFrame(ageSeconds: number, durations: readonly number[], loop: bool
 }
 
 function reloadProgress(state: GameState): number {
-  const duration = state.reload.completesAt - state.reload.startedAt;
-  if (duration <= 0) return state.time >= state.reload.completesAt ? 1 : 0;
-  return Math.max(0, Math.min(1, (state.time - state.reload.startedAt) / duration));
+  const duration = state.cylinder.completesAt - state.cylinder.startedAt;
+  if (duration <= 0) return state.time >= state.cylinder.completesAt ? 1 : 0;
+  return Math.max(0, Math.min(1, (state.time - state.cylinder.startedAt) / duration));
 }
 
 function requireFinite(value: number | null, name: string): void {
@@ -83,15 +83,15 @@ export function selectRalphyPose(state: GameState, reducedMotion: boolean): Ralp
   requireFinite(state.lastShotAt, "lastShotAt");
   requireFinite(state.lastHurtAt, "lastHurtAt");
   requireFinite(state.diedAt, "diedAt");
-  if (state.reload.reloading) {
-    if (!Number.isFinite(state.reload.startedAt)) throw new Error("reload.startedAt must be finite when reloading");
-    if (!Number.isFinite(state.reload.completesAt)) throw new Error("reload.completesAt must be finite when reloading");
+  if (state.cylinder.reloading) {
+    if (!Number.isFinite(state.cylinder.startedAt)) throw new Error("cylinder.startedAt must be finite when reloading");
+    if (!Number.isFinite(state.cylinder.completesAt)) throw new Error("cylinder.completesAt must be finite when reloading");
   }
 
   let stateName: AnimationState;
   if (state.diedAt !== null) stateName = "death";
   else if (state.lastHurtAt !== null && isYoungerThan(state.time, state.lastHurtAt, 0.18)) stateName = "hurt";
-  else if (state.reload.reloading) stateName = "reload";
+  else if (state.cylinder.reloading) stateName = "reload";
   else if (state.lastShotAt !== null && isYoungerThan(state.time, state.lastShotAt, 0.16)) stateName = "fire";
   else if (!state.paused && Math.hypot(state.player.vx, state.player.vy) > 0) stateName = "move";
   else stateName = "idle";

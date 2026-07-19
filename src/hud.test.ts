@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { heartStateAt, formatResource, setAttributeIfChanged, setPropertyIfChanged } from "./hud";
+import { ASSET_PATHS } from "./assets";
+import { heartStateAt, formatResource, ammoStateAt, setAttributeIfChanged, setPropertyIfChanged } from "./hud";
 
 const hearts = (health: number) => Array.from({ length: 5 }, (_, index) => heartStateAt(health, index));
 
@@ -12,6 +13,25 @@ test("projects full half and empty hearts at HUD health boundaries", () => {
 
 test("formats bounded HUD resources with two digits", () => {
 	expect([-1, 0, 7.9, 99, 100].map(formatResource)).toEqual(["00", "00", "07", "99", "99"]);
+});
+
+test("projects ordered cylinder slots instead of a numeric ammo prefix", () => {
+	const slots = [
+		{ loaded: false, echo: false },
+		{ loaded: true, echo: false },
+		{ loaded: false, echo: false },
+		{ loaded: true, echo: true },
+	] as const;
+	expect(slots.map(ammoStateAt)).toEqual([
+		{ src: ASSET_PATHS.ammoEmpty, alt: "Empty cartridge slot" },
+		{ src: ASSET_PATHS.ammoLoaded, alt: "Loaded cartridge" },
+		{ src: ASSET_PATHS.ammoEmpty, alt: "Empty cartridge slot" },
+		{ src: ASSET_PATHS.ammoLoaded, alt: "Loaded echo cartridge" },
+	]);
+});
+
+test("registers the final generated echo-ammo PNG path", () => {
+	expect(ASSET_PATHS.ammoEcho).toBe("/assets/generated/ui/ammo-echo.png");
 });
 
 test("HUD projection skips unchanged DOM property writes", () => {

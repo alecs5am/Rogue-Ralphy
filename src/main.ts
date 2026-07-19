@@ -154,39 +154,39 @@ async function start(): Promise<void> {
 		updateLab(state);
 		updateHud(state);
 		pauseLabel.hidden = !state.paused;
-		quickdraw.hidden = state.time >= state.reload.buffUntil;
+		quickdraw.hidden = state.time >= state.cylinder.buffUntil;
 		const activeReloadStartedAt =
-			state.reload.buffUntil - state.weapon.activeBuffDuration;
+			state.cylinder.buffUntil - state.weapon.activeBuffDuration;
 		const reloadSuccess =
-			state.reload.fireRateBuff > 0 &&
+			state.cylinder.fireRateBuff > 0 &&
 			state.time >= activeReloadStartedAt &&
 			state.time < activeReloadStartedAt + 0.22;
-		reloadBar.hidden = !state.reload.reloading && !reloadSuccess;
+		reloadBar.hidden = !state.cylinder.reloading && !reloadSuccess;
 		reloadBar.classList.toggle("success", reloadSuccess);
 		reloadLabel.textContent = reloadSuccess ? "QUICKDRAW" : "RELOADING";
 		if (reloadSuccess) {
 			reloadFill.style.width = "100%";
 			reloadZone.hidden = true;
 			reloadBar.classList.remove("in-zone");
-		} else if (state.reload.reloading) {
-			const duration = state.reload.completesAt - state.reload.startedAt;
+		} else if (state.cylinder.reloading) {
+			const duration = state.cylinder.completesAt - state.cylinder.startedAt;
 			const progress = Math.max(
 				0,
-				Math.min(1, (state.time - state.reload.startedAt) / duration),
+				Math.min(1, (state.time - state.cylinder.startedAt) / duration),
 			);
 			reloadFill.style.width = `${progress * 100}%`;
 			const zoneStart =
-				(state.reload.sweetStart - state.reload.startedAt) / duration;
+				(state.cylinder.sweetStart - state.cylinder.startedAt) / duration;
 			const zoneWidth =
-				(state.reload.sweetEnd - state.reload.sweetStart) / duration;
+				(state.cylinder.sweetEnd - state.cylinder.sweetStart) / duration;
 			reloadZone.style.left = `${zoneStart * 100}%`;
 			reloadZone.style.width = `${zoneWidth * 100}%`;
 			reloadZone.hidden = state.weapon.activeWindow === 0;
 			reloadBar.classList.toggle(
 				"in-zone",
 				state.weapon.activeWindow > 0 &&
-					state.time >= state.reload.sweetStart &&
-					state.time <= state.reload.sweetEnd,
+					state.time >= state.cylinder.sweetStart &&
+					state.time <= state.cylinder.sweetEnd,
 			);
 		}
 		requestAnimationFrame(frame);

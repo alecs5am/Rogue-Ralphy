@@ -1,5 +1,6 @@
 import { ASSET_PATHS, type AssetKey } from "./assets";
 import { ARTIFACT_CATALOG } from "./game/artifacts";
+import { ammoCount } from "./game/cylinder";
 import { resetMetrics, summarizeMetrics } from "./game/metrics";
 import {
 	clearTargets,
@@ -182,14 +183,14 @@ export function mountLab(
 			);
 		}
 		const telemetry = state.telemetry;
-		const reloadProgress = state.reload.reloading
+		const reloadProgress = state.cylinder.reloading
 			? Math.min(
 					1,
-					(state.time - state.reload.startedAt) /
-						(state.reload.completesAt - state.reload.startedAt),
+					(state.time - state.cylinder.startedAt) /
+						(state.cylinder.completesAt - state.cylinder.startedAt),
 				)
 			: 0;
-		const buffRemaining = Math.max(0, state.reload.buffUntil - state.time);
+		const buffRemaining = Math.max(0, state.cylinder.buffUntil - state.time);
 		const stats: Record<string, string> = {
 			"rolling-dps": format.number(telemetry.rollingDps),
 			"peak-dps": format.number(telemetry.peakDps),
@@ -203,10 +204,10 @@ export function mountLab(
 			kills: String(telemetry.kills),
 			active: String(state.projectiles.length),
 			health: `${state.player.health}/${state.player.maxHealth}`,
-			ammo: `${state.reload.ammo}/${state.reload.capacity}`,
+			ammo: `${ammoCount(state.cylinder)}/${state.weapon.capacity}`,
 			"reload-state": state.paused
 				? `PAUSED · ${state.weapon.reloadDuration}s`
-				: state.reload.reloading
+				: state.cylinder.reloading
 					? `${Math.round(reloadProgress * 100)}% · ${state.weapon.reloadDuration}s`
 					: `READY · ${state.weapon.reloadDuration}s`,
 			"move-speed": `${state.player.speed} px/s`,

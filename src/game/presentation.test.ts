@@ -43,12 +43,12 @@ test("honors fire reload hurt death boundaries and precedence", () => {
   expect(pose({ lastHurtAt: 1 }, 1.179)).toMatchObject({ state: "hurt", frame: { row: 4 } });
   expect(pose({ lastHurtAt: 1 }, 1.18).state).toBe("idle");
 
-  const reload = { ...base.reload, reloading: true, startedAt: 1, completesAt: 2.5 };
-  expect(pose({ reload }, 1).frame).toMatchObject({ row: 3, col: 0 });
-  expect(pose({ reload }, 1.5).frame).toMatchObject({ row: 3, col: 1 });
-  expect(pose({ reload }, 2).frame).toMatchObject({ row: 3, col: 2 });
+  const cylinder = { ...base.cylinder, reloading: true, startedAt: 1, completesAt: 2.5 };
+  expect(pose({ cylinder }, 1).frame).toMatchObject({ row: 3, col: 0 });
+  expect(pose({ cylinder }, 1.5).frame).toMatchObject({ row: 3, col: 1 });
+  expect(pose({ cylinder }, 2).frame).toMatchObject({ row: 3, col: 2 });
 
-  const all = { reload, lastShotAt: 2, lastHurtAt: 2, diedAt: 2 };
+  const all = { cylinder, lastShotAt: 2, lastHurtAt: 2, diedAt: 2 };
   expect(pose(all, 2).state).toBe("death");
   expect(pose({ ...all, diedAt: null }, 2).state).toBe("hurt");
   expect(pose({ ...all, diedAt: null, lastHurtAt: null }, 2).state).toBe("reload");
@@ -104,9 +104,9 @@ test("returns restrained deterministic fire and reload transforms", () => {
   expect(selectRalphyPose({ ...fire, lastShotAt: 1 }, false)).toMatchObject({ bodyRecoil: 3, gunRecoil: 6, gunSpin: 0 });
   expect(selectRalphyPose({ ...fire, time: 1.06, lastShotAt: 1 }, false)).toMatchObject({ bodyRecoil: 0, gunRecoil: 2 });
 
-  const reload = { ...fire.reload, reloading: true, startedAt: 0, completesAt: 1.5 };
-  expect(selectRalphyPose({ ...fire, time: 0.75, reload }, false).gunSpin).toBe(Math.PI);
-  expect(selectRalphyPose({ ...fire, time: 0.75, reload }, true).gunSpin).toBe(0);
+  const cylinder = { ...fire.cylinder, reloading: true, startedAt: 0, completesAt: 1.5 };
+  expect(selectRalphyPose({ ...fire, time: 0.75, cylinder }, false).gunSpin).toBe(Math.PI);
+  expect(selectRalphyPose({ ...fire, time: 0.75, cylinder }, true).gunSpin).toBe(0);
 });
 
 test("pause suppresses move and every returned pose stays finite and in bounds", () => {
@@ -115,7 +115,7 @@ test("pause suppresses move and every returned pose stays finite and in bounds",
     { ...base, time: 0.5 },
     { ...base, time: 0.5, player: { ...base.player, vx: 1 } },
     { ...base, time: 0.5, lastShotAt: 0.45 },
-    { ...base, time: 0.5, reload: { ...base.reload, reloading: true, startedAt: 0, completesAt: 1.5 } },
+    { ...base, time: 0.5, cylinder: { ...base.cylinder, reloading: true, startedAt: 0, completesAt: 1.5 } },
     { ...base, time: 0.5, lastHurtAt: 0.45 },
     { ...base, time: 0.5, diedAt: 0 },
   ];
@@ -142,12 +142,12 @@ test("rejects nonfinite presentation clocks", () => {
     .toThrow("diedAt must be finite when present");
   expect(() => selectRalphyPose({
     ...base,
-    reload: { ...base.reload, reloading: true, startedAt: Number.NaN },
-  }, false)).toThrow("reload.startedAt must be finite when reloading");
+    cylinder: { ...base.cylinder, reloading: true, startedAt: Number.NaN },
+  }, false)).toThrow("cylinder.startedAt must be finite when reloading");
   expect(() => selectRalphyPose({
     ...base,
-    reload: { ...base.reload, reloading: true, completesAt: Number.POSITIVE_INFINITY },
-  }, false)).toThrow("reload.completesAt must be finite when reloading");
+    cylinder: { ...base.cylinder, reloading: true, completesAt: Number.POSITIVE_INFINITY },
+  }, false)).toThrow("cylinder.completesAt must be finite when reloading");
 });
 
 test("declared atlas clips are valid", () => {

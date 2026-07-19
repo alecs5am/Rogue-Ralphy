@@ -1,4 +1,5 @@
 import { ASSET_PATHS } from "./assets";
+import type { CylinderSlot } from "./game/cylinder";
 import { clampResource, type GameState } from "./game/simulation";
 
 let hearts: HTMLImageElement[] = [];
@@ -10,6 +11,9 @@ export const heartStateAt = (health: number, index: number): "full" | "half" | "
 	return remaining >= 20 ? "full" : remaining >= 10 ? "half" : "empty";
 };
 export const formatResource = (value: number): string => String(clampResource(value)).padStart(2, "0");
+export const ammoStateAt = (slot: CylinderSlot): { src: string; alt: string } => slot.loaded
+	? { src: ASSET_PATHS.ammoLoaded, alt: slot.echo ? "Loaded echo cartridge" : "Loaded cartridge" }
+	: { src: ASSET_PATHS.ammoEmpty, alt: "Empty cartridge slot" };
 export function setPropertyIfChanged<T, K extends keyof T>(target: T, key: K, value: T[K]): void {
 	if (target[key] !== value) target[key] = value;
 }
@@ -82,9 +86,9 @@ export function updateHud(state: GameState): void {
 		setPropertyIfChanged(icon, "alt", alt);
 	}
 	for (const [index, icon] of ammo.entries()) {
-		const loaded = index < state.reload.ammo;
-		setAttributeIfChanged(icon, "src", loaded ? ASSET_PATHS.ammoLoaded : ASSET_PATHS.ammoEmpty);
-		setPropertyIfChanged(icon, "alt", loaded ? "Loaded cartridge" : "Empty cartridge slot");
+		const projection = ammoStateAt(state.cylinder.slots[index]!);
+		setAttributeIfChanged(icon, "src", projection.src);
+		setPropertyIfChanged(icon, "alt", projection.alt);
 	}
 	if (!resources) return;
 	for (const key of ["coins", "bombs", "keys"] as const)
