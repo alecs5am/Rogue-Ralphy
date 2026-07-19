@@ -4,6 +4,15 @@ import { clearTargets, createGame, resetLab, setArtifact, spawnChaser, spawnDumm
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
 const heading = (velocity: { vx: number; vy: number }) => Math.atan2(velocity.vy, velocity.vx);
 const playerSpeed = (game: ReturnType<typeof createGame>) => Math.hypot(game.player.vx, game.player.vy);
+const STEP = 1 / 120;
+const moveForTicks = (
+  game: ReturnType<typeof createGame>,
+  input: Parameters<typeof updateGame>[1],
+  ticks: number,
+) => {
+  for (let tick = 0; tick < ticks; tick += 1) game = updateGame(game, input, STEP, game.time + STEP);
+  return game;
+};
 
 test("uses a 13 by 7 tile field inside one-tile walls", () => {
   const game = createGame(() => 0);
@@ -237,6 +246,23 @@ test("decelerates to rest in 0.3 seconds and reverses in 0.6 seconds", () => {
   expect(game.player.vx).toBeCloseTo(0);
   game = updateGame(game, left, 0.3, 1.5);
   expect(game.player.vx).toBeCloseTo(-240);
+});
+
+test("reaches exact full speed after 36 fixed acceleration steps", () => {
+  const game = moveForTicks(createGame(() => 0), { ...idle, moveX: 1 }, 36);
+  expect(game.player.vx).toBe(240);
+});
+
+test("reaches exact rest after 36 fixed friction steps", () => {
+  const game = createGame(() => 0);
+  const moving = { ...game, player: { ...game.player, vx: 240 } };
+  expect(moveForTicks(moving, idle, 36).player.vx).toBe(0);
+});
+
+test("reaches exact opposite speed after 72 fixed reversal steps", () => {
+  const game = createGame(() => 0);
+  const moving = { ...game, player: { ...game.player, vx: 240 } };
+  expect(moveForTicks(moving, { ...idle, moveX: -1 }, 72).player.vx).toBe(-240);
 });
 
 test("walls clear only the blocked velocity component", () => {

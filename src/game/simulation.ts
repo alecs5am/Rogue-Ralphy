@@ -87,7 +87,8 @@ function moveVelocityToward(
   const dx = targetVx - vx;
   const dy = targetVy - vy;
   const distance = Math.hypot(dx, dy);
-  if (distance === 0 || distance <= maxDelta) return { vx: targetVx, vy: targetVy };
+  const tolerance = Number.EPSILON * 128 * Math.max(1, distance, maxDelta, Math.abs(vx), Math.abs(vy), Math.abs(targetVx), Math.abs(targetVy));
+  if (distance === 0 || (maxDelta > 0 && distance <= maxDelta + tolerance)) return { vx: targetVx, vy: targetVy };
   const scale = maxDelta / distance;
   return { vx: vx + dx * scale, vy: vy + dy * scale };
 }
