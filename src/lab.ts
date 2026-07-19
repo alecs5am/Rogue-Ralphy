@@ -21,7 +21,7 @@ export const ARTIFACTS: Artifact[] = [
 		note: "+projectiles · wider spread",
 	},
 	{ id: "bigIron", name: "Big Iron", note: "+projectile size" },
-	{ id: "hollowPoint", name: "Hollow Point", note: "+35% damage / stack" },
+	{ id: "hollowPoint", name: "Hollow Point", note: "+35% damage" },
 	{ id: "coldcaster", name: "Coldcaster", note: "freeze chance + duration" },
 	{ id: "pinball", name: "Pinball", note: "wall and target ricochet" },
 	{ id: "deadeye", name: "Deadeye", note: "active reload + rate buff" },
@@ -67,7 +67,7 @@ export function mountLab(
 	const grid = required<HTMLElement>(artifactsRoot, ".artifact-grid");
 	const artifactControls = new Map<
 		ArtifactId,
-		{ card: HTMLElement; output: HTMLOutputElement }
+		{ card: HTMLElement; button: HTMLButtonElement }
 	>();
 	for (const artifact of ARTIFACTS) {
 		const card = document.createElement("article");
@@ -76,31 +76,24 @@ export function mountLab(
 		const icon = missing.includes(artifact.id)
 			? '<span class="missing-icon" aria-hidden="true"></span>'
 			: `<img src="${ASSET_PATHS[artifact.id]}" alt="">`;
-		card.innerHTML = `${icon}<div class="artifact-copy"><h3>${artifact.name}</h3><p>${artifact.note}</p></div><div class="stepper"></div>`;
-		const stepper = required<HTMLElement>(card, ".stepper");
-		const remove = button("−", "step");
-		remove.setAttribute("aria-label", `Remove ${artifact.name}`);
-		const count = document.createElement("output");
-		count.dataset.count = artifact.id;
-		count.setAttribute("aria-label", `${artifact.name} stacks`);
-		count.textContent = "0";
-		const add = button("+", "step");
-		add.setAttribute("aria-label", `Add ${artifact.name}`);
-		const change = (enabled: boolean) =>
-			access.set(setArtifact(access.get(), artifact.id, enabled));
-		remove.addEventListener("click", () => change(false));
-		add.addEventListener("click", () => change(true));
-		stepper.append(remove, count, add);
+		card.innerHTML = `${icon}<div class="artifact-copy"><h3>${artifact.name}</h3><p>${artifact.note}</p></div>`;
+		const artifactButton = button("Take", "artifact-toggle");
+		artifactButton.setAttribute("aria-label", `Take ${artifact.name}`);
+		artifactButton.addEventListener("click", () => {
+			const state = access.get();
+			access.set(setArtifact(state, artifact.id, !state.artifacts[artifact.id]));
+		});
+		card.append(artifactButton);
 		grid.append(card);
-		artifactControls.set(artifact.id, { card, output: count });
+		artifactControls.set(artifact.id, { card, button: artifactButton });
 	}
 
 	const artifactActions = required<HTMLElement>(
 		artifactsRoot,
 		".artifact-actions",
 	);
-	const giveAll = button("Give all ×1");
-	giveAll.addEventListener("click", () => {
+	const takeAll = button("Take all");
+	takeAll.addEventListener("click", () => {
 		let next = access.get();
 		for (const artifact of ARTIFACTS) next = setArtifact(next, artifact.id, true);
 		access.set(next);
@@ -111,7 +104,7 @@ export function mountLab(
 		for (const artifact of ARTIFACTS) next = setArtifact(next, artifact.id, false);
 		access.set(next);
 	});
-	artifactActions.append(giveAll, clearArtifacts);
+	artifactActions.append(takeAll, clearArtifacts);
 
 	spawnerRoot.innerHTML = `${sectionHeading("spawner-title", "Test targets")}<div class="action-grid"></div><div class="action-row room-actions"></div>`;
 	const spawnActions: [string, (state: GameState) => GameState][] = [
@@ -188,12 +181,15 @@ export function mountLab(
 
 	return (state) => {
 		for (const artifact of ARTIFACTS) {
-			const count = state.artifacts[artifact.id] ? 1 : 0;
 			const control = artifactControls.get(artifact.id);
 			if (!control) continue;
-			if (control.output.value !== String(count))
-				control.output.value = String(count);
-			control.card.classList.toggle("active", count > 0);
+			const owned = state.artifacts[artifact.id] === true;
+			control.card.classList.toggle("active", owned);
+			control.button.textContent = owned ? "Remove" : "Take";
+			control.button.setAttribute(
+				"aria-label",
+				`${owned ? "Remove" : "Take"} ${artifact.name}`,
+			);
 		}
 		const telemetry = state.telemetry;
 		const reloadProgress = state.reload.reloading

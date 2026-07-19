@@ -12,7 +12,15 @@ test("builds a loadout, damages a dummy, and auto-reloads", async ({
 	await expect(
 		page.getByRole("heading", { name: "Test range 01" }),
 	).toBeVisible();
-	await page.getByRole("button", { name: "Add Twin Chamber" }).click();
+	await page.getByRole("button", { name: "Take Twin Chamber" }).click();
+	await expect(
+		page.getByRole("button", { name: "Remove Twin Chamber" }),
+	).toBeVisible();
+	await page.getByRole("button", { name: "Remove Twin Chamber" }).click();
+	await expect(
+		page.getByRole("button", { name: "Take Twin Chamber" }),
+	).toBeVisible();
+	await expect(page.locator(".stepper, [data-count]")).toHaveCount(0);
 	await page.getByRole("button", { name: "Spawn dummy" }).click();
 	const canvas = page.locator("#game");
 	const box = await canvas.boundingBox();
@@ -51,7 +59,7 @@ test("misses then lands the Deadeye active reload", async ({ page }) => {
 	});
 	page.on("pageerror", (error) => errors.push(error.message));
 	await page.goto("/");
-	await page.getByRole("button", { name: "Add Deadeye" }).click();
+	await page.getByRole("button", { name: "Take Deadeye" }).click();
 
 	const canvas = page.locator("#game");
 	const box = await canvas.boundingBox();
@@ -100,7 +108,7 @@ for (const viewport of [
 			/ASSETS ONLINE/,
 		);
 		await expect(page.locator("[data-stat=ammo]")).toHaveText("6/6");
-		await page.getByRole("button", { name: "Give all ×1" }).click();
+		await page.getByRole("button", { name: "Take all" }).click();
 		await expect(page.locator(".artifact-card.active")).toHaveCount(8);
 		await page.getByRole("button", { name: "Spawn dummy" }).click();
 
@@ -140,6 +148,8 @@ for (const viewport of [
 		await page.screenshot({
 			path: `test-results/screenshots/ralphy-${viewport.width}x${viewport.height}.png`,
 		});
+		await page.getByRole("button", { name: "Clear artifacts" }).click();
+		await expect(page.locator(".artifact-card.active")).toHaveCount(0);
 		expect(errors).toEqual([]);
 	});
 }
