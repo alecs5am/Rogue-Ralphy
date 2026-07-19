@@ -5,6 +5,7 @@ import { clampResource, clearTargets, createGame, resetLab, setArtifact, setArti
 import { ROOM_PROPS } from "./room";
 import type { ScheduledProjectile } from "./trigger";
 import { buildShot } from "./weapon";
+import { resetMetrics, summarizeMetrics } from "./metrics";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
 const heading = (velocity: { vx: number; vy: number }) => Math.atan2(velocity.vy, velocity.vx);
@@ -123,9 +124,24 @@ test("one root trigger consumes one round and one RNG decision", () => {
   expect(new Set(game.projectiles.map(({ lineageId }) => lineageId)).size).toBe(game.projectiles.length);
 });
 
+test("root sequence remains monotonic across a metrics reset and resets with the lab", () => {
+  let game = updateGame(createGame(() => 0.9), { ...idle, firing: true }, 0, 1);
+  const metrics = resetMetrics(game.metrics);
+  game = { ...game, metrics, telemetry: summarizeMetrics(metrics, game.time) };
+  game = updateGame(game, { ...idle, firing: true }, 0, 1.34);
+
+  expect(game.rootSequence).toBe(2);
+  expect(game.metrics.triggers).toBe(1);
+  expect([...new Set(game.projectiles.map(({ rootTriggerId }) => rootTriggerId))]).toEqual([
+    "trigger-1",
+    "trigger-2",
+  ]);
+  expect(resetLab(game).rootSequence).toBe(0);
+});
+
 test("phase two drains due projectiles in stable order and keeps future entries sorted", () => {
   const game = createGame(() => 0.9);
-  const spec = buildShot(game.weapon, 0, () => 0.9, "ignored").projectiles[0]!;
+  const { triggerId: _, ...spec } = buildShot(game.weapon, 0, () => 0.9, "legacy").projectiles[0]!;
   const scheduled = (at: number, lineageId: string, effectId: string): ScheduledProjectile => ({
     at,
     generation: 0,
@@ -235,7 +251,7 @@ test("Tesla deals 25 percent of the lower endpoint damage on a 150ms cooldown", 
   expect(first.telemetry.totalDamage).toBe(2);
   expect(first.metrics.hitEvents[0]).toMatchObject({
     source: "link", artifactId: "teslaBullets", effectId: "teslaBullets.link",
-    rootTriggerId: "trigger-2", targetId: "dummy-1", x: 600, y: 270,
+    rootTriggerId: "trigger-1", targetId: "dummy-1", x: 600, y: 270,
   });
   expect(blocked.telemetry.totalDamage).toBe(2);
   expect(ready.telemetry.totalDamage).toBe(4);

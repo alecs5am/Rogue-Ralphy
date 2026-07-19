@@ -36,7 +36,7 @@ export type GameState = {
   cylinder: CylinderState; scheduledProjectiles: ScheduledProjectile[]; projectiles: ProjectileState[]; targets: TargetState[];
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
-  time: number; nextShotAt: number; nextId: number; paused: boolean; rng: () => number;
+  time: number; nextShotAt: number; nextId: number; rootSequence: number; paused: boolean; rng: () => number;
   lastShotAt: number | null; lastHurtAt: number | null; diedAt: number | null;
 };
 
@@ -112,6 +112,7 @@ export function createGame(rng: () => number = Math.random): GameState {
     time: 0,
     nextShotAt: 0,
     nextId: 1,
+    rootSequence: 0,
     paused: false,
     lastShotAt: null,
     lastHurtAt: null,
@@ -357,14 +358,16 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   let projectiles = state.projectiles;
   let scheduledProjectiles = [...state.scheduledProjectiles];
   let nextId = state.nextId;
+  let rootSequence = state.rootSequence;
   let nextShotAt = state.nextShotAt;
 
   if (canAct && input.firing && !cylinder.reloading && ammoCount(cylinder) > 0 && now >= nextShotAt) {
     const aimAngle = Math.atan2(input.aimY - player.y, input.aimX - player.x);
     const consumed = consumeRound(cylinder);
+    rootSequence += 1;
     const trigger = expandTrigger({
-      rootTriggerId: `trigger-${nextId}`,
-      rootIndex: metrics.triggers + 1,
+      rootTriggerId: `trigger-${rootSequence}`,
+      rootIndex: rootSequence,
       round: consumed.round!,
       aim: aimAngle,
       origin: player,
@@ -590,6 +593,6 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   const telemetry = summarizeMetrics(metrics, now);
   return {
     ...state, player, aim, weapon, cylinder, scheduledProjectiles, projectiles: survivingProjectiles, targets, teslaLinks, teslaCooldowns, metrics, telemetry,
-    time: now, nextShotAt, nextId, paused: false, lastShotAt, lastHurtAt, diedAt,
+    time: now, nextShotAt, nextId, rootSequence, paused: false, lastShotAt, lastHurtAt, diedAt,
   };
 }
