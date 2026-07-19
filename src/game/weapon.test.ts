@@ -109,14 +109,14 @@ describe("artifact formulas", () => {
 
 describe("buildShot", () => {
   test("consumes one round while building a spread", () => {
-    const shot = buildShot(deriveWeapon({ twinChamber: true }, 0), 0);
+    const shot = buildShot(deriveWeapon({ twinChamber: true }, 0), 0, () => 0, "trigger-test");
     expect(shot.roundsConsumed).toBe(1);
     expect(shot.projectiles).toHaveLength(2);
     expect(shot.projectiles[0]!.heading).toBeLessThan(shot.projectiles[1]!.heading);
   });
 
   test("turns owned multishot into an evenly distributed orbital ring", () => {
-    const shot = buildShot(deriveWeapon({ twinChamber: true, haloChamber: true }, 0), 0);
+    const shot = buildShot(deriveWeapon({ twinChamber: true, haloChamber: true }, 0), 0, () => 0, "trigger-test");
     expect(shot.projectiles).toHaveLength(2);
     expect(shot.projectiles.every((projectile) => projectile.orbitDuration === 0.9)).toBe(true);
     expect(shot.projectiles.map((projectile) => projectile.orbitAngle)).toEqual([

@@ -1,6 +1,7 @@
 import { createMetrics, recordHit, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, attemptActiveReload, createReloadState, fireRateBuffAt, startReload, type ReloadState } from "./reload";
 import { buildShot, deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon, type ProjectileSpec } from "./weapon";
+import type { ProjectileState } from "./projectiles";
 
 export type Point = { x: number; y: number };
 export type InputIntent = {
@@ -18,14 +19,7 @@ export type TargetState = Point & {
   speed: number; frozenUntil: number;
 };
 
-export type ProjectileState = Point & {
-  id: string; vx: number; vy: number; phase: "orbit" | "flight";
-  orbitElapsed: number; orbitDuration: number; orbitAngle: number; orbitRadius: number;
-  damage: number; speed: number; radius: number; lifetime: number; bornAt: number;
-  remainingBounces: number; bounceRetention: number;
-  freezeChance: number; freezeDuration: number;
-  homingTurnRate: number; homingRadius: number; hitTargetIds: string[]; everHit: boolean;
-};
+export type { ProjectileState } from "./projectiles";
 
 export type GameState = {
   room: { width: number; height: number; minX: number; maxX: number; minY: number; maxY: number };
@@ -183,6 +177,7 @@ function makeProjectile(spec: ProjectileSpec, state: GameState, aimAngle: number
   const offset = phase === "orbit" ? spec.orbitRadius : state.player.radius + spec.radius + 2;
   return {
     id: `projectile-${id}`,
+    triggerId: spec.triggerId,
     x: state.player.x + Math.cos(angle) * offset,
     y: state.player.y + Math.sin(angle) * offset,
     vx: phase === "flight" ? Math.cos(spec.heading) * spec.speed : 0,
@@ -203,6 +198,7 @@ function makeProjectile(spec: ProjectileSpec, state: GameState, aimAngle: number
     freezeDuration: spec.freezeDuration,
     homingTurnRate: spec.homingTurnRate,
     homingRadius: spec.homingRadius,
+    behaviors: spec.behaviors,
     hitTargetIds: [],
     everHit: false,
   };
@@ -322,7 +318,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
 
   if (input.firing && !reload.reloading && reload.ammo > 0 && now >= nextShotAt) {
     const aimAngle = Math.atan2(input.aimY - player.y, input.aimX - player.x);
-    const shot = buildShot(weapon, aimAngle);
+    const shot = buildShot(weapon, aimAngle, state.rng, `trigger-${nextId}`);
     const firingState = { ...state, player };
     const created = shot.projectiles.map((spec) => makeProjectile(spec, firingState, aimAngle, now, nextId++));
     projectiles = [...projectiles, ...created];

@@ -12,7 +12,7 @@ import {
 import type { ArtifactId } from "./game/weapon";
 
 type StateAccess = { get: () => GameState; set: (state: GameState) => void };
-type Artifact = { id: ArtifactId; name: string; note: string };
+type Artifact = { id: Extract<ArtifactId, AssetKey>; name: string; note: string };
 
 export const ARTIFACTS: Artifact[] = [
 	{
