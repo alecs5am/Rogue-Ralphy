@@ -88,7 +88,7 @@ test("swept projectile candidates retain stable collider point and normal contex
   )).toBeNull();
 });
 
-test("Twin convergence follows plus-or-minus 18 times sine of trajectory progress", () => {
+test("Twin convergence uses the actual swept distance for sine progress", () => {
   const twin = (lateralOffset: number) => teslaProjectile(`twin-${lateralOffset}`, 0, 0, 20, "trigger-twin", {
     radius: 96, neighbors: 2, damageScale: 0.25, cooldown: 0.15,
   });
@@ -100,9 +100,15 @@ test("Twin convergence follows plus-or-minus 18 times sine of trajectory progres
   }));
 
   const halfway = pair.map((projectile) => advanceTrajectory(projectile, [], 0.5));
-  expect(halfway.map(({ x, y }) => [x, y])).toEqual([[50, -18], [50, 18]]);
-  const converged = halfway.map((projectile) => advanceTrajectory({ ...projectile, travelled: 50 }, [], 0.5));
-  expect(converged.map(({ x, y }) => [x, y])).toEqual([[100, 0], [100, 0]]);
+  halfway.forEach(({ x, y }, index) => {
+    const distance = Math.hypot(x, y);
+    expect(y).toBeCloseTo((index === 0 ? -18 : 18) * Math.sin(Math.PI * distance / 100), 10);
+  });
+  const converged = halfway.map((projectile) => advanceTrajectory({
+    ...projectile,
+    travelled: Math.hypot(projectile.x, projectile.y),
+  }, [], 0.5));
+  expect(converged.map(({ y }) => y)).toEqual([expect.closeTo(0, 10), expect.closeTo(0, 10)]);
 });
 
 test("Shotgun splits into eight smaller pellets across a 48 degree forward cone", () => {

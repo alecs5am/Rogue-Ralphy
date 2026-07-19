@@ -50,6 +50,7 @@ export type ProjectileState = {
   spiralLaunchPending?: boolean;
   homingTargetId?: string; homingMarkerRemaining?: number;
   launchHeading?: number;
+  convergeOffset?: number;
   bellPulse?: BellPulseState;
 };
 
@@ -213,11 +214,28 @@ export function advanceTrajectory(projectile: ProjectileState, targets: readonly
       return amount === 0 || amount === 1 ? 0 : converge.lateralOffset * Math.sin(Math.PI * amount);
     };
     const before = offset(projectile.travelled);
-    const after = offset(projectile.travelled + next.speed * dt);
     const heading = next.launchHeading ?? Math.atan2(projectile.vy, projectile.vx);
-    const change = spiral && intendedSpiralAngle !== undefined ? after : after - before;
-    next.x -= Math.sin(heading) * change;
-    next.y += Math.cos(heading) * change;
+    const nx = -Math.sin(heading);
+    const ny = Math.cos(heading);
+    const retainedOffset = spiral && intendedSpiralAngle !== undefined ? 0 : projectile.convergeOffset ?? before;
+    const baseX = next.x;
+    const baseY = next.y;
+    let change = offset(projectile.travelled + Math.hypot(baseX - projectile.x, baseY - projectile.y)) - retainedOffset;
+    for (let iteration = 0; iteration < 12; iteration += 1) {
+      const actualDistance = Math.hypot(
+        baseX + nx * change - projectile.x,
+        baseY + ny * change - projectile.y,
+      );
+      const corrected = offset(projectile.travelled + actualDistance) - retainedOffset;
+      if (Math.abs(corrected - change) <= 1e-12) {
+        change = corrected;
+        break;
+      }
+      change = corrected;
+    }
+    next.x = baseX + nx * change;
+    next.y = baseY + ny * change;
+    next.convergeOffset = retainedOffset + change;
   }
   return next;
 }

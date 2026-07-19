@@ -338,6 +338,7 @@ function materializeScheduled(
     spiralAngle,
     spiralAngularSpeed: spiral?.angularSpeed,
     launchHeading: spec.heading,
+    convergeOffset: spec.behaviors.converge ? 0 : undefined,
     bellPulse: spec.bell && {
       interval: spec.bell.interval,
       radius: spec.bell.radius,

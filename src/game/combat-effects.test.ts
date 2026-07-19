@@ -186,7 +186,10 @@ test("trigger phase drains fixed-step emissions separately from future wall-cloc
   ]);
 });
 
-test("scheduled copies materialize explicit emission provenance", () => {
+test.each([
+  ["deadeye", "deadeye.echo"],
+  ["graveEcho", "graveEcho.copy"],
+] as const)("scheduled %s copies materialize provenance without inheriting creation eligibility", (artifactId, effectId) => {
   const spec = {
     heading: 0, damage: 8, speed: 100, radius: 5, lifetime: 2,
     freezeChance: 0, freezeDuration: 0, bounces: 0, bounceRetention: 1, behaviors: {},
@@ -200,8 +203,8 @@ test("scheduled copies materialize explicit emission provenance", () => {
       rootIndex: 4,
       localOrdinal: 9,
       lineageId: "trigger-4:2",
-      effectIds: ["baseRevolver.direct", "graveEcho.copy"],
-      emission: { artifactId: "graveEcho", effectId: "graveEcho.copy" },
+      effectIds: ["baseRevolver.direct", "ghostSight.homing", "spectralBullets.penetration", "coldcaster.chill"],
+      emission: { artifactId, effectId },
       spec,
     }],
   }), context());
@@ -210,8 +213,44 @@ test("scheduled copies materialize explicit emission provenance", () => {
     generation: 1,
     rootTriggerId: "trigger-4",
     lineageId: "trigger-4:2",
-    emission: { artifactId: "graveEcho", effectId: "graveEcho.copy" },
+    emission: { artifactId, effectId },
   });
+  expect(triggered.projectiles[0]?.activatedEffectIds).toEqual([
+    "baseRevolver.direct", "ghostSight.homing", "spectralBullets.penetration", "coldcaster.chill",
+  ]);
+  expect(triggered.projectiles[0]?.activatedEffectIds).not.toContain(effectId);
+});
+
+test("Twin convergence follows committed path distance and remains centered after 100 pixels", () => {
+  let current = runtime({
+    now: 0,
+    step: 0,
+    projectiles: [-18, 18].map((lateralOffset, index) => projectile({
+      id: `twin-${index}`,
+      lineageId: `trigger-1:${index}`,
+      x: 200,
+      y: 300,
+      vx: 100,
+      speed: 100,
+      radius: 1,
+      launchHeading: 0,
+      behaviors: { converge: { distance: 100, lateralOffset } },
+    })),
+  });
+  const motion = context({ dt: 0.01, props: [] });
+  let crossed = false;
+  for (let step = 1; step <= 130; step += 1) {
+    current = resolveCombatPhases({ ...current, now: step * 0.01, step }, motion);
+    if (!crossed && current.projectiles.every(({ travelled }) => travelled >= 100)) {
+      crossed = true;
+      expect(current.projectiles.map(({ y }) => y)).toEqual([
+        expect.closeTo(300, 10),
+        expect.closeTo(300, 10),
+      ]);
+    }
+    if (crossed) for (const converged of current.projectiles) expect(converged.y).toBeCloseTo(300, 10);
+  }
+  expect(crossed).toBe(true);
 });
 
 test("Last Bell initializes live pulse state from materialized bornAt", () => {

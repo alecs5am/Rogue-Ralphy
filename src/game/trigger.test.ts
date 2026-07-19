@@ -74,7 +74,7 @@ test.each(ROW_ONE)("%s expands its exact trigger signature", (artifactId, signat
       expect(echoes).toHaveLength(1);
       expect(echoes[0]).toMatchObject({
         at: result.now + exact.echoDelay,
-        emission: { artifactId: "deadeye", effectId: "deadeye.copy" },
+        emission: { artifactId: "deadeye", effectId: "deadeye.echo" },
         spec: { damage: 20 * exact.echoDamage },
       });
       break;
@@ -202,7 +202,7 @@ test("row-one composition launches eleven generation-zero projectiles for one ca
   ]);
   expect(roots.slice(0, 9).map(({ spec }) => spec.damage)).toEqual(Array.from({ length: 9 }, () => 20 * 0.7 * 0.45));
   expect(roots.slice(9).map(({ spec }) => spec.damage)).toEqual([11, 11]);
-  expect(result.projectiles.filter(({ effectIds }) => effectIds.includes("graveEcho.copy")).map(({ at }) => at))
+  expect(result.projectiles.filter(({ emission }) => emission?.effectId === "graveEcho.copy").map(({ at }) => at))
     .toContain(result.now + 0.28);
 });
 
@@ -224,6 +224,7 @@ test("Deadeye and Grave copy finished roots at each source time without copying 
 
   expect(copies).toHaveLength((roots.length - 1) * 2);
   expect(copies.some(({ lineageId }) => lineageId === locket.lineageId)).toBe(false);
+  expect(copies.every(({ effectIds, emission }) => !effectIds.includes(emission!.effectId))).toBe(true);
   expect(copies.every(({ spec, effectIds }) =>
     spec.behaviors.split === undefined &&
     spec.behaviors.spiral !== undefined && spec.behaviors.tesla !== undefined &&
@@ -269,6 +270,19 @@ test("an armed Locket preserves a bell-only trigger and later converts the highe
   expect(orbital.effectIds).not.toContain("bigIron.heavy");
 });
 
+test("an armed Locket converts a sole ordinary final cartridge when Last Bell is not owned", () => {
+  const result = expandTrigger(triggerContext({
+    owned: ["lastGaspLocket"],
+    round: { slot: 5, echo: null, ammoBefore: 1 },
+    lowHealth: true,
+    locketState: { armed: true, cadence: 0 },
+  }));
+
+  expect(result.projectiles).toHaveLength(1);
+  expect(result.projectiles[0]?.effectIds).toContain("lastGaspLocket.orbital");
+  expect(result.locketState).toEqual({ armed: false, cadence: 0 });
+});
+
 test("trigger expansion freezes numeric ordering and explicit copy provenance", () => {
   const result = expandTrigger(triggerContext({ owned: ["graveEcho"] }));
   expect(Object.isFrozen(result.projectiles)).toBe(true);
@@ -276,6 +290,7 @@ test("trigger expansion freezes numeric ordering and explicit copy provenance", 
   expect(result.projectiles.every(({ spec }) => !("triggerId" in spec))).toBe(true);
   expect(result.projectiles.map(({ rootIndex, localOrdinal }) => [rootIndex, localOrdinal])).toEqual([[7, 0], [7, 1]]);
   expect(result.projectiles[1]?.emission).toEqual({ artifactId: "graveEcho", effectId: "graveEcho.copy" });
+  expect(result.projectiles[1]?.effectIds).toEqual(["baseRevolver.direct"]);
 });
 
 test("non-projectile root rules never become activated projectile effects", () => {

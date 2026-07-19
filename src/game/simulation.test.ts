@@ -643,9 +643,26 @@ test("a charged Deadeye cartridge schedules its echo after ownership is removed"
   )).toHaveLength(1);
 
   game = updateGame(game, idle, 0, activeAt + 0.13);
-  expect(game.projectiles.filter(({ rootTriggerId, generation, emission }) =>
+  const echoes = game.projectiles.filter(({ rootTriggerId, generation, emission }) =>
     rootTriggerId === root && generation === 1 && emission?.artifactId === "deadeye"
-  )).toHaveLength(1);
+  );
+  expect(echoes).toHaveLength(1);
+  expect(echoes[0]?.emission).toEqual({ artifactId: "deadeye", effectId: "deadeye.echo" });
+  expect(echoes[0]?.activatedEffectIds).toContain("baseRevolver.direct");
+  expect(echoes[0]?.activatedEffectIds).not.toContain("deadeye.echo");
+});
+
+test("a due Grave Echo materializes provenance without creation eligibility", () => {
+  let game = setArtifact(createGame(() => 0.9), "graveEcho", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  game = updateGame(game, idle, 0, 1.28);
+
+  const copy = game.projectiles.find(({ generation, emission }) =>
+    generation === 1 && emission?.artifactId === "graveEcho"
+  )!;
+  expect(copy.emission).toEqual({ artifactId: "graveEcho", effectId: "graveEcho.copy" });
+  expect(copy.activatedEffectIds).toContain("baseRevolver.direct");
+  expect(copy.activatedEffectIds).not.toContain("graveEcho.copy");
 });
 
 test("reload intent outside the Deadeye window leaves normal reload intact", () => {

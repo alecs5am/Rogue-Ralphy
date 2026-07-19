@@ -171,7 +171,7 @@ export function expandTrigger(context: TriggerContext) {
     };
   }
 
-  const bell = context.round.ammoBefore === 1 ? roots[0] : undefined;
+  const bell = lastRound && context.round.ammoBefore === 1 ? roots[0] : undefined;
   const rings = emission("pulseRing", "lastBell");
   if (lastRound && rings && bell) {
     bell.effectIds.add(lastRound.effectId);
@@ -246,7 +246,7 @@ export function expandTrigger(context: TriggerContext) {
       rootIndex: source.rootIndex,
       localOrdinal: scheduled.length,
       lineageId: source.lineageId,
-      effectIds: orderedEffects([...effectIds, provenance.effectId]),
+      effectIds: orderedEffects(effectIds),
       emission: Object.freeze({ ...provenance }),
       spec: freezeSpec({
         ...source.spec,
@@ -263,7 +263,7 @@ export function expandTrigger(context: TriggerContext) {
     if (roots[source.localOrdinal]?.locket) continue;
     if (context.round.echo) scheduled.push(copy(
       source,
-      { artifactId: "deadeye", effectId: "deadeye.copy" },
+      { artifactId: "deadeye", effectId: "deadeye.echo" },
       context.round.echo.delay,
       context.round.echo.damageScale,
     ));
