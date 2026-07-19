@@ -131,6 +131,7 @@ git commit -m "fix: close animation review findings"
 
 - Modify: `src/game/artifacts.ts`
 - Modify: `src/game/artifacts.test.ts`
+- Modify: `src/assets.ts`
 - Create: `src/game/combat-build.ts`
 - Create: `src/game/combat-build.test.ts`
 - Modify: `src/game/weapon.ts`
@@ -213,15 +214,78 @@ export type ArtifactDefinition = Readonly<{
 }>;
 
 type Provenance = Readonly<{ artifactId: ArtifactId; effectId: string; phase: number }>;
-export type TriggerRule = Provenance & Readonly<{ family: "trigger"; kind: TriggerKind; params: Readonly<Record<string, number | boolean>> }>;
-export type MotionRule = Provenance & Readonly<{ family: "motion"; kind: MotionKind; params: Readonly<Record<string, number | boolean>> }>;
-export type ImpactRule = Provenance & Readonly<{ family: "impact"; kind: ImpactKind; params: Readonly<Record<string, number | boolean>> }>;
-export type EmissionRule = Provenance & Readonly<{ family: "emission"; kind: EmissionKind; params: Readonly<Record<string, number | boolean>> }>;
-export type AreaRule = Provenance & Readonly<{ family: "area"; kind: AreaKind; params: Readonly<Record<string, number | boolean>> }>;
+type RuleOf<Family extends string, Specs extends Record<string, object>> = {
+  [Kind in keyof Specs & string]: Provenance & Readonly<{ family: Family; kind: Kind }> & Readonly<Specs[Kind]>
+}[keyof Specs & string];
+
+type TriggerSpecs = {
+  twin: { damageScale: number; convergenceMin: number; convergenceMax: number; lateralOffset: number };
+  activeReload: { window: number; buff: number; duration: number; echoDelay: number; echoDamageScale: number };
+  lastRound: { speedScale: number; radiusScale: number; damageScale: number; pulseInterval: number; pulseCount: number };
+  delayedVolley: { delay: number; damageScale: number };
+  fan: { delays: readonly [number, number, number]; centers: readonly [number, number, number]; damageScale: number };
+  numberedSidePair: { cadence: number; angle: number; damageScale: number };
+  fractionalMultishot: { chance: number; spread: number };
+  heavyMainAndMoonlet: { radiusScale: number; damageScale: number; speedScale: number };
+  playerSatellite: { radius: number; duration: number; cap: number; damageScale: number };
+  recoil: { impulse: number; duration: number };
+  stationaryCharge: { speedThreshold: number; chargeTime: number; damageScale: number; radiusScale: number };
+  ammoReturn: { delivery: number };
+  lowHealthOrbital: { healthThreshold: number; cadence: number; radius: number; duration: number; cap: number };
+  hurtDecoy: { duration: number; invulnerability: number };
+};
+type MotionSpecs = {
+  converge: { minDistance: number; maxDistance: number; lateralOffset: number };
+  spiral: { initialRadius: number; radialSpeed: number; angularSpeed: number; lifetime: number };
+  homing: { radius: number; turnRate: number };
+  relay: { speedScale: number; radius: number; turnRate: number };
+  wave: { amplitude: number; wavelength: number };
+  return: { outbound: number; inbound: number; damageScale: number };
+  comet: { duration: number; speedScale: number; radiusScale: number; damageScale: number };
+  orbit: { radius: number; angularSpeed: number };
+  distanceThreshold: { distance: number };
+};
+type ImpactSpecs = {
+  bounce: { count: number; retention: number };
+  penetration: { obstacles: boolean; targets: boolean };
+  embeddedCharge: { storedDamageScale: number; duration: number };
+  chill: { stacks: number; stackDuration: number; freezeDuration: number };
+  burn: { ticks: number; interval: number; damageScale: number };
+  brand: { duration: number; steering: number; jumpRadius: number };
+  hitCounter: { hits: number; duration: number; damageScale: number };
+  poolOnHit: { radius: number; duration: number; tickRate: number; damageScale: number; slow: number };
+  statusPulse: { cadence: number; radius: number; slow: number; duration: number };
+};
+type EmissionSpecs = {
+  echo: { delay: number; damageScale: number };
+  pulseRing: { interval: number; count: number; radius: number; damageScale: number };
+  splitCone: { distance: number; count: number; range: number; angle: number; damageScale: number; radiusScale: number };
+  forwardShards: { count: number; angle: number; range: number; damageScale: number; radiusScale: number };
+  expiryRadial: { count: number; range: number; damageScale: number; radiusScale: number };
+  killSpirits: { count: number; radius: number; damageScale: number; turnRate: number };
+  tangentCopy: { angle: number; range: number; damageScale: number; radiusScale: number };
+  shatter: { count: number; range: number; damageScale: number; radiusScale: number };
+  afterimage: { delay: number; range: number; damageScale: number };
+};
+type AreaSpecs = {
+  projectileLink: { radius: number; neighbors: number; damageScale: number; cooldown: number };
+  explosion: { radius: number; damageScale: number };
+  trail: { width: number; duration: number; tickRate: number; damageScale: number; cooldown: number };
+  pathCross: { length: number; damageScale: number; participationCap: number };
+  decoyInfluence: { duration: number };
+};
+
+export type TriggerRule = RuleOf<"trigger", TriggerSpecs>;
+export type MotionRule = RuleOf<"motion", MotionSpecs>;
+export type ImpactRule = RuleOf<"impact", ImpactSpecs>;
+export type EmissionRule = RuleOf<"emission", EmissionSpecs>;
+export type AreaRule = RuleOf<"area", AreaSpecs>;
 export type ArtifactRule = TriggerRule | MotionRule | ImpactRule | EmissionRule | AreaRule;
 ```
 
-Populate the exact thirty-six definitions in row-major order using the IDs from the specification. Every definition has at least one behavioral rule and three live synergy IDs.
+Populate the exact thirty-six definitions in row-major order using the IDs from the specification. Every definition has at least one behavioral rule and three live synergy IDs. Rule payloads are exact discriminated fields from the maps above; do not replace them with `Record<string, unknown>` or another untyped parameter bag.
+
+Register the twenty-five future icon keys in `src/assets.ts` with their final `/assets/generated/artifacts/<kebab-id>.png` paths so `AssetKey` and catalog validation remain honest. The presentation plan generates those files before the next browser gate; do not create temporary placeholder images.
 
 - [ ] **Step 5: Implement the compiler and validator**
 
@@ -269,7 +333,7 @@ bun run build
 Expected: PASS.
 
 ```bash
-git add src/game/artifacts.ts src/game/artifacts.test.ts src/game/combat-build.ts src/game/combat-build.test.ts src/game/weapon.ts src/game/weapon.test.ts src/game/simulation.ts
+git add src/assets.ts src/game/artifacts.ts src/game/artifacts.test.ts src/game/combat-build.ts src/game/combat-build.test.ts src/game/weapon.ts src/game/weapon.test.ts src/game/simulation.ts
 git commit -m "feat: compile stable artifact combat rules"
 ```
 
