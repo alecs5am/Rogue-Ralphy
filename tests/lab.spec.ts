@@ -7,8 +7,8 @@ const ARTIFACTS = [
 	["Coldcaster", "25% freeze · 1.05s"],
 	["Pinball", "1 bounce · 90% damage"],
 	["Deadeye", "12% window · +20% rate · 2.25s"],
-	["Halo Chamber", "0.9s orbit · radius 30"],
-	["Ghost Sight", "180°/s · radius 40"],
+	["Halo Chamber", "0.9s orbit · radius 30 · launch at aim"],
+	["Ghost Sight", "homing turn 180°/s · acquire radius 40"],
 ] as const;
 
 test("builds a loadout, damages a dummy, and auto-reloads", async ({

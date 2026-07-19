@@ -25,8 +25,16 @@ export const ARTIFACTS: Artifact[] = [
 	{ id: "coldcaster", name: "Coldcaster", note: "25% freeze · 1.05s" },
 	{ id: "pinball", name: "Pinball", note: "1 bounce · 90% damage" },
 	{ id: "deadeye", name: "Deadeye", note: "12% window · +20% rate · 2.25s" },
-	{ id: "haloChamber", name: "Halo Chamber", note: "0.9s orbit · radius 30" },
-	{ id: "ghostSight", name: "Ghost Sight", note: "180°/s · radius 40" },
+	{
+		id: "haloChamber",
+		name: "Halo Chamber",
+		note: "0.9s orbit · radius 30 · launch at aim",
+	},
+	{
+		id: "ghostSight",
+		name: "Ghost Sight",
+		note: "homing turn 180°/s · acquire radius 40",
+	},
 ];
 
 const format = {
