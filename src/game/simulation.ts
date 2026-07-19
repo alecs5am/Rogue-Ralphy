@@ -1,9 +1,10 @@
 import { createMetrics, recordDamage, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, ammoCount, attemptActiveReload, consumeRound, createCylinder, fireRateBuffAt, startReload, type CylinderState } from "./cylinder";
 import { compileCombatBuild, type CombatBuild } from "./combat-build";
-import { buildShot, deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon, type ProjectileSpec } from "./weapon";
+import { deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon } from "./weapon";
 import { advanceTrajectory, buildTeslaLinks, splitProjectile, synchronizeSpiralState, type ProjectileState, type TeslaLink } from "./projectiles";
 import { ROOM, ROOM_PROPS, TILE_SIZE, segmentCircleHitTime, type Point } from "./room";
+import { compareScheduledProjectiles, expandTrigger, type ScheduledProjectile } from "./trigger";
 
 export { ROOM, TILE_SIZE } from "./room";
 export type { Point } from "./room";
@@ -32,7 +33,7 @@ export type GameState = {
   room: { width: number; height: number; minX: number; maxX: number; minY: number; maxY: number };
   player: PlayerState; aim: Point; artifacts: ArtifactLoadout; build: CombatBuild; weapon: DerivedWeapon;
   resources: Resources;
-  cylinder: CylinderState; projectiles: ProjectileState[]; targets: TargetState[];
+  cylinder: CylinderState; scheduledProjectiles: ScheduledProjectile[]; projectiles: ProjectileState[]; targets: TargetState[];
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; nextShotAt: number; nextId: number; paused: boolean; rng: () => number;
@@ -101,6 +102,7 @@ export function createGame(rng: () => number = Math.random): GameState {
     resources: { coins: 0, bombs: 0, keys: 0 },
     weapon,
     cylinder: createCylinder(weapon.capacity),
+    scheduledProjectiles: [],
     projectiles: [],
     targets: [],
     teslaLinks: [],
@@ -184,10 +186,13 @@ export function clearTargets(state: GameState): GameState {
 }
 export const resetLab = (state: GameState): GameState => createGame(state.rng);
 
-function makeProjectile(spec: ProjectileSpec, state: GameState, aimAngle: number, now: number, id: number): ProjectileState {
+function makeProjectile(scheduled: ScheduledProjectile, state: GameState, now: number, id: number): ProjectileState {
+  const { spec } = scheduled;
+  const aimAngle = scheduled.aim ?? spec.heading;
+  const origin = scheduled.origin ?? state.player;
   const muzzle = {
-    x: state.player.x + Math.cos(aimAngle) * (state.player.radius + spec.radius + 2),
-    y: state.player.y + Math.sin(aimAngle) * (state.player.radius + spec.radius + 2),
+    x: origin.x + Math.cos(aimAngle) * (state.player.radius + spec.radius + 2),
+    y: origin.y + Math.sin(aimAngle) * (state.player.radius + spec.radius + 2),
   };
   const spiral = spec.behaviors.spiral;
   const spiralOrigin = spiral ? Object.freeze(muzzle) : undefined;
@@ -203,7 +208,12 @@ function makeProjectile(spec: ProjectileSpec, state: GameState, aimAngle: number
     : Math.sin(spec.heading) * spec.speed;
   return {
     id: `projectile-${id}`,
-    triggerId: spec.triggerId,
+    triggerId: scheduled.rootTriggerId,
+    generation: scheduled.generation,
+    rootTriggerId: scheduled.rootTriggerId,
+    lineageId: scheduled.lineageId,
+    activatedEffectIds: scheduled.effectIds,
+    originPower: spec.damage,
     x,
     y,
     vx,
@@ -345,22 +355,41 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   const aim = { x: input.aimX, y: input.aimY };
   let metrics = state.metrics;
   let projectiles = state.projectiles;
+  let scheduledProjectiles = [...state.scheduledProjectiles];
   let nextId = state.nextId;
   let nextShotAt = state.nextShotAt;
 
   if (canAct && input.firing && !cylinder.reloading && ammoCount(cylinder) > 0 && now >= nextShotAt) {
     const aimAngle = Math.atan2(input.aimY - player.y, input.aimX - player.x);
-    const shot = buildShot(weapon, aimAngle, state.rng, `trigger-${nextId}`);
-    if (shot.projectiles.length > 0) lastShotAt = now;
-    const firingState = { ...state, player };
-    const created = shot.projectiles.map((spec) => makeProjectile(spec, firingState, aimAngle, now, nextId++));
-    projectiles = [...projectiles, ...created];
-    cylinder = consumeRound(cylinder).state;
+    const consumed = consumeRound(cylinder);
+    const trigger = expandTrigger({
+      rootTriggerId: `trigger-${nextId}`,
+      rootIndex: metrics.triggers + 1,
+      round: consumed.round!,
+      aim: aimAngle,
+      origin: player,
+      now,
+      stationaryCharged: false,
+      lowHealth: player.health <= 40,
+      build: state.build,
+      weapon,
+      rng: state.rng,
+    });
+    if (trigger.projectiles.length > 0) lastShotAt = now;
+    scheduledProjectiles.push(...trigger.projectiles);
+    cylinder = consumed.state;
     metrics = recordTrigger(metrics);
-    for (const _ of created) metrics = recordProjectile(metrics);
     nextShotAt = now + 1 / weapon.fireRate;
     if (ammoCount(cylinder) === 0) cylinder = startReload(cylinder, weapon, now, "automatic");
   }
+
+  scheduledProjectiles.sort(compareScheduledProjectiles);
+  const due = scheduledProjectiles.filter(({ at }) => at <= now);
+  scheduledProjectiles = scheduledProjectiles.filter(({ at }) => at > now);
+  const materializationState = { ...state, player };
+  const created = due.map((scheduled) => makeProjectile(scheduled, materializationState, now, nextId++));
+  projectiles = [...projectiles, ...created];
+  for (const _ of created) metrics = recordProjectile(metrics);
 
   const projectileStarts = new Map(projectiles.map((projectile) => [projectile.id, { x: projectile.x, y: projectile.y }]));
   const trajectoryStarts = new Map(projectiles.map((projectile) => [projectile.id, {
@@ -505,7 +534,10 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       projectile.everHit = true;
       metrics = recordDamage(metrics, {
         source: "direct", damage: projectile.damage, time: now, targetId: target.id,
-        projectileId: projectile.id, triggerId: projectile.triggerId, firstProjectileHit: firstHit,
+        artifactId: "baseRevolver", effectId: "baseRevolver.direct",
+        rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId,
+        projectileId: projectile.id, killReactionDepth: 0, originPower: projectile.originPower,
+        firstProjectileHit: firstHit,
         x: target.x, y: target.y,
       });
       if (wasAlive && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
@@ -536,10 +568,14 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       const cooldownKey = `${link.id}:${target.id}`;
       if (now < (teslaCooldowns[cooldownKey] ?? 0)) continue;
       const damage = Math.min(a.damage, b.damage) * link.damageScale;
+      const source = a.damage <= b.damage ? a : b;
       const wasAlive = target.kind === "dummy" || target.health > 0;
       target.health -= damage;
       metrics = recordDamage(metrics, {
-        source: "tesla", damage, time: now, targetId: target.id, artifactId: "teslaBullets",
+        source: "link", damage, time: now, targetId: target.id,
+        artifactId: "teslaBullets", effectId: "teslaBullets.link",
+        rootTriggerId: source.rootTriggerId, lineageId: source.lineageId,
+        projectileId: source.id, killReactionDepth: 0, originPower: source.originPower,
         x: target.x, y: target.y,
       });
       if (wasAlive && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
@@ -553,7 +589,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   metrics = retainTargetMetrics(metrics, targets.map((target) => target.id));
   const telemetry = summarizeMetrics(metrics, now);
   return {
-    ...state, player, aim, weapon, cylinder, projectiles: survivingProjectiles, targets, teslaLinks, teslaCooldowns, metrics, telemetry,
+    ...state, player, aim, weapon, cylinder, scheduledProjectiles, projectiles: survivingProjectiles, targets, teslaLinks, teslaCooldowns, metrics, telemetry,
     time: now, nextShotAt, nextId, paused: false, lastShotAt, lastHurtAt, diedAt,
   };
 }

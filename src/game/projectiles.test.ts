@@ -13,7 +13,9 @@ const teslaProjectile = (
   triggerId = id,
   tesla: TeslaBehavior = { radius: 96, neighbors: 2, damageScale: 0.25, cooldown: 0.15 },
 ): ProjectileState => ({
-  id, triggerId, x, y, damage, vx: 0, vy: 0, speed: 0, radius: 6, lifetime: 8, bornAt: 0,
+  id, triggerId, rootTriggerId: triggerId, lineageId: `${triggerId}:0`, generation: 0,
+  activatedEffectIds: Object.freeze(["baseRevolver.direct", "teslaBullets.link"]), originPower: damage,
+  x, y, damage, vx: 0, vy: 0, speed: 0, radius: 6, lifetime: 8, bornAt: 0,
   remainingBounces: 0, bounceRetention: 1, freezeChance: 0, freezeDuration: 0,
   behaviors: { tesla },
   hitTargetIds: [], everHit: false, travelled: 0,
@@ -134,6 +136,21 @@ test("Shotgun children identify each splitting parent and keep its fixed split o
   expect(children.slice(8).every(({ splitOrigin }) =>
     splitOrigin?.x === secondParent.x && splitOrigin.y === secondParent.y
   )).toBe(true);
+});
+
+test("Shotgun children inherit root and lineage provenance as generation one", () => {
+  let game = setArtifact(createGame(() => 0.9), "shotgun", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  const parent = game.projectiles[0]!;
+  const child = splitProjectile(parent, ["pellet"])[0]!;
+
+  expect(child).toMatchObject({
+    generation: 1,
+    rootTriggerId: parent.rootTriggerId,
+    lineageId: parent.lineageId,
+    originPower: parent.originPower,
+  });
+  expect(child.activatedEffectIds).toEqual(parent.activatedEffectIds);
 });
 
 test("Halo keeps its muzzle origin, expands 48 pixels per second, and expires at four seconds", () => {

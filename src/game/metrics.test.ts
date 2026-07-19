@@ -3,36 +3,64 @@ import { createMetrics, recordDamage, recordHit, recordKill, recordProjectile, r
 
 test("Tesla damage raises DPS without successful projectile accuracy", () => {
   let metrics = createMetrics();
-  metrics = recordDamage(metrics, { source: "tesla", damage: 5, time: 1, targetId: "dummy-1" });
+  metrics = recordDamage(metrics, {
+    source: "link", damage: 5, time: 1, targetId: "dummy-1",
+    artifactId: "teslaBullets", effectId: "teslaBullets.link",
+    rootTriggerId: "trigger-1", lineageId: "trigger-1:0", killReactionDepth: 0, originPower: 20,
+  });
   expect(summarizeMetrics(metrics, 1)).toMatchObject({ totalDamage: 5, hits: 0, secondaryHits: 1, successfulProjectiles: 0 });
 });
 
 test("recorded direct damage history retains projectile and trigger provenance", () => {
   const metrics = recordDamage(createMetrics(), {
     source: "direct", damage: 20, time: 1, targetId: "dummy-1",
-    projectileId: "projectile-7", triggerId: "trigger-6", artifactId: "hollowPoint",
+    projectileId: "projectile-7", rootTriggerId: "trigger-6", lineageId: "trigger-6:0",
+    artifactId: "baseRevolver", effectId: "baseRevolver.direct", killReactionDepth: 0, originPower: 20,
     x: 640, y: 270, firstProjectileHit: true,
   });
 
   expect(metrics.hitEvents[0]).toEqual({
     source: "direct", damage: 20, time: 1, targetId: "dummy-1",
-    projectileId: "projectile-7", triggerId: "trigger-6", artifactId: "hollowPoint",
-    x: 640, y: 270,
+    projectileId: "projectile-7", rootTriggerId: "trigger-6", lineageId: "trigger-6:0",
+    artifactId: "baseRevolver", effectId: "baseRevolver.direct", killReactionDepth: 0, originPower: 20,
+    x: 640, y: 270, firstProjectileHit: true,
   });
 });
 
 test("recorded Tesla damage history retains secondary provenance", () => {
   const metrics = recordDamage(createMetrics(), {
-    source: "tesla", damage: 5, time: 2, targetId: "dummy-2",
-    projectileId: "projectile-2", triggerId: "trigger-1", artifactId: "teslaBullets",
+    source: "link", damage: 5, time: 2, targetId: "dummy-2",
+    projectileId: "projectile-2", rootTriggerId: "trigger-1", lineageId: "trigger-1:0",
+    artifactId: "teslaBullets", effectId: "teslaBullets.link", killReactionDepth: 0, originPower: 20,
     x: 600, y: 288,
   });
 
   expect(metrics.hitEvents[0]).toEqual({
-    source: "tesla", damage: 5, time: 2, targetId: "dummy-2",
-    projectileId: "projectile-2", triggerId: "trigger-1", artifactId: "teslaBullets",
+    source: "link", damage: 5, time: 2, targetId: "dummy-2",
+    projectileId: "projectile-2", rootTriggerId: "trigger-1", lineageId: "trigger-1:0",
+    artifactId: "teslaBullets", effectId: "teslaBullets.link", killReactionDepth: 0, originPower: 20,
     x: 600, y: 288,
   });
+});
+
+test("damage provenance distinguishes all five source families", () => {
+  const sources = ["direct", "link", "status", "area", "reactive"] as const;
+  let metrics = createMetrics();
+  for (const source of sources) {
+    metrics = recordDamage(metrics, {
+      source, damage: 4, time: 1, targetId: "dummy-1",
+      artifactId: "ectoplasmSnare", effectId: `ectoplasmSnare.${source}`,
+      rootTriggerId: "trigger-1", lineageId: "trigger-1:0", killReactionDepth: 0, originPower: 20,
+    });
+  }
+
+  expect(metrics.hitEvents.map(({ source }) => source)).toEqual([...sources]);
+  expect(metrics.hitEvents[3]).toEqual({
+    source: "area", damage: 4, time: 1, targetId: "dummy-1",
+    artifactId: "ectoplasmSnare", effectId: "ectoplasmSnare.area",
+    rootTriggerId: "trigger-1", lineageId: "trigger-1:0", killReactionDepth: 0, originPower: 20,
+  });
+  expect(summarizeMetrics(metrics, 1)).toMatchObject({ hits: 1, secondaryHits: 4 });
 });
 
 test("reports strict rolling three-second DPS globally and per target", () => {
@@ -53,7 +81,11 @@ test("prunes expired hit history without losing cumulative target totals", () =>
   metrics = recordKill(metrics, "expired");
   metrics = recordHit(metrics, 30, 4, "recent", true);
 
-  expect(metrics.hitEvents).toEqual([{ source: "direct", time: 4, damage: 30, targetId: "recent" }]);
+  expect(metrics.hitEvents).toEqual([{
+    source: "direct", time: 4, damage: 30, targetId: "recent",
+    artifactId: "baseRevolver", effectId: "baseRevolver.direct", rootTriggerId: "baseRevolver",
+    killReactionDepth: 0, originPower: 30, firstProjectileHit: true,
+  }]);
   expect(summarizeMetrics(metrics, 4)).toMatchObject({
     totalDamage: 130,
     hits: 2,

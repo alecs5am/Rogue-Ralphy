@@ -3,6 +3,8 @@ import { ammoCount } from "./cylinder";
 import { ARTIFACT_CATALOG } from "./artifacts";
 import { clampResource, clearTargets, createGame, resetLab, setArtifact, setArtifactLoadout, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
 import { ROOM_PROPS } from "./room";
+import type { ScheduledProjectile } from "./trigger";
+import { buildShot } from "./weapon";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
 const heading = (velocity: { vx: number; vy: number }) => Math.atan2(velocity.vy, velocity.vx);
@@ -108,6 +110,51 @@ test("a successful Tesla extra shot diverges into a non-zero electrical link", (
   expect(game.teslaLinks[0]!.distance).toBeLessThanOrEqual(96);
 });
 
+test("one root trigger consumes one round and one RNG decision", () => {
+  let calls = 0;
+  let game = setArtifact(createGame(() => { calls += 1; return 0.1; }), "teslaBullets", true);
+
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+
+  expect(calls).toBe(1);
+  expect(ammoCount(game.cylinder)).toBe(5);
+  expect(game.metrics.triggers).toBe(1);
+  expect(new Set(game.projectiles.map(({ rootTriggerId }) => rootTriggerId))).toEqual(new Set(["trigger-1"]));
+  expect(new Set(game.projectiles.map(({ lineageId }) => lineageId)).size).toBe(game.projectiles.length);
+});
+
+test("phase two drains due projectiles in stable order and keeps future entries sorted", () => {
+  const game = createGame(() => 0.9);
+  const spec = buildShot(game.weapon, 0, () => 0.9, "ignored").projectiles[0]!;
+  const scheduled = (at: number, lineageId: string, effectId: string): ScheduledProjectile => ({
+    at,
+    generation: 0,
+    rootTriggerId: "trigger-scheduled",
+    lineageId,
+    effectIds: Object.freeze([effectId]),
+    spec,
+  });
+  const queued = {
+    ...game,
+    scheduledProjectiles: [
+      scheduled(3, "z", "future"),
+      scheduled(2, "b", "baseRevolver.direct"),
+      scheduled(2, "a", "later"),
+      scheduled(2, "a", "earlier"),
+    ],
+  };
+
+  const drained = updateGame(queued, idle, 0, 2);
+
+  expect(drained.projectiles.map(({ lineageId, activatedEffectIds }) => [lineageId, activatedEffectIds[0]])).toEqual([
+    ["a", "earlier"],
+    ["a", "later"],
+    ["b", "baseRevolver.direct"],
+  ]);
+  expect(drained.scheduledProjectiles.map(({ at, lineageId }) => [at, lineageId])).toEqual([[3, "z"]]);
+  expect(drained.metrics.projectiles).toBe(3);
+});
+
 test("Tesla Shotgun Spectral Halo and Ghost compose in one deterministic trigger", () => {
   const cover = ROOM_PROPS.find(({ id }) => id === "labMarker")!;
   let game = spawnDummy(createGame(() => 0.32), { x: cover.x, y: cover.y + 104 });
@@ -187,7 +234,8 @@ test("Tesla deals 25 percent of the lower endpoint damage on a 150ms cooldown", 
 
   expect(first.telemetry.totalDamage).toBe(2);
   expect(first.metrics.hitEvents[0]).toMatchObject({
-    source: "tesla", artifactId: "teslaBullets", targetId: "dummy-1", x: 600, y: 270,
+    source: "link", artifactId: "teslaBullets", effectId: "teslaBullets.link",
+    rootTriggerId: "trigger-2", targetId: "dummy-1", x: 600, y: 270,
   });
   expect(blocked.telemetry.totalDamage).toBe(2);
   expect(ready.telemetry.totalDamage).toBe(4);

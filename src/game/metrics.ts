@@ -1,10 +1,11 @@
-export type DamageSource = "direct" | "tesla" | "status";
-export type DamageEvent = {
+export type DamageSource = "direct" | "link" | "status" | "area" | "reactive";
+export type DamageEvent = Readonly<{
   source: DamageSource; damage: number; time: number; targetId: string;
-  projectileId?: string; triggerId?: string; artifactId?: string;
+  artifactId: string; effectId: string; rootTriggerId: string;
+  lineageId?: string; projectileId?: string; killReactionDepth: 0 | 1; originPower: number;
   x?: number; y?: number; firstProjectileHit?: boolean;
-};
-export type HitEvent = Omit<DamageEvent, "firstProjectileHit">;
+}>;
+export type HitEvent = DamageEvent;
 export type TargetMetrics = { damage: number; hits: number; kills: number };
 
 export type Metrics = {
@@ -30,8 +31,7 @@ export function recordProjectile(metrics: Metrics): Metrics {
 }
 
 export function recordDamage(metrics: Metrics, event: DamageEvent): Metrics {
-  const { firstProjectileHit: _, ...hitEvent } = event;
-  const hitEvents = [...metrics.hitEvents.filter((candidate) => candidate.time > event.time - 3), hitEvent];
+  const hitEvents = [...metrics.hitEvents.filter((candidate) => candidate.time > event.time - 3), event];
   const rollingDps = hitEvents.reduce((total, event) => total + event.damage, 0) / 3;
   const target = metrics.targetMetrics[event.targetId] ?? { damage: 0, hits: 0, kills: 0 };
   return {
@@ -47,7 +47,11 @@ export function recordDamage(metrics: Metrics, event: DamageEvent): Metrics {
 }
 
 export function recordHit(metrics: Metrics, damage: number, time: number, targetId: string, firstHit: boolean, point?: { x: number; y: number }): Metrics {
-  return recordDamage(metrics, { source: "direct", damage, time, targetId, firstProjectileHit: firstHit, ...point });
+  return recordDamage(metrics, {
+    source: "direct", damage, time, targetId,
+    artifactId: "baseRevolver", effectId: "baseRevolver.direct", rootTriggerId: "baseRevolver",
+    killReactionDepth: 0, originPower: damage, firstProjectileHit: firstHit, ...point,
+  });
 }
 
 export function recordProjectileOutcome(metrics: Metrics, everHit: boolean): Metrics {

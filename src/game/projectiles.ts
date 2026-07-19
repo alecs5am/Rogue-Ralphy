@@ -27,6 +27,8 @@ export type ProjectileSpec = {
 
 export type ProjectileState = {
   x: number; y: number; id: string; triggerId: string; vx: number; vy: number;
+  generation: 0 | 1; rootTriggerId: string; lineageId: string;
+  activatedEffectIds: readonly string[]; originPower: number;
   damage: number; speed: number; radius: number; lifetime: number; bornAt: number;
   remainingBounces: number; bounceRetention: number;
   freezeChance: number; freezeDuration: number;
@@ -180,6 +182,7 @@ export function splitProjectile(parent: ProjectileState, nextIds: Iterable<strin
     return {
       ...parent,
       id,
+      generation: 1,
       ...velocity,
       damage: parent.damage * split.damageScale,
       radius: parent.radius * split.radiusScale,
