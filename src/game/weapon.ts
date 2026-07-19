@@ -1,4 +1,5 @@
-import { getOwnedArtifacts, type ArtifactId, type ArtifactLoadout } from "./artifacts";
+import type { ArtifactId, ArtifactLoadout } from "./artifacts";
+import type { CombatBuild } from "./combat-build";
 import type { ProjectileBehaviors, ProjectileSpec } from "./projectiles";
 
 export type { ArtifactId, ArtifactLoadout } from "./artifacts";
@@ -22,7 +23,7 @@ const immutableBehaviors = (behaviors: ProjectileBehaviors): ProjectileBehaviors
   ...(behaviors.penetration && { penetration: Object.freeze({ ...behaviors.penetration }) }),
 });
 
-export function deriveWeapon(loadout: ArtifactLoadout, fireRateBuff: number): DerivedWeapon {
+export function deriveWeapon(build: CombatBuild, fireRateBuff: number): DerivedWeapon {
   if (!Number.isFinite(fireRateBuff)) throw new Error("fireRateBuff must be finite");
 
   let damage = BASE_WEAPON.damage;
@@ -38,31 +39,78 @@ export function deriveWeapon(loadout: ArtifactLoadout, fireRateBuff: number): De
   let activeBuffDuration = 0;
   let behaviors: ProjectileBehaviors = {};
 
-  for (const definition of getOwnedArtifacts(loadout)) {
-    for (const effect of definition.effects) {
-      switch (effect.kind) {
-        case "addMultishot": multishot += effect.amount; break;
-        case "multiplyDamage": damage *= effect.amount; break;
-        case "multiplyRadius": radius *= effect.amount; break;
-        case "spread": spread += effect.radians; break;
-        case "freeze": freezeChance = effect.chance; freezeDuration = effect.duration; break;
-        case "bounce": bounces += effect.count; bounceRetention = effect.retention; break;
-        case "activeReload": activeWindow = effect.window; activeBuff = effect.buff; activeBuffDuration = effect.duration; break;
-        case "spiral": behaviors = { ...behaviors, spiral: effect }; break;
-        case "homing": behaviors = { ...behaviors, homing: effect }; break;
-        case "tesla": behaviors = { ...behaviors, tesla: effect }; break;
-        case "split": {
-          const { kind: _, ...split } = effect;
-          behaviors = { ...behaviors, split };
-          break;
-        }
-        case "penetration": behaviors = { ...behaviors, penetration: effect }; break;
-        default: {
-          const exhaustive: never = effect;
-          throw new Error(`unknown artifact effect: ${String(exhaustive)}`);
-        }
-      }
+  for (const rule of build.triggers) {
+    switch (rule.kind) {
+      case "twin":
+        multishot += 1;
+        spread += 8 * Math.PI / 180;
+        break;
+      case "activeReload":
+        activeWindow = rule.window;
+        activeBuff = rule.buff;
+        activeBuffDuration = rule.duration;
+        break;
+      case "fractionalMultishot":
+        multishot += rule.chance;
+        spread += rule.spread;
+        break;
+      case "heavyMainAndMoonlet":
+        radius *= rule.radiusScale;
+        break;
+      default:
+        break;
     }
+  }
+  for (const rule of build.motions) {
+    if (rule.kind === "spiral") {
+      const { initialRadius, radialSpeed, angularSpeed, lifetime } = rule;
+      behaviors = { ...behaviors, spiral: { initialRadius, radialSpeed, angularSpeed, lifetime } };
+    } else if (rule.kind === "homing") {
+      const { radius: acquireRadius, turnRate } = rule;
+      behaviors = { ...behaviors, homing: { radius: acquireRadius, turnRate } };
+    }
+  }
+  for (const rule of build.impacts) {
+    switch (rule.kind) {
+      case "bounce":
+        bounces += rule.count;
+        bounceRetention = rule.retention;
+        break;
+      case "penetration":
+        behaviors = { ...behaviors, penetration: { obstacles: rule.obstacles, targets: rule.targets } };
+        break;
+      case "embeddedCharge":
+        if (rule.artifactId === "hollowPoint") damage *= 1.35;
+        break;
+      case "chill":
+        if (rule.artifactId === "coldcaster") {
+          freezeChance = 0.25;
+          freezeDuration = rule.freezeDuration;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  for (const rule of build.emissions) {
+    if (rule.kind !== "splitCone") continue;
+    behaviors = { ...behaviors, split: {
+      distance: rule.distance,
+      count: rule.count,
+      childRange: rule.range,
+      damageScale: rule.damageScale,
+      fanAngle: rule.angle,
+      radiusScale: rule.radiusScale,
+    } };
+  }
+  for (const rule of build.areas) {
+    if (rule.kind !== "projectileLink") continue;
+    behaviors = { ...behaviors, tesla: {
+      radius: rule.radius,
+      neighbors: rule.neighbors,
+      damageScale: rule.damageScale,
+      cooldown: rule.cooldown,
+    } };
   }
 
   const weapon = {

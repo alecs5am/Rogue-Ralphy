@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ARTIFACT_CATALOG } from "./artifacts";
-import { clampResource, clearTargets, createGame, resetLab, setArtifact, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
+import { clampResource, clearTargets, createGame, resetLab, setArtifact, setArtifactLoadout, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
 import { ROOM_PROPS } from "./room";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
@@ -610,6 +610,19 @@ test("artifact setter rejects legacy numeric values without changing valid owner
   expect(setArtifact(setArtifact(game, "twinChamber", true), "twinChamber", false).artifacts).toEqual({});
 });
 
+test("compiles one immutable combat build per loadout change and reuses it during updates", () => {
+  const base = createGame(() => 0.9);
+  expect(Object.isFrozen(base.build)).toBe(true);
+
+  const loaded = setArtifactLoadout(base, { shotgun: true, twinChamber: true });
+  expect(loaded.artifacts).toEqual({ shotgun: true, twinChamber: true });
+  expect(loaded.build).not.toBe(base.build);
+  expect(loaded.build.emissions.some(({ artifactId }) => artifactId === "shotgun")).toBe(true);
+
+  const updated = updateGame(loaded, idle, STEP, STEP);
+  expect(updated.build).toBe(loaded.build);
+});
+
 test("player movement clamps its circle within every room boundary", () => {
   const game = createGame(() => 0);
   const cases = [
@@ -722,10 +735,8 @@ test("pause preserves velocity and reset clears it", () => {
 });
 
 test("the catalog composes every artifact effect on a projectile", () => {
-  let game = createGame(() => 0.5);
-  for (const { id } of ARTIFACT_CATALOG) {
-    game = setArtifact(game, id, true);
-  }
+  const loadout = Object.fromEntries(ARTIFACT_CATALOG.map(({ id }) => [id, true]));
+  let game = setArtifactLoadout(createGame(() => 0.5), loadout as Parameters<typeof setArtifactLoadout>[1]);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   expect(game.projectiles).toHaveLength(2);
   expect(game.projectiles.every((projectile) =>

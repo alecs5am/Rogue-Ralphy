@@ -6,11 +6,12 @@ import {
 	type GameState,
 	resetLab,
 	setArtifact,
+	setArtifactLoadout,
 	spawnChaser,
 	spawnDummy,
 	spawnWave,
 } from "./game/simulation";
-import type { ArtifactId } from "./game/weapon";
+import type { ArtifactId, ArtifactLoadout } from "./game/weapon";
 
 type StateAccess = { get: () => GameState; set: (state: GameState) => void };
 const format = {
@@ -61,7 +62,7 @@ export function mountLab(
 		const icon = missing.includes(iconKey)
 			? '<span class="missing-icon" aria-hidden="true"></span>'
 			: `<img src="${ASSET_PATHS[iconKey]}" alt="">`;
-		card.innerHTML = `${icon}<div class="artifact-copy"><h3>${artifact.name}</h3><p>${artifact.note}</p></div>`;
+		card.innerHTML = `${icon}<div class="artifact-copy"><h3>${artifact.name}</h3><p>${artifact.description}</p></div>`;
 		const artifactButton = button("Take", "artifact-toggle");
 		artifactButton.setAttribute("aria-label", `Take ${artifact.name}`);
 		artifactButton.addEventListener("click", () => {
@@ -79,18 +80,15 @@ export function mountLab(
 	);
 	const takeAll = button("Take all");
 	takeAll.addEventListener("click", () => {
-		let next = access.get();
-		for (const artifact of ARTIFACT_CATALOG)
-			next = setArtifact(next, artifact.id, true);
-		access.set(next);
+		const loadout = Object.fromEntries(
+			ARTIFACT_CATALOG.map(({ id }) => [id, true]),
+		) as ArtifactLoadout;
+		access.set(setArtifactLoadout(access.get(), loadout));
 	});
 	const clearArtifacts = button("Clear artifacts");
-	clearArtifacts.addEventListener("click", () => {
-		let next = access.get();
-		for (const artifact of ARTIFACT_CATALOG)
-			next = setArtifact(next, artifact.id, false);
-		access.set(next);
-	});
+	clearArtifacts.addEventListener("click", () =>
+		access.set(setArtifactLoadout(access.get(), {})),
+	);
 	artifactActions.append(takeAll, clearArtifacts);
 
 	spawnerRoot.innerHTML = `${sectionHeading("spawner-title", "Test targets")}<div class="action-grid"></div><div class="action-row room-actions"></div>`;

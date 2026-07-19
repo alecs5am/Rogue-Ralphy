@@ -1,5 +1,6 @@
 import { createMetrics, recordDamage, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, attemptActiveReload, createReloadState, fireRateBuffAt, startReload, type ReloadState } from "./reload";
+import { compileCombatBuild, type CombatBuild } from "./combat-build";
 import { buildShot, deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon, type ProjectileSpec } from "./weapon";
 import { advanceTrajectory, buildTeslaLinks, splitProjectile, synchronizeSpiralState, type ProjectileState, type TeslaLink } from "./projectiles";
 import { ROOM, ROOM_PROPS, TILE_SIZE, segmentCircleHitTime, type Point } from "./room";
@@ -29,7 +30,7 @@ export type { ProjectileState } from "./projectiles";
 
 export type GameState = {
   room: { width: number; height: number; minX: number; maxX: number; minY: number; maxY: number };
-  player: PlayerState; aim: Point; artifacts: ArtifactLoadout; weapon: DerivedWeapon;
+  player: PlayerState; aim: Point; artifacts: ArtifactLoadout; build: CombatBuild; weapon: DerivedWeapon;
   resources: Resources;
   reload: ReloadState; projectiles: ProjectileState[]; targets: TargetState[];
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
@@ -88,13 +89,15 @@ const overlaps = (a: Point & { radius: number }, b: Point & { radius: number }) 
 
 export function createGame(rng: () => number = Math.random): GameState {
   const artifacts: ArtifactLoadout = {};
-  const weapon = deriveWeapon(artifacts, 0);
+  const build = compileCombatBuild(artifacts);
+  const weapon = deriveWeapon(build, 0);
   const metrics = createMetrics();
   return {
     room: ROOM,
     player: { ...PLAYER },
     aim: { x: 900, y: 270 },
     artifacts,
+    build,
     resources: { coins: 0, bombs: 0, keys: 0 },
     weapon,
     reload: createReloadState(weapon),
@@ -120,10 +123,17 @@ export function setArtifact(state: GameState, id: ArtifactId, enabled: boolean):
   const artifacts = { ...state.artifacts };
   if (enabled) artifacts[id] = true;
   else delete artifacts[id];
+  return setArtifactLoadout(state, artifacts);
+}
+
+export function setArtifactLoadout(state: GameState, loadout: ArtifactLoadout): GameState {
+  const artifacts = { ...loadout };
+  const build = compileCombatBuild(artifacts);
   return {
     ...state,
     artifacts,
-    weapon: deriveWeapon(artifacts, fireRateBuffAt(state.reload, state.time)),
+    build,
+    weapon: deriveWeapon(build, fireRateBuffAt(state.reload, state.time)),
   };
 }
 
@@ -303,11 +313,11 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   const canAct = diedAt === null && state.player.health > 0;
   let reload = advanceReload(state.reload, now);
   if (now >= reload.buffUntil && reload.fireRateBuff !== 0) reload = { ...reload, fireRateBuff: 0, buffUntil: 0 };
-  let weapon = deriveWeapon(state.artifacts, fireRateBuffAt(reload, now));
+  let weapon = deriveWeapon(state.build, fireRateBuffAt(reload, now));
   if (canAct && input.reloadPressed) {
     if (reload.reloading && weapon.activeWindow > 0) reload = attemptActiveReload(reload, weapon, now);
     else if (!reload.reloading && reload.ammo < reload.capacity) reload = startReload(reload, weapon, now);
-    weapon = deriveWeapon(state.artifacts, fireRateBuffAt(reload, now));
+    weapon = deriveWeapon(state.build, fireRateBuffAt(reload, now));
   }
 
   const magnitude = Math.hypot(input.moveX, input.moveY);
