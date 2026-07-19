@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { clearTargets, createGame, resetLab, setArtifact, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
+import { ROOM_PROPS } from "./room";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
 const heading = (velocity: { vx: number; vy: number }) => Math.atan2(velocity.vy, velocity.vx);
@@ -13,6 +14,24 @@ const moveForTicks = (
   for (let tick = 0; tick < ticks; tick += 1) game = updateGame(game, input, STEP, game.time + STEP);
   return game;
 };
+
+function fireThroughRock(game: ReturnType<typeof createGame>, artifacts: { spectralBullets?: true; pinball?: true }) {
+  for (const id of Object.keys(artifacts) as (keyof typeof artifacts)[]) game = setArtifact(game, id, true);
+  const rock = ROOM_PROPS.find((prop) => prop.id === "rock")!;
+  const aim = { ...idle, aimX: rock.x, aimY: rock.y, firing: true };
+  game = updateGame(game, aim, 0, 1);
+  return updateGame(game, { ...idle, aimX: rock.x, aimY: rock.y }, 0.6, 1.6);
+}
+
+test("normal projectile dies on the rock while spectral and Pinball continue", () => {
+  const normal = fireThroughRock(createGame(() => 0.9), {});
+  const spectral = fireThroughRock(createGame(() => 0.9), { spectralBullets: true });
+  const pinball = fireThroughRock(createGame(() => 0.9), { pinball: true });
+  expect(normal.projectiles).toHaveLength(0);
+  expect(spectral.projectiles).toHaveLength(1);
+  expect(pinball.projectiles[0]?.remainingBounces).toBe(0);
+  expect(pinball.projectiles[0]?.vx).toBeGreaterThan(0);
+});
 
 test("uses a 13 by 7 tile field inside one-tile walls", () => {
   const game = createGame(() => 0);

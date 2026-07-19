@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { createMetrics, recordHit, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, resetMetrics, retainTargetMetrics, summarizeMetrics } from "./metrics";
+import { createMetrics, recordDamage, recordHit, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, resetMetrics, retainTargetMetrics, summarizeMetrics } from "./metrics";
+
+test("Tesla damage raises DPS without successful projectile accuracy", () => {
+  let metrics = createMetrics();
+  metrics = recordDamage(metrics, { source: "tesla", damage: 5, time: 1, targetId: "dummy-1" });
+  expect(summarizeMetrics(metrics, 1)).toMatchObject({ totalDamage: 5, hits: 0, secondaryHits: 1, successfulProjectiles: 0 });
+});
 
 test("reports strict rolling three-second DPS globally and per target", () => {
   let metrics = createMetrics();

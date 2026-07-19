@@ -1,14 +1,9 @@
 import type { AssetKey, Assets } from "./assets";
 import type { GameState, Point } from "./game/simulation";
+import { ROOM_PROPS } from "./game/room";
 
 type RenderOptions = { moving: boolean; reducedMotion: boolean };
 const RALPHY_SIZE = 80;
-const props: { key: AssetKey; x: number; y: number; size: number }[] = [
-	{ key: "rock", x: 160, y: 160, size: 64 },
-	{ key: "crate", x: 800, y: 416, size: 58 },
-	{ key: "labMarker", x: 480, y: 96, size: 52 },
-];
-
 const round = (value: number) => Math.round(value);
 
 function imageAt(
@@ -251,11 +246,11 @@ export function renderGame(
 			state.room.maxY - state.room.minY,
 		);
 	}
-	for (const prop of props)
+	for (const prop of ROOM_PROPS)
 		centeredImage(
 			context,
 			assets,
-			prop.key,
+			prop.kind,
 			{ x: prop.x, y: prop.y },
 			prop.size,
 		);

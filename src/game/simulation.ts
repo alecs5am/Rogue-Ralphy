@@ -1,9 +1,12 @@
-import { createMetrics, recordHit, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
+import { createMetrics, recordDamage, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, attemptActiveReload, createReloadState, fireRateBuffAt, startReload, type ReloadState } from "./reload";
 import { buildShot, deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon, type ProjectileSpec } from "./weapon";
 import type { ProjectileState } from "./projectiles";
+import { ROOM, ROOM_PROPS, TILE_SIZE, segmentCircleHitTime, type Point } from "./room";
 
-export type Point = { x: number; y: number };
+export { ROOM, TILE_SIZE } from "./room";
+export type { Point } from "./room";
+
 export type InputIntent = {
   moveX: number; moveY: number; aimX: number; aimY: number;
   firing: boolean; reloadPressed: boolean; paused: boolean;
@@ -28,18 +31,6 @@ export type GameState = {
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; nextShotAt: number; nextId: number; paused: boolean; rng: () => number;
 };
-
-export const TILE_SIZE = 64;
-export const ROOM_COLUMNS = 13;
-export const ROOM_ROWS = 7;
-export const ROOM = {
-  width: (ROOM_COLUMNS + 2) * TILE_SIZE,
-  height: (ROOM_ROWS + 2) * TILE_SIZE,
-  minX: TILE_SIZE,
-  maxX: (ROOM_COLUMNS + 1) * TILE_SIZE,
-  minY: TILE_SIZE,
-  maxY: (ROOM_ROWS + 1) * TILE_SIZE,
-} as const;
 
 const tileCenter = (column: number, row: number): Point => ({
   x: (column + 1.5) * TILE_SIZE,
@@ -199,6 +190,7 @@ function makeProjectile(spec: ProjectileSpec, state: GameState, aimAngle: number
     homingTurnRate: spec.homingTurnRate,
     homingRadius: spec.homingRadius,
     behaviors: spec.behaviors,
+    penetration: spec.behaviors.penetration,
     hitTargetIds: [],
     everHit: false,
   };
@@ -278,6 +270,27 @@ function bounceOffTarget(projectile: ProjectileState, target: TargetState): void
   reflect(projectile, nx, ny);
 }
 
+function bounceOffProp(projectile: ProjectileState, prop: (typeof ROOM_PROPS)[number], from: Point, time: number): boolean {
+  projectile.x = from.x + (projectile.x - from.x) * time;
+  projectile.y = from.y + (projectile.y - from.y) * time;
+  if (projectile.remainingBounces <= 0) return true;
+  let nx = projectile.x - prop.x;
+  let ny = projectile.y - prop.y;
+  const length = Math.hypot(nx, ny);
+  if (length === 0) {
+    const speed = Math.hypot(projectile.vx, projectile.vy) || 1;
+    nx = -projectile.vx / speed;
+    ny = -projectile.vy / speed;
+  } else {
+    nx /= length;
+    ny /= length;
+  }
+  projectile.x = prop.x + nx * (prop.collisionRadius + projectile.radius + 0.01);
+  projectile.y = prop.y + ny * (prop.collisionRadius + projectile.radius + 0.01);
+  reflect(projectile, nx, ny);
+  return false;
+}
+
 export function updateGame(state: GameState, input: InputIntent, dt: number, now: number): GameState {
   if (input.paused) return state.paused ? state : { ...state, paused: true };
 
@@ -330,6 +343,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   }
 
   const movingState = { ...state, player, targets: state.targets };
+  const projectileStarts = new Map(projectiles.map((projectile) => [projectile.id, { x: projectile.x, y: projectile.y }]));
   projectiles = projectiles.map((projectile) => advanceProjectile(projectile, movingState, input, dt));
   let targets = state.targets.map((target) => {
     if (target.kind !== "chaser" || now < target.frozenUntil) return { ...target };
@@ -357,6 +371,16 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       continue;
     }
     if (projectile.phase === "orbit") { survivingProjectiles.push(projectile); continue; }
+    const from = projectileStarts.get(projectile.id)!;
+    const propHit = projectile.penetration?.obstacles ? undefined : ROOM_PROPS
+      .map((prop) => ({ prop, time: segmentCircleHitTime(from, projectile, prop, prop.collisionRadius + projectile.radius) }))
+      .filter((hit): hit is { prop: (typeof ROOM_PROPS)[number]; time: number } => hit.time !== null)
+      .sort((a, b) => a.time - b.time)[0];
+    if (propHit) {
+      if (bounceOffProp(projectile, propHit.prop, from, propHit.time)) metrics = recordProjectileOutcome(metrics, projectile.everHit);
+      else survivingProjectiles.push(projectile);
+      continue;
+    }
     if (bounceOffWalls(projectile, state.room)) {
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
       continue;
@@ -372,7 +396,11 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       }
       const firstHit = !projectile.everHit;
       projectile.everHit = true;
-      metrics = recordHit(metrics, projectile.damage, now, target.id, firstHit, target);
+      metrics = recordDamage(metrics, {
+        source: "direct", damage: projectile.damage, time: now, targetId: target.id,
+        projectileId: projectile.id, triggerId: projectile.triggerId, firstProjectileHit: firstHit,
+        x: target.x, y: target.y,
+      });
       if (wasAlive && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
       projectile.hitTargetIds.push(target.id);
       if (projectile.remainingBounces > 0) bounceOffTarget(projectile, target);

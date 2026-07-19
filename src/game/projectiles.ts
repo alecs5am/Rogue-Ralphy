@@ -25,5 +25,5 @@ export type ProjectileState = {
   damage: number; speed: number; radius: number; lifetime: number; bornAt: number;
   remainingBounces: number; bounceRetention: number;
   freezeChance: number; freezeDuration: number;
-  homingTurnRate: number; homingRadius: number; behaviors: ProjectileBehaviors; hitTargetIds: string[]; everHit: boolean;
+  homingTurnRate: number; homingRadius: number; behaviors: ProjectileBehaviors; penetration?: PenetrationBehavior; hitTargetIds: string[]; everHit: boolean;
 };
