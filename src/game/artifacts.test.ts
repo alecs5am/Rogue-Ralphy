@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { ARTIFACT_CATALOG, getOwnedArtifacts, validateArtifactCatalog, type ArtifactDefinition } from "./artifacts";
 import { buildShot, deriveWeapon } from "./weapon";
 
+const degrees = Math.PI / 180;
+
 describe("artifact catalog", () => {
   test("contains unique definitions for the three new artifacts", () => {
     expect(validateArtifactCatalog(ARTIFACT_CATALOG)).toEqual([]);
@@ -32,18 +34,35 @@ describe("artifact catalog", () => {
 });
 
 describe("probabilistic multishot", () => {
-  test("Tesla uses a fresh 33 percent roll with no accumulator", () => {
+  test("Tesla uses a fresh 33 percent roll and fans a successful pair across eight degrees", () => {
     const weapon = deriveWeapon({ teslaBullets: true }, 0);
     expect(weapon.multishot).toBeCloseTo(1.33);
-    expect(buildShot(weapon, 0, () => 0.329, "trigger-a").projectiles).toHaveLength(2);
-    expect(buildShot(weapon, 0, () => 0.33, "trigger-b").projectiles).toHaveLength(1);
+    expect(weapon.spread).toBeCloseTo(8 * degrees);
+
+    const proc = buildShot(weapon, 0, () => 0.329, "trigger-a").projectiles;
+    expect(proc).toHaveLength(2);
+    expect(proc[0]!.heading).toBeCloseTo(-4 * degrees);
+    expect(proc[1]!.heading).toBeCloseTo(4 * degrees);
+
+    const miss = buildShot(weapon, 0, () => 0.33, "trigger-b").projectiles;
+    expect(miss).toHaveLength(1);
+    expect(miss[0]!.heading).toBe(0);
     expect(buildShot(weapon, 0, () => 0.99, "trigger-c").projectiles).toHaveLength(1);
   });
 
-  test("Twin Chamber and Tesla derive 2.33 multishot", () => {
+  test("Twin Chamber and Tesla add their multishot and spread", () => {
     const weapon = deriveWeapon({ twinChamber: true, teslaBullets: true }, 0);
     expect(weapon.multishot).toBeCloseTo(2.33);
-    expect(buildShot(weapon, 0, () => 0.2, "trigger-a").projectiles).toHaveLength(3);
-    expect(buildShot(weapon, 0, () => 0.8, "trigger-b").projectiles).toHaveLength(2);
+    expect(weapon.spread).toBeCloseTo(16 * degrees);
+
+    const proc = buildShot(weapon, 0, () => 0.2, "trigger-a").projectiles;
+    expect(proc.map(({ heading }) => heading)).toHaveLength(3);
+    expect(proc[0]!.heading).toBeCloseTo(-8 * degrees);
+    expect(proc[1]!.heading).toBeCloseTo(0);
+    expect(proc[2]!.heading).toBeCloseTo(8 * degrees);
+
+    const miss = buildShot(weapon, 0, () => 0.8, "trigger-b").projectiles;
+    expect(miss[0]!.heading).toBeCloseTo(-8 * degrees);
+    expect(miss[1]!.heading).toBeCloseTo(8 * degrees);
   });
 });

@@ -24,6 +24,20 @@ test("clamps HUD resources to integer values from zero through 99", () => {
   expect([-1, 0, 12.9, 99, 100].map(clampResource)).toEqual([0, 0, 12, 99, 99]);
 });
 
+test("a successful Tesla extra shot diverges into a non-zero electrical link", () => {
+  let game = setArtifact(createGame(() => 0.329), "teslaBullets", true);
+  const aim = { ...idle, aimY: game.player.y };
+
+  game = updateGame(game, { ...aim, firing: true }, 0, 1);
+  game = updateGame(game, aim, STEP, 1 + STEP);
+
+  expect(game.projectiles).toHaveLength(2);
+  expect(game.projectiles[0]!.y).not.toBe(game.projectiles[1]!.y);
+  expect(game.teslaLinks).toHaveLength(1);
+  expect(game.teslaLinks[0]!.distance).toBeGreaterThan(0);
+  expect(game.teslaLinks[0]!.distance).toBeLessThanOrEqual(96);
+});
+
 test("Tesla Shotgun Spectral Halo and Ghost compose in one deterministic trigger", () => {
   const cover = ROOM_PROPS.find(({ id }) => id === "labMarker")!;
   let game = spawnDummy(createGame(() => 0.32), { x: cover.x, y: cover.y + 104 });

@@ -35,7 +35,19 @@ export const ARTIFACT_CATALOG = [
   { id: "deadeye", name: "Deadeye", note: "12% window · +20% rate · 2.25s", icon: "deadeye", category: "utility", tags: ["reload", "fire-rate"], effects: [{ kind: "activeReload", window: 0.12, buff: 0.2, duration: 2.25 }] },
   { id: "haloChamber", name: "Halo Chamber", note: "outward spiral · 4s", icon: "haloChamber", category: "trajectory", tags: ["spiral"], effects: [{ kind: "spiral", initialRadius: 24, radialSpeed: 48, angularSpeed: 3 * Math.PI, lifetime: 4 }] },
   { id: "ghostSight", name: "Ghost Sight", note: "540°/s turn · acquire radius 96", icon: "ghostSight", category: "trajectory", tags: ["homing"], effects: [{ kind: "homing", radius: 96, turnRate: 3 * Math.PI }] },
-  { id: "teslaBullets", name: "Tesla Bullets", note: "+0.33 multishot · chain arcs", icon: "teslaBullets", category: "weapon", tags: ["multishot", "tesla"], effects: [{ kind: "addMultishot", amount: 0.33 }, { kind: "tesla", radius: 96, neighbors: 2, damageScale: 0.25, cooldown: 0.15 }] },
+  {
+    id: "teslaBullets",
+    name: "Tesla Bullets",
+    note: "+0.33 multishot · chain arcs",
+    icon: "teslaBullets",
+    category: "weapon",
+    tags: ["multishot", "spread", "tesla"],
+    effects: [
+      { kind: "addMultishot", amount: 0.33 },
+      { kind: "spread", radians: 8 * degrees },
+      { kind: "tesla", radius: 96, neighbors: 2, damageScale: 0.25, cooldown: 0.15 },
+    ],
+  },
   { id: "shotgun", name: "Shotgun", note: "split after 160 px", icon: "shotgun", category: "trajectory", tags: ["split"], effects: [{ kind: "split", distance: 160, count: 8, childRange: 128, damageScale: 0.35 }] },
   { id: "spectralBullets", name: "Spectral Bullets", note: "pierce cover and targets", icon: "spectralBullets", category: "trajectory", tags: ["penetration", "spectral"], effects: [{ kind: "penetration", obstacles: true, targets: true }] },
 ] as const satisfies readonly ArtifactDefinition[];
