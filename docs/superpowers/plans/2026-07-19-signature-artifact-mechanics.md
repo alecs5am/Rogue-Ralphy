@@ -682,6 +682,18 @@ const COMPOSITIONS = [
 ] as const;
 ```
 
+Each fixture has an exact distinguishing oracle rather than a no-throw assertion:
+
+- Twin+Tesla+Crossfire: base `20/5/620`, aim distance `192`, RNG `0.1` creates exactly three generation-zero shots at damage `14`; Twin reconverges at `192`, shared muzzle is ignored, one canonical Crossfire pulse occurs at convergence for `3.5` with lower/canonical provenance, and Tesla degree stays `<=2`.
+- Deadeye+Grave+Fan: consumed echo at `t=1` creates Fan generation-zero at `1/1.09/1.18`, damage `9`; Deadeye at `1.12/1.21/1.30`, damage `3.15`; Grave at `1.28/1.37/1.46`, damage `3.6`; six generation-one copies retain parent root/lineage/origin/heading and creation provenance but no emission/reactive eligibility.
+- Halo+Shotgun+Wailing+Ghost: at exactly `160` actual-path pixels, the parent is replaced and the next step materializes eight children at damage `5`, radius `2.75`, phases `2πi/8`; spiral/wave/homing remain, emission eligibility does not, and a target within `96` proves polyline collision/steering.
+- Pinball+Mint+Return: the first wall/prop bounce before `240` leaves parent damage `18`, speed `837`, consumes one relay and queues one tangent Mint child at damage `5.4`, radius `2.75`, range `160`; Return turns at total `240`, damage `11.7`, and the same target may be hit once per leg.
+- Hollow+Bone+Comet: use one lineage at age `1`, current damage/radius `27/7.5`. First direct stores `16.2` and queues three Bone shards at `5.4/4.125/160`; second direct deals `27` and detonates one `64 px` area for `16.2`.
+- Cold+Cinder+Hex+Snare: four ordered generation-zero direct hits on one target/same root yield chill1 → chill2 → freeze without shards → consume freeze + chill1 + four shards (`3/2.25/128`); exactly one Snare (`40/1.5/.1`, damage `.8`), burn potency `2` with four ticks/earliest tick retained, and fourth-hit Hex copies chill1/burn to a second in-range target but not excluded states.
+- BigIron+Posse+Tesla: root one creates heavy main `24/6.25/496`, one moonlet `8.4/3.125`, and one nonfiring satellite; root two fires exactly one Posse shot at damage `4` before adding a satellite. Moonlet/Posse keep Tesla eligibility but no Big-Iron/Posse/Wake/Crossfire creation eligibility; Tesla includes generation one and respects degree two.
+- Stillwater+Shotgun+Dustline: charging exactly `.6` creates parent `32/10` with penetration; split at `160` queues eight pellets `8/5.5`, one parent afterimage seed, and only a `32 px` token per pellet; afterimage at split `+.12` is generation one, damage `11.2`, range `192`, and cannot retrigger.
+- Harvester+Brand+Bonanza: one low-health victim and two live survivors within `240`; first generation-zero kill brands then jumps to nearest/stable survivor, queues two distinct-target spirits at damage `7` from origin power `20`, and one Bonanza arrival at kill `+.25`; later same-root/generation-one/depth-one kills cannot repeat either reaction.
+
 - [ ] **Step 2: Add deterministic ten-second stress**
 
 Create all thirty-six ownership in one batch, spawn five dummies and five chasers, fire/reload for ten seconds at `1/120`, stop firing, and continue until all bounded transient state cleans up.
@@ -698,6 +710,16 @@ expect(serializable(run(seed))).toEqual(serializable(run(seed)));
 ```
 
 Assert every damage event has `artifactId`, `effectId`, root trigger, depth, finite damage/time/position, and that direct accuracy ignores links/status/areas/reactive damage.
+
+Use the per-root cumulative descendant ledger, not simultaneous arrays or global projectile telemetry. Assert the known Tesla-success/Dealer-due root has exactly `11` generation-zero launches, every root stays at or below `build.maxDescendants`, and the compiled all-artifact value is exactly `294`. Add a boundary fixture where cumulative child `294` is accepted and child `295` throws a named overflow error; no `slice`, cap, or silent suppression is allowed.
+
+Drain with a fixed upper bound through stop `+8 s`, moving the player at speed `>=1` so owned Stillwater does not recharge. The final transient predicate covers live projectiles, schedules, pending emissions, areas, VFX, Tesla links, rolling hit history, target statuses, pair/cooldown/once/relay/descendant ledgers, trails, satellites, recoil windows, refunds/deliveries, orbitals, and decoy. Assert exact empty/null/neutral states plus cleared target deadlines/charges/notches; sample maximum size of every bounded collection during every tick, because final emptiness alone does not prove bounded growth.
+
+Walk the raw state before serialization and reject non-finite numbers, undefined/symbol/function values except the explicitly omitted RNG closure, unsupported collections, and cycles. Then build one canonical complete gameplay snapshot, `structuredClone` it, JSON round-trip it, and compare seeded runs including hidden ledgers. Never call JSON before the finite walk because JSON masks NaN/Infinity as `null`.
+
+Collect each newly appended damage event every fixed step before the rolling three-second metrics prune. Every observed event has a closed five-family source, nonempty target/artifact/effect/root, depth `0|1`, finite positive damage/time/originPower/position, and nonempty optional lineage/projectile IDs. Direct events require projectile/lineage IDs and `firstProjectileHit`. After drain, assert `metrics.hits` equals observed direct count, secondary hits equal observed non-direct count, successful projectiles equal distinct direct projectile IDs, total projectiles equal successes + misses, and reported accuracy equals that quotient.
+
+The executable fixture batch-owns all 36 once, asserts exactly five nonoverlapping dummies and five chasers were spawned, uses integer clock `tick/120` for 1,200 firing ticks plus bounded drain, deterministic aim/movement, and a seeded/tape RNG containing Tesla successes and failures. Press reload on the first actual Deadeye sweet-window tick while automatic reload remains the source. Assert Ralphy is alive through the ten-second firing premise.
 
 - [ ] **Step 3: Run stress and full unit gate**
 
