@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createGame } from "./simulation";
-import { selectRalphyPose, validateRalphyAtlas } from "./presentation";
+import { RALPHY_CLIPS, selectRalphyPose, validateRalphyAtlas } from "./presentation";
 
 const at = (time: number) => {
   const state = createGame(() => 0);
@@ -61,6 +61,18 @@ test.each([[0, 0], [0.1, 1], [0.2, 2], [0.34, 3], [10, 3]] as const)(
     expect(selectRalphyPose({ ...base, diedAt: 5 }, false).frame).toMatchObject({ row: 5, col });
   },
 );
+
+test("death pose never mirrors when aim changes", () => {
+  const base = createGame(() => 0);
+  const dead = { ...base, diedAt: 1, time: 2, player: { ...base.player, health: 0 } };
+  expect(selectRalphyPose({ ...dead, aim: { x: 0, y: dead.player.y } }, false).flipX).toBe(false);
+  expect(selectRalphyPose({ ...dead, aim: { x: 999, y: dead.player.y } }, false).flipX).toBe(false);
+});
+
+test("death is the sole held nonlooping atlas clip", () => {
+  expect(validateRalphyAtlas()).toEqual([]);
+  expect(RALPHY_CLIPS.filter((clip) => clip.holdLast).map((clip) => clip.state)).toEqual(["death"]);
+});
 
 test("reduced motion freezes loops but retains essential states", () => {
   const base = at(0.55);

@@ -22,13 +22,22 @@ export const RALPHY_ATLAS = {
   anchorY: 74,
 } as const;
 
+export const RALPHY_CLIPS = [
+  { state: "idle", loop: true, holdLast: false },
+  { state: "move", loop: true, holdLast: false },
+  { state: "fire", loop: false, holdLast: false },
+  { state: "reload", loop: false, holdLast: false },
+  { state: "hurt", loop: false, holdLast: false },
+  { state: "death", loop: false, holdLast: true },
+] as const;
+
 const clips = {
-  idle: { row: 0, durations: [450, 450], loop: true, held: false },
-  move: { row: 1, durations: [100, 100, 100, 100], loop: true, held: false },
-  fire: { row: 2, durations: [60, 100], loop: false, held: false },
-  reload: { row: 3, durations: [500, 500, 500], loop: false, held: false },
-  hurt: { row: 4, durations: [180], loop: false, held: false },
-  death: { row: 5, durations: [100, 100, 140, 140], loop: false, held: true },
+  idle: { row: 0, durations: [450, 450], loop: true },
+  move: { row: 1, durations: [100, 100, 100, 100], loop: true },
+  fire: { row: 2, durations: [60, 100], loop: false },
+  reload: { row: 3, durations: [500, 500, 500], loop: false },
+  hurt: { row: 4, durations: [180], loop: false },
+  death: { row: 5, durations: [100, 100, 140, 140], loop: false },
 } as const;
 
 const directionBases: Record<Facing, number> = { down: 0, up: 4, left: 8, right: 8 };
@@ -110,7 +119,7 @@ export function selectRalphyPose(state: GameState, reducedMotion: boolean): Ralp
       row: clip.row,
       durationMs: clip.durations[frameIndex]!,
     },
-    flipX: facing === "right",
+    flipX: stateName === "death" ? false : facing === "right",
     bodyRecoil: reducedMotion ? 0 : stateName === "fire" && frameIndex === 0 ? 3 : 0,
     gunRecoil: reducedMotion ? 0 : stateName === "fire" ? (frameIndex === 0 ? 6 : 2) : 0,
     gunSpin: reducedMotion ? 0 : stateName === "reload" ? progress * Math.PI * 2 : 0,
@@ -119,6 +128,8 @@ export function selectRalphyPose(state: GameState, reducedMotion: boolean): Ralp
 
 export function validateRalphyAtlas(): string[] {
   const errors: string[] = [];
+  const heldClipStates = RALPHY_CLIPS.filter((clip) => clip.holdLast).map((clip) => clip.state);
+  if (heldClipStates.length !== 1 || heldClipStates[0] !== "death") errors.push("death must be the sole held clip");
   for (const [name, clip] of Object.entries(clips)) {
     const durations: readonly number[] = clip.durations;
     if (durations.length === 0) errors.push(`${name} has no frames`);
@@ -126,8 +137,6 @@ export function validateRalphyAtlas(): string[] {
       if (!Number.isFinite(duration) || duration <= 0) errors.push(`${name} has invalid frame duration ${duration}`);
     }
     if (clip.row < 0 || clip.row >= RALPHY_ATLAS.rows) errors.push(`${name} row ${clip.row} is out of bounds`);
-    if (clip.held && name !== "death") errors.push(`${name} cannot hold its final frame`);
-
     const bases = name === "death" ? [0] : Object.values(directionBases);
     for (const base of bases) {
       for (let index = 0; index < durations.length; index += 1) {

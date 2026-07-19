@@ -180,6 +180,14 @@ test("shows hurt then holds death until the laboratory resets", async ({ page })
 	await page.addInitScript(() => { Math.random = () => 0; });
 	await installAnimationProbe(page);
 	await page.goto("/");
+	const canvas = page.locator("#game");
+	const box = await canvas.boundingBox();
+	if (!box) throw new Error("game canvas is not visible");
+	await page.mouse.move(box.x + box.width * 0.75, box.y + box.height * 0.5);
+	await page.mouse.down();
+	await page.waitForTimeout(40);
+	await page.mouse.up();
+	await expect(page.locator('[data-stat="ammo"]')).toHaveText("5/6");
 	await page.getByRole("button", { name: "Spawn chaser" }).click();
 
 	await page.keyboard.down("w");
@@ -197,15 +205,13 @@ test("shows hurt then holds death until the laboratory resets", async ({ page })
 	expect(new Set(atlas.filter(({ row }) => row === 5).map(({ col }) => col))).toEqual(new Set([0, 1, 2, 3]));
 	expect(atlas.at(-1)).toMatchObject({ row: 5, col: 3 });
 
-	const ammo = await page.locator('[data-stat="ammo"]').textContent();
-	await page.keyboard.down("d");
+	await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 	await page.mouse.down();
 	await page.keyboard.press("r");
 	await page.waitForTimeout(300);
 	await page.mouse.up();
-	await page.keyboard.up("d");
 	await expect(page.locator('[data-stat="health"]')).toHaveText("0/100");
-	await expect(page.locator('[data-stat="ammo"]')).toHaveText(ammo ?? "6/6");
+	await expect(page.locator('[data-stat="ammo"]')).toHaveText("5/6");
 
 	atlas = await page.evaluate(() =>
 		(window as typeof window & { __animationProbe: AnimationProbe }).__animationProbe.draws
