@@ -1,5 +1,16 @@
 import { expect, test } from "@playwright/test";
 
+const ARTIFACTS = [
+	["Twin Chamber", "2 projectiles · 8° spread"],
+	["Big Iron", "+25% radius"],
+	["Hollow Point", "+35% damage"],
+	["Coldcaster", "25% freeze · 1.05s"],
+	["Pinball", "1 bounce · 90% damage"],
+	["Deadeye", "12% window · +20% rate · 2.25s"],
+	["Halo Chamber", "0.9s orbit · radius 30"],
+	["Ghost Sight", "180°/s · radius 40"],
+] as const;
+
 test("builds a loadout, damages a dummy, and auto-reloads", async ({
 	page,
 }) => {
@@ -108,8 +119,14 @@ for (const viewport of [
 			/ASSETS ONLINE/,
 		);
 		await expect(page.locator("[data-stat=ammo]")).toHaveText("6/6");
+		for (const [name, note] of ARTIFACTS) {
+			await expect(page.getByRole("button", { name: `Take ${name}` })).toBeVisible();
+			await expect(page.getByText(note, { exact: true })).toBeVisible();
+		}
 		await page.getByRole("button", { name: "Take all" }).click();
 		await expect(page.locator(".artifact-card.active")).toHaveCount(8);
+		for (const [name] of ARTIFACTS)
+			await expect(page.getByRole("button", { name: `Remove ${name}` })).toBeVisible();
 		await page.getByRole("button", { name: "Spawn dummy" }).click();
 
 		const canvas = page.locator("#game");

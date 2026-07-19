@@ -18,15 +18,15 @@ export const ARTIFACTS: Artifact[] = [
 	{
 		id: "twinChamber",
 		name: "Twin Chamber",
-		note: "+projectiles · wider spread",
+		note: "2 projectiles · 8° spread",
 	},
-	{ id: "bigIron", name: "Big Iron", note: "+projectile size" },
+	{ id: "bigIron", name: "Big Iron", note: "+25% radius" },
 	{ id: "hollowPoint", name: "Hollow Point", note: "+35% damage" },
-	{ id: "coldcaster", name: "Coldcaster", note: "freeze chance + duration" },
-	{ id: "pinball", name: "Pinball", note: "wall and target ricochet" },
-	{ id: "deadeye", name: "Deadeye", note: "active reload + rate buff" },
-	{ id: "haloChamber", name: "Halo Chamber", note: "orbit, then launch" },
-	{ id: "ghostSight", name: "Ghost Sight", note: "homing turn + range" },
+	{ id: "coldcaster", name: "Coldcaster", note: "25% freeze · 1.05s" },
+	{ id: "pinball", name: "Pinball", note: "1 bounce · 90% damage" },
+	{ id: "deadeye", name: "Deadeye", note: "12% window · +20% rate · 2.25s" },
+	{ id: "haloChamber", name: "Halo Chamber", note: "0.9s orbit · radius 30" },
+	{ id: "ghostSight", name: "Ghost Sight", note: "180°/s · radius 40" },
 ];
 
 const format = {
