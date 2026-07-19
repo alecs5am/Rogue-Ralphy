@@ -615,7 +615,10 @@ export type CombatEvent = Readonly<{
   kind: "prop" | "wall" | "target" | "distance" | "range" | "lifetime";
   projectileId: string;
   targetId?: string;
+  colliderId?: string;
   point: Point;
+  normal?: Point;
+  segment?: Readonly<{ from: Point; to: Point }>;
 }>;
 
 export type PendingEmission = Readonly<{
@@ -665,7 +668,13 @@ export type CombatRuntime = Readonly<{
 }>;
 ```
 
-Reject non-finite records, generation over one, areas above three seconds/ten hertz, duplicate `effectId + rootTriggerId + instanceKey`, and kill reactions above depth one.
+The public phase API may accept a separate immutable `CombatContext` for `dt`, room geometry, compiled build, RNG, and the legacy Tesla link/cooldown state, plus a private intermediate record for swept segments/events. Do not hide those dependencies or pretend the closed `CombatRuntime` above contains them. Root expansion, cylinder consumption, and reload logic stay in `simulation.ts`; the trigger phase only materializes Task-4 schedules and already-due pending emissions.
+
+Reject non-finite records, generation over one, areas above three seconds/ten hertz, duplicate `effectId + rootTriggerId + instanceKey`, and kill reactions above depth one. Migrate dummies from `Infinity` to finite immortal target semantics instead of exempting them from validation. VFX records also require finite clocks and positions, unique stable IDs, deterministic expiry within three seconds, and a live-count bound derived from fire cadence, effect caps, and lifetime rather than silent truncation.
+
+Phases are observationally immutable: they never mutate their input arrays, metrics, projectiles, targets, or nested records. Existing mutating motion helpers may only receive fresh clones. Add a snapshot regression that calls every phase and proves its input remains unchanged.
+
+Combat-event ordering is tolerant swept time, then projectile ID, then stable target/collider ID, then semantic kind priority `prop < wall < target < distance < range < lifetime`; do not use lexical kind order. The event payload must retain enough normal/path context to preserve merged corner normals, stable equal-time prop/target ties, physical impacts before distance/range/lifetime, stale-dead-target skipping, and Spectral multi-hit before a Shotgun split in the same sweep.
 
 - [ ] **Step 4: Refactor `updateGame` into phase orchestration**
 
@@ -683,9 +692,13 @@ const resolved = resolveKillAndCleanupPhase(updated);
 
 Each function returns the next closed `CombatRuntime` record. Child emissions start on the following fixed step. Secondary damage cannot re-enter direct impact/emission and kill reactions stop at depth one.
 
+At the beginning of a step, drain only Task-4 schedules whose wall-clock `at <= now` and pending emissions whose fixed-step `atStep <= step`. A new emission always receives `atStep = step + 1`; it is neither materialized nor moved in its creator call. Increment `step` exactly once per unpaused update and never while paused. Generation-one projectiles keep full `activatedEffectIds` provenance plus compatible motion, penetration, and direct-status behavior, but eligibility checks by `generation` forbid further emission and kill-reactive effects.
+
 - [ ] **Step 5: Prove current mechanics and cleanup still work**
 
-Retain focused regressions for Halo, Ghost, Tesla, Shotgun, Spectral, Pinball, Coldcaster, Deadeye, movement, death, and reset. Add finite-state and expired schedule/area/VFX cleanup assertions.
+Retain focused regressions for Halo, Ghost, Tesla, Shotgun, Spectral, Pinball, Coldcaster, Deadeye, movement, death, and reset, including arbitrary-`dt` lifetime and swept-impact cases. Update Shotgun expectations so split children sit in `pendingEmissions` during the creator step and materialize on the next step. Add finite-state, phase-input immutability, and expired schedule/area/VFX cleanup assertions.
+
+Reset and clear-target flows clear pending emissions, areas, VFX, and Tesla link histories. Pause leaves the whole combat runtime and step unchanged. Death blocks new player intent/root triggers while existing combat and targets continue to update. Every projectile outcome is recorded exactly once; secondary damage never changes projectile accuracy.
 
 - [ ] **Step 6: Run tests and commit**
 
