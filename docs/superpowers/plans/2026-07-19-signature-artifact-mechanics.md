@@ -149,6 +149,13 @@ git commit -m "feat: add signature trigger artifacts"
 - Modify: `src/game/combat-effects.ts`
 - Modify: `src/game/simulation.ts`
 - Modify: `src/game/simulation.test.ts`
+- Modify: `src/game/trigger.ts`
+- Modify: `src/game/trigger.test.ts`
+- Modify: `src/game/combat-build.ts`
+- Modify: `src/game/combat-build.test.ts`
+- Modify: `src/game/metrics.ts`
+- Modify: `src/game/metrics.test.ts`
+- Modify: `src/game/simulation.test.ts`
 
 **Interfaces:**
 
@@ -458,8 +465,8 @@ git commit -m "feat: apply signature target statuses"
 
 **Interfaces:**
 
-- Produces: shared spatial candidates, spectral traversal, Tesla links, Big Iron pairs, Ghost Posse satellites, Wake trails, and Crossfire areas.
-- Consumes: generation/root/lineage projectile state and bounded area/VFX records.
+- Produces: shared swept spatial candidates, spectral traversal, canonical Tesla links, Big Iron main/moonlet pairs, Ghost Posse satellites, lossless batched Wake trails, Crossfire pulses, pair histories, and cumulative descendant accounting.
+- Consumes: generation/root/lineage projectile state, Task-2 canonical paths, Task-3 provenance/once-history, accepted root snapshots, and bounded area/VFX records.
 
 - [ ] **Step 1: Write six failing signature tests**
 
@@ -476,6 +483,10 @@ const ROW_FIVE = [
 
 Assert spectral room-wall solidity, canonical Tesla/Crossfire pair IDs, degree two, cooldowns, pair explosion timing, tangential moonlet release, satellite creation/fire order, continuous bounded trail segments, and one Covenant pulse per projectile.
 
+Extend the closed Big-Iron rule payload instead of hardcoding implementation literals: moonlet radius scale `0.50`, damage scale `0.35`, pair window `0.25`, explosion radius `56`, explosion scale `0.50`, knockback `60`, and distinct moonlet creation provenance. Crossfire similarly has an explicit one-shot pulse record/expiry contract rather than pretending to be a positive-duration ticking `AreaState`.
+
+Use `96 px` spatial cells. Insert every physically clipped Task-2 swept center segment into all overlapped cells, not only endpoint cells. Dedupe lexicographic canonical runtime projectile pairs and stable-sort them; never silently cap candidates. Tesla considers all live Tesla-enabled generation-zero and generation-one endpoints, sorts edges by `(distance, pairId)`, then greedily enforces degree `<= 2`. Crossfire considers generation-zero current-step paths only, sorts `(crossingTime, pairId)`, and enforces one lifetime participation per projectile.
+
 - [ ] **Step 2: Write spatial and area-key tests**
 
 ```ts
@@ -490,6 +501,12 @@ test("area identity permits independent pair explosions but one root Snare", () 
   expect(areaId("ectoplasmSnare.pool", "trigger-1", "root")).toBe("ectoplasmSnare.pool:trigger-1:root");
 });
 ```
+
+Pair cooldown/history is separate from live area state. Tesla keys by effect + canonical projectile pair + target, preserves an unexpired `0.15 s` cooldown through a temporary disconnect, and prunes after expiry or permanent source cleanup. Damage/provenance always belongs to the lower-current-damage endpoint; ties use canonical-low projectile ID, including its root/lineage/projectile/origin power. Crossfire and Big-Iron use analogous canonical pair histories; removed anchors detach live links immediately.
+
+Each actually launched non-Locket generation-zero heavy main receives exactly one same-`at`, same-`bornAt` scheduled generation-one moonlet after the main in numeric order. Echoes, Posse shots, other generation-one children, and converted Locket orbitals never create moonlets. The moonlet uses `0.35` of fully transformed main damage and `0.50` radius, inherits compatible generation-one traits, orbits at `14 px` and `6π rad/s`, and stores its parent ID/absolute expiry/range. If the main disappears for any reason, including Shotgun transformation, release at the physical removal point with tangent world velocity and unchanged expiry/range. A main/moonlet pair hitting one target within inclusive `0.25 s` creates one `56 px` area explosion for `0.50` snapshotted main damage and a `60 px` radial knockback; zero-distance fallback uses stable main heading. Mark the pair/target spent once.
+
+At an accepted root, prune satellites with `expiresAt <= now`; older survivors fire in `(bornAt, id)` order from current orbit positions toward the root's snapshotted aim and expire, then append exactly one new satellite. If six are somehow live, evict the oldest before append. Posse shots are generation-one descendants of the current/firing root, deal `0.20` of the neutral fully-derived current weapon snapshot, inherit compatible generation-one traits, and carry distinct creation provenance. They never reproduce Twin/Fan/Dealer, Big-Iron, Wake, Crossfire, or Posse, and never consume a cartridge/trigger; their direct contacts own normal projectile accuracy.
 
 - [ ] **Step 3: Run tests and confirm failure**
 
@@ -507,11 +524,17 @@ export const areaId = (effectId: string, rootTriggerId: string, instanceKey: str
   `${effectId}:${rootTriggerId}:${instanceKey}`;
 ```
 
+Ectoplasmic Wake maintains one closed batched trail/polyline record per generation-zero lineage. Append only the actual clipped path up to removal; each segment expires independently after `0.8 s`. Use a lossless bounded ring/chunk representation (at `120 Hz`, at most `97` points per live lineage), one lineage-wide `10 Hz` catch-up clock, no tick at exact expiry, and cooldown key effect + lineage + target (`0.2 s`) so overlapping segments deal one tick. Snapshot damage/provenance on segments so dead sources are never consulted. Wake is secondary area damage and never affects accuracy.
+
+Crossfire detects a unique centerline intersection of current physically clipped paths, ignores collinear overlap and the shared birth muzzle, but accepts endpoint contact so Twin convergence counts. Earliest crossing then canonical pair wins. The pulse is two source-path-aligned diagonals of total length `48 px`, centered at the intersection, damaging each target once for `25%` of the lower source damage. Creating it consumes both participation slots even without a target. A crossing before a later same-step terminal impact remains valid from stored clipped segment/event data; physical removal at the exact same time wins.
+
+Classify moonlet/Posse contacts as direct; Tesla as `link`; kinetic explosion/Wake/Crossfire as `area`. All retain full effect/root/lineage/projectile/time/position provenance and contribute DPS/kills, while secondary damage never invokes impact reducers. Track exposed active area/satellite/descendant counts. Enforce the static all-row bound `294` with per-root cumulative generation-one accounting across live and expired children; reject overflow rather than truncating. Clean pair/cooldown/trail/descendant ledgers only when no live/scheduled/pending/status/area source remains.
+
 - [ ] **Step 5: Run tests and commit**
 
 ```bash
-bun test src/game/areas.test.ts src/game/projectiles.test.ts src/game/metrics.test.ts src/game/simulation.test.ts
-git add src/game/areas.ts src/game/areas.test.ts src/game/projectiles.ts src/game/projectiles.test.ts src/game/combat-effects.ts src/game/simulation.ts
+bun test src/game/areas.test.ts src/game/projectiles.test.ts src/game/combat-effects.test.ts src/game/trigger.test.ts src/game/combat-build.test.ts src/game/metrics.test.ts src/game/simulation.test.ts
+git add src/game/areas.ts src/game/areas.test.ts src/game/projectiles.ts src/game/projectiles.test.ts src/game/combat-effects.ts src/game/simulation.ts src/game/simulation.test.ts src/game/trigger.ts src/game/trigger.test.ts src/game/combat-build.ts src/game/combat-build.test.ts src/game/metrics.ts src/game/metrics.test.ts
 git commit -m "feat: add signature projectile relations"
 ```
 
