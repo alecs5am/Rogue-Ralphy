@@ -27,23 +27,48 @@ export type ProjectileState = Point & {
 };
 
 export type GameState = {
-  room: { width: 960; height: 540; minX: number; maxX: number; minY: number; maxY: number };
+  room: { width: number; height: number; minX: number; maxX: number; minY: number; maxY: number };
   player: PlayerState; aim: Point; artifacts: ArtifactLoadout; weapon: DerivedWeapon;
   reload: ReloadState; projectiles: ProjectileState[]; targets: TargetState[];
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; nextShotAt: number; nextId: number; paused: boolean; rng: () => number;
 };
 
-const ROOM = { width: 960, height: 540, minX: 64, maxX: 896, minY: 64, maxY: 476 } as const;
-const PLAYER = { x: 480, y: 270, radius: 18, health: 100, maxHealth: 100, speed: 240, invulnerableUntil: 0 } as const;
+export const TILE_SIZE = 64;
+export const ROOM_COLUMNS = 13;
+export const ROOM_ROWS = 7;
+export const ROOM = {
+  width: (ROOM_COLUMNS + 2) * TILE_SIZE,
+  height: (ROOM_ROWS + 2) * TILE_SIZE,
+  minX: TILE_SIZE,
+  maxX: (ROOM_COLUMNS + 1) * TILE_SIZE,
+  minY: TILE_SIZE,
+  maxY: (ROOM_ROWS + 1) * TILE_SIZE,
+} as const;
+
+const tileCenter = (column: number, row: number): Point => ({
+  x: (column + 1.5) * TILE_SIZE,
+  y: (row + 1.5) * TILE_SIZE,
+});
+
+const PLAYER = {
+  x: ROOM.width / 2,
+  y: ROOM.height / 2,
+  radius: 18,
+  health: 100,
+  maxHealth: 100,
+  speed: 240,
+  invulnerableUntil: 0,
+} as const;
+
 const DUMMY_POINTS: Point[] = [
-  { x: 700, y: 270 }, { x: 700, y: 190 }, { x: 700, y: 350 },
-  { x: 620, y: 190 }, { x: 620, y: 350 }, { x: 780, y: 190 }, { x: 780, y: 350 },
+  tileCenter(10, 3), tileCenter(10, 2), tileCenter(10, 4),
+  tileCenter(8, 2), tileCenter(8, 4), tileCenter(11, 2), tileCenter(11, 4),
 ];
 const EDGE_POINTS: Point[] = [
-  { x: 140, y: 92 }, { x: 360, y: 92 }, { x: 600, y: 92 }, { x: 820, y: 92 },
-  { x: 860, y: 270 }, { x: 820, y: 448 }, { x: 600, y: 448 }, { x: 360, y: 448 },
-  { x: 140, y: 448 }, { x: 100, y: 270 },
+  tileCenter(1, 0), tileCenter(4, 0), tileCenter(8, 0), tileCenter(11, 0),
+  tileCenter(12, 3), tileCenter(11, 6), tileCenter(8, 6), tileCenter(4, 6),
+  tileCenter(1, 6), tileCenter(0, 3),
 ];
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));

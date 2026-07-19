@@ -4,6 +4,14 @@ import { clearTargets, createGame, setArtifact, spawnChaser, spawnDummy, spawnWa
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
 const heading = (velocity: { vx: number; vy: number }) => Math.atan2(velocity.vy, velocity.vx);
 
+test("uses a 13 by 7 tile field inside one-tile walls", () => {
+  const game = createGame(() => 0);
+  expect(game.room).toEqual({ width: 960, height: 576, minX: 64, maxX: 896, minY: 64, maxY: 512 });
+  expect(game.room.maxX - game.room.minX).toBe(13 * 64);
+  expect(game.room.maxY - game.room.minY).toBe(7 * 64);
+  expect(game.player).toMatchObject({ x: 480, y: 288 });
+});
+
 test("one trigger consumes one round and orbiters release toward the current aim", () => {
   let game = createGame(() => 0);
   game = setArtifact(setArtifact(game, "twinChamber", true), "haloChamber", true);
@@ -190,7 +198,7 @@ test("pause preserves simulation state", () => {
 });
 
 test("chaser contact damage respects the half-second invulnerability window", () => {
-  let game = spawnChaser(createGame(() => 0), { x: 517, y: 270 });
+  let game = spawnChaser(createGame(() => 0), { x: 517, y: 288 });
   game = updateGame(game, idle, 0.02, 1);
   expect(game.player).toMatchObject({ health: 90, invulnerableUntil: 1.5 });
   game = updateGame(game, idle, 0, 1.2);
