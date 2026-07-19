@@ -1,10 +1,17 @@
-import { createMetrics, recordDamage, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
+import { createMetrics, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, ammoCount, attemptActiveReload, consumeRound, createCylinder, fireRateBuffAt, startReload, type CylinderState } from "./cylinder";
 import { compileCombatBuild, type CombatBuild } from "./combat-build";
 import { deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon } from "./weapon";
-import { advanceTrajectory, buildTeslaLinks, splitProjectile, synchronizeSpiralState, type ProjectileState, type TeslaLink } from "./projectiles";
-import { ROOM, ROOM_PROPS, TILE_SIZE, segmentCircleHitTime, type Point } from "./room";
-import { compareScheduledProjectiles, expandTrigger, type ScheduledProjectile } from "./trigger";
+import { type ProjectileState, type TeslaLink } from "./projectiles";
+import { ROOM, ROOM_PROPS, TILE_SIZE, type Point } from "./room";
+import { expandTrigger, type ScheduledProjectile } from "./trigger";
+import {
+  resolveCombatPhases,
+  type AreaState,
+  type CombatTargetState,
+  type PendingEmission,
+  type VfxCommand,
+} from "./combat-effects";
 
 export { ROOM, TILE_SIZE } from "./room";
 export type { Point } from "./room";
@@ -22,10 +29,7 @@ export type PlayerState = Point & {
 export type Resources = { coins: number; bombs: number; keys: number };
 export const clampResource = (value: number): number => Math.max(0, Math.min(99, Math.trunc(value)));
 
-export type TargetState = Point & {
-  id: string; kind: "dummy" | "chaser"; radius: number; health: number; maxHealth: number;
-  speed: number; frozenUntil: number;
-};
+export type TargetState = CombatTargetState;
 
 export type { ProjectileState } from "./projectiles";
 
@@ -33,10 +37,11 @@ export type GameState = {
   room: { width: number; height: number; minX: number; maxX: number; minY: number; maxY: number };
   player: PlayerState; aim: Point; artifacts: ArtifactLoadout; build: CombatBuild; weapon: DerivedWeapon;
   resources: Resources;
-  cylinder: CylinderState; scheduledProjectiles: ScheduledProjectile[]; projectiles: ProjectileState[]; targets: TargetState[];
+  cylinder: CylinderState; scheduledProjectiles: ScheduledProjectile[]; pendingEmissions: PendingEmission[];
+  projectiles: ProjectileState[]; targets: TargetState[]; areas: AreaState[]; vfxCommands: VfxCommand[];
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
-  time: number; nextShotAt: number; nextId: number; rootSequence: number; paused: boolean; rng: () => number;
+  time: number; step: number; nextShotAt: number; nextId: number; rootSequence: number; paused: boolean; rng: () => number;
   lastShotAt: number | null; lastHurtAt: number | null; diedAt: number | null;
 };
 
@@ -103,13 +108,17 @@ export function createGame(rng: () => number = Math.random): GameState {
     weapon,
     cylinder: createCylinder(weapon.capacity),
     scheduledProjectiles: [],
+    pendingEmissions: [],
     projectiles: [],
     targets: [],
+    areas: [],
+    vfxCommands: [],
     teslaLinks: [],
     teslaCooldowns: {},
     metrics,
     telemetry: summarizeMetrics(metrics, 0),
     time: 0,
+    step: 0,
     nextShotAt: 0,
     nextId: 1,
     rootSequence: 0,
@@ -152,7 +161,7 @@ export function spawnDummy(state: GameState, position?: Point): GameState {
   if (!point || !canSpawn(state, point, 22)) return state;
   const target: TargetState = {
     ...point, id: `dummy-${state.nextId}`, kind: "dummy", radius: 22,
-    health: Number.POSITIVE_INFINITY, maxHealth: Number.POSITIVE_INFINITY, speed: 0, frozenUntil: 0,
+    health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0,
   };
   return { ...state, targets: [...state.targets, target], nextId: state.nextId + 1 };
 }
@@ -166,7 +175,7 @@ export function spawnChaser(state: GameState, position?: Point): GameState {
   if (!point || !canSpawn(state, point, 18)) return state;
   const target: TargetState = {
     ...point, id: `chaser-${state.nextId}`, kind: "chaser", radius: 18,
-    health: 80, maxHealth: 80, speed: 85, frozenUntil: 0,
+    health: 80, maxHealth: 80, immortal: false, speed: 85, frozenUntil: 0,
   };
   return { ...state, targets: [...state.targets, target], nextId: state.nextId + 1 };
 }
@@ -183,137 +192,19 @@ export function spawnWave(state: GameState): GameState {
 
 export function clearTargets(state: GameState): GameState {
   const metrics = retainTargetMetrics(state.metrics, []);
-  return { ...state, targets: [], metrics, telemetry: summarizeMetrics(metrics, state.time) };
+  return {
+    ...state,
+    targets: [],
+    pendingEmissions: [],
+    areas: [],
+    vfxCommands: [],
+    teslaLinks: [],
+    teslaCooldowns: {},
+    metrics,
+    telemetry: summarizeMetrics(metrics, state.time),
+  };
 }
 export const resetLab = (state: GameState): GameState => createGame(state.rng);
-
-function makeProjectile(scheduled: ScheduledProjectile, state: GameState, now: number, id: number): ProjectileState {
-  const { spec } = scheduled;
-  const aimAngle = scheduled.aim ?? spec.heading;
-  const origin = scheduled.origin ?? state.player;
-  const muzzle = {
-    x: origin.x + Math.cos(aimAngle) * (state.player.radius + spec.radius + 2),
-    y: origin.y + Math.sin(aimAngle) * (state.player.radius + spec.radius + 2),
-  };
-  const spiral = spec.behaviors.spiral;
-  const spiralOrigin = spiral ? Object.freeze(muzzle) : undefined;
-  const spiralRadius = spiral?.initialRadius;
-  const spiralAngle = spiral ? spec.heading : undefined;
-  const x = muzzle.x + (spiral ? Math.cos(spec.heading) * spiral.initialRadius : 0);
-  const y = muzzle.y + (spiral ? Math.sin(spec.heading) * spiral.initialRadius : 0);
-  const vx = spiral
-    ? Math.cos(spec.heading) * spiral.radialSpeed - Math.sin(spec.heading) * spiral.angularSpeed * spiral.initialRadius
-    : Math.cos(spec.heading) * spec.speed;
-  const vy = spiral
-    ? Math.sin(spec.heading) * spiral.radialSpeed + Math.cos(spec.heading) * spiral.angularSpeed * spiral.initialRadius
-    : Math.sin(spec.heading) * spec.speed;
-  return {
-    id: `projectile-${id}`,
-    triggerId: scheduled.rootTriggerId,
-    generation: scheduled.generation,
-    rootTriggerId: scheduled.rootTriggerId,
-    lineageId: scheduled.lineageId,
-    activatedEffectIds: scheduled.effectIds,
-    originPower: spec.damage,
-    x,
-    y,
-    vx,
-    vy,
-    damage: spec.damage,
-    speed: spec.speed,
-    radius: spec.radius,
-    lifetime: spiral?.lifetime ?? spec.lifetime,
-    bornAt: now,
-    remainingBounces: spec.bounces,
-    bounceRetention: spec.bounceRetention,
-    freezeChance: spec.freezeChance,
-    freezeDuration: spec.freezeDuration,
-    behaviors: spec.behaviors,
-    penetration: spec.behaviors.penetration,
-    hitTargetIds: [],
-    everHit: false,
-    travelled: 0,
-    spiralOrigin,
-    spiralRadius,
-    spiralAngle,
-    spiralAngularSpeed: spiral?.angularSpeed,
-  };
-}
-
-function reflect(projectile: ProjectileState, nx: number, ny: number): void {
-  const dot = projectile.vx * nx + projectile.vy * ny;
-  projectile.vx -= 2 * dot * nx;
-  projectile.vy -= 2 * dot * ny;
-  projectile.remainingBounces -= 1;
-  projectile.damage *= projectile.bounceRetention;
-  if (projectile.behaviors.spiral) {
-    const { spiral: _, ...behaviors } = projectile.behaviors;
-    projectile.behaviors = Object.freeze(behaviors);
-    projectile.spiralOrigin = undefined;
-    projectile.spiralRadius = undefined;
-    projectile.spiralAngle = undefined;
-    projectile.spiralAngularSpeed = undefined;
-    projectile.spiralLaunchPending = undefined;
-  }
-}
-
-type WallHit = { time: number; nx: number; ny: number };
-
-function firstWallHit(from: Point, to: Point, radius: number, room: GameState["room"]): WallHit | undefined {
-  const hits: WallHit[] = [];
-  if (to.x < room.minX + radius) hits.push({ time: (room.minX + radius - from.x) / (to.x - from.x), nx: 1, ny: 0 });
-  else if (to.x > room.maxX - radius) hits.push({ time: (room.maxX - radius - from.x) / (to.x - from.x), nx: -1, ny: 0 });
-  if (to.y < room.minY + radius) hits.push({ time: (room.minY + radius - from.y) / (to.y - from.y), nx: 0, ny: 1 });
-  else if (to.y > room.maxY - radius) hits.push({ time: (room.maxY - radius - from.y) / (to.y - from.y), nx: 0, ny: -1 });
-  hits.sort((a, b) => a.time - b.time);
-  const first = hits[0];
-  if (!first) return undefined;
-  const simultaneous = hits.filter((hit) => Math.abs(hit.time - first.time) < 1e-12);
-  return { time: first.time, nx: simultaneous.reduce((total, hit) => total + hit.nx, 0), ny: simultaneous.reduce((total, hit) => total + hit.ny, 0) };
-}
-
-function bounceOffWall(projectile: ProjectileState, hit: WallHit): boolean {
-  if (projectile.remainingBounces <= 0) return true;
-  const length = Math.hypot(hit.nx, hit.ny);
-  reflect(projectile, hit.nx / length, hit.ny / length);
-  return false;
-}
-
-function bounceOffTarget(projectile: ProjectileState, target: TargetState): void {
-  let nx = projectile.x - target.x;
-  let ny = projectile.y - target.y;
-  const length = Math.hypot(nx, ny);
-  if (length === 0) {
-    const speed = Math.hypot(projectile.vx, projectile.vy) || 1;
-    nx = -projectile.vx / speed;
-    ny = -projectile.vy / speed;
-  } else {
-    nx /= length;
-    ny /= length;
-  }
-  projectile.x = target.x + nx * (target.radius + projectile.radius + 0.01);
-  projectile.y = target.y + ny * (target.radius + projectile.radius + 0.01);
-  reflect(projectile, nx, ny);
-}
-
-function bounceOffProp(projectile: ProjectileState, prop: (typeof ROOM_PROPS)[number]): boolean {
-  if (projectile.remainingBounces <= 0) return true;
-  let nx = projectile.x - prop.x;
-  let ny = projectile.y - prop.y;
-  const length = Math.hypot(nx, ny);
-  if (length === 0) {
-    const speed = Math.hypot(projectile.vx, projectile.vy) || 1;
-    nx = -projectile.vx / speed;
-    ny = -projectile.vy / speed;
-  } else {
-    nx /= length;
-    ny /= length;
-  }
-  projectile.x = prop.x + nx * (prop.collisionRadius + projectile.radius + 0.01);
-  projectile.y = prop.y + ny * (prop.collisionRadius + projectile.radius + 0.01);
-  reflect(projectile, nx, ny);
-  return false;
-}
 
 export function updateGame(state: GameState, input: InputIntent, dt: number, now: number): GameState {
   if (input.paused) return state.paused ? state : { ...state, paused: true };
@@ -355,9 +246,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   };
   const aim = { x: input.aimX, y: input.aimY };
   let metrics = state.metrics;
-  let projectiles = state.projectiles;
   let scheduledProjectiles = [...state.scheduledProjectiles];
-  let nextId = state.nextId;
   let rootSequence = state.rootSequence;
   let nextShotAt = state.nextShotAt;
 
@@ -386,25 +275,6 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     if (ammoCount(cylinder) === 0) cylinder = startReload(cylinder, weapon, now, "automatic");
   }
 
-  scheduledProjectiles.sort(compareScheduledProjectiles);
-  const due = scheduledProjectiles.filter(({ at }) => at <= now);
-  scheduledProjectiles = scheduledProjectiles.filter(({ at }) => at > now);
-  const materializationState = { ...state, player };
-  const created = due.map((scheduled) => makeProjectile(scheduled, materializationState, now, nextId++));
-  projectiles = [...projectiles, ...created];
-  for (const _ of created) metrics = recordProjectile(metrics);
-
-  const projectileStarts = new Map(projectiles.map((projectile) => [projectile.id, { x: projectile.x, y: projectile.y }]));
-  const trajectoryStarts = new Map(projectiles.map((projectile) => [projectile.id, {
-    spiralAngle: projectile.spiralAngle,
-  }]));
-  const liveDurations = new Map(projectiles.map((projectile) => [projectile.id,
-    Math.max(0, Math.min(dt, projectile.lifetime - Math.max(0, now - dt - projectile.bornAt))),
-  ]));
-  const expiringProjectiles = new Set(projectiles
-    .filter((projectile) => now - projectile.bornAt >= projectile.lifetime)
-    .map((projectile) => projectile.id));
-  projectiles = projectiles.map((projectile) => advanceTrajectory(projectile, state.targets, liveDurations.get(projectile.id)!));
   let targets = state.targets.map((target) => {
     if (target.kind !== "chaser" || now < target.frozenUntil) return { ...target };
     const dx = player.x - target.x;
@@ -433,166 +303,55 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     }
   }
 
-  const survivingProjectiles: ProjectileState[] = [];
-  const addSplitChildren = (projectile: ProjectileState) => {
-    const split = projectile.behaviors.split!;
-    const children = splitProjectile(projectile, Array.from({ length: split.count }, () => `projectile-${nextId++}`));
-    survivingProjectiles.push(...children);
-    for (const _ of children) metrics = recordProjectile(metrics);
-  };
-  for (const projectile of projectiles) {
-    const expiresAfterMove = expiringProjectiles.has(projectile.id);
-    if (expiresAfterMove && liveDurations.get(projectile.id) === 0) {
-      metrics = recordProjectileOutcome(metrics, projectile.everHit);
-      continue;
-    }
-    const retainProjectile = () => {
-      if (expiresAfterMove) metrics = recordProjectileOutcome(metrics, projectile.everHit);
-      else survivingProjectiles.push(projectile);
-    };
-    const end = { x: projectile.x, y: projectile.y };
-    const start = projectileStarts.get(projectile.id)!;
-    let from = start;
-    projectile.x = from.x;
-    projectile.y = from.y;
-
-    while (true) {
-      const segmentDistance = Math.hypot(end.x - from.x, end.y - from.y);
-      const propHit = projectile.penetration?.obstacles ? undefined : ROOM_PROPS
-        .map((prop) => ({ kind: "prop" as const, prop, time: segmentCircleHitTime(from, end, prop, prop.collisionRadius + projectile.radius) }))
-        .filter((hit): hit is { kind: "prop"; prop: (typeof ROOM_PROPS)[number]; time: number } => hit.time !== null)
-        .sort((a, b) => a.time - b.time || a.prop.id.localeCompare(b.prop.id))[0];
-      const wall = firstWallHit(from, end, projectile.radius, state.room);
-      const wallHit = wall && { kind: "wall" as const, ...wall };
-      const targetHit = targets
-        .filter((target) => target.health > 0 && !projectile.hitTargetIds.includes(target.id))
-        .map((target) => ({ kind: "target" as const, target, time: segmentCircleHitTime(from, end, target, target.radius + projectile.radius) }))
-        .filter((hit): hit is { kind: "target"; target: TargetState; time: number } => hit.time !== null)
-        .sort((a, b) => a.time - b.time || a.target.id.localeCompare(b.target.id))[0];
-      const splitRemaining = (projectile.behaviors.split?.distance ?? Number.POSITIVE_INFINITY) - projectile.travelled;
-      const splitHit = splitRemaining <= segmentDistance
-        ? { kind: "split" as const, time: segmentDistance === 0 ? 0 : Math.max(0, splitRemaining / segmentDistance) }
-        : undefined;
-      const rangeRemaining = (projectile.maxTravel ?? Number.POSITIVE_INFINITY) - projectile.travelled;
-      const rangeHit = rangeRemaining <= segmentDistance
-        ? { kind: "range" as const, time: segmentDistance === 0 ? 0 : Math.max(0, rangeRemaining / segmentDistance) }
-        : undefined;
-      const priorities = { prop: 0, wall: 1, target: 2, split: 3, range: 4 } as const;
-      const event = [propHit, wallHit, targetHit, splitHit, rangeHit]
-        .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined)
-        .sort((a, b) => {
-          const difference = a.time - b.time;
-          const tolerance = Number.EPSILON * 128 * Math.max(1, Math.abs(a.time), Math.abs(b.time));
-          return Math.abs(difference) <= tolerance ? priorities[a.kind] - priorities[b.kind] : difference;
-        })[0];
-
-      if (!event) {
-        projectile.x = end.x;
-        projectile.y = end.y;
-        projectile.travelled += segmentDistance;
-        retainProjectile();
-        break;
-      }
-
-      projectile.x = from.x + (end.x - from.x) * event.time;
-      projectile.y = from.y + (end.y - from.y) * event.time;
-      projectile.travelled += segmentDistance * event.time;
-
-      if (event.kind !== "target" || !projectile.penetration?.targets) {
-        const fullDistance = Math.hypot(end.x - start.x, end.y - start.y);
-        const fraction = fullDistance === 0 ? 0 : Math.hypot(projectile.x - start.x, projectile.y - start.y) / fullDistance;
-        const trajectoryStart = trajectoryStarts.get(projectile.id)!;
-        if (trajectoryStart.spiralAngle !== undefined && projectile.spiralAngle !== undefined) {
-          const referenceAngle = trajectoryStart.spiralAngle + (projectile.spiralAngle - trajectoryStart.spiralAngle) * fraction;
-          synchronizeSpiralState(projectile, referenceAngle);
-        }
-      }
-
-      if (event.kind === "split") {
-        addSplitChildren(projectile);
-        break;
-      }
-      if (event.kind === "range") {
-        metrics = recordProjectileOutcome(metrics, projectile.everHit);
-        break;
-      }
-      if (event.kind === "prop") {
-        if (bounceOffProp(projectile, event.prop)) metrics = recordProjectileOutcome(metrics, projectile.everHit);
-        else retainProjectile();
-        break;
-      }
-      if (event.kind === "wall") {
-        if (bounceOffWall(projectile, event)) metrics = recordProjectileOutcome(metrics, projectile.everHit);
-        else retainProjectile();
-        break;
-      }
-
-      const target = event.target;
-      const wasAlive = target.kind === "dummy" || target.health > 0;
-      target.health -= projectile.damage;
-      if (projectile.freezeChance > 0 && state.rng() < projectile.freezeChance) {
-        target.frozenUntil = Math.max(target.frozenUntil, now + projectile.freezeDuration);
-      }
-      const firstHit = !projectile.everHit;
-      projectile.everHit = true;
-      metrics = recordDamage(metrics, {
-        source: "direct", damage: projectile.damage, time: now, targetId: target.id,
-        artifactId: "baseRevolver", effectId: "baseRevolver.direct",
-        rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId,
-        projectileId: projectile.id, killReactionDepth: 0, originPower: projectile.originPower,
-        firstProjectileHit: firstHit,
-        x: target.x, y: target.y,
-      });
-      if (wasAlive && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
-      projectile.hitTargetIds.push(target.id);
-      if (projectile.penetration?.targets) {
-        from = { x: projectile.x, y: projectile.y };
-        continue;
-      }
-      if (projectile.remainingBounces > 0) {
-        bounceOffTarget(projectile, target);
-        retainProjectile();
-      } else {
-        metrics = recordProjectileOutcome(metrics, projectile.everHit);
-      }
-      break;
-    }
-  }
-
-  targets = targets.filter((target) => target.kind === "dummy" || target.health > 0);
-  const teslaLinks = buildTeslaLinks(survivingProjectiles);
-  const projectileById = new Map(survivingProjectiles.map((projectile) => [projectile.id, projectile]));
-  let teslaCooldowns = { ...state.teslaCooldowns };
-  for (const link of teslaLinks) {
-    const a = projectileById.get(link.a)!;
-    const b = projectileById.get(link.b)!;
-    for (const target of targets) {
-      if (target.health <= 0 || segmentCircleHitTime(a, b, target, target.radius) === null) continue;
-      const cooldownKey = `${link.id}:${target.id}`;
-      if (now < (teslaCooldowns[cooldownKey] ?? 0)) continue;
-      const damage = Math.min(a.damage, b.damage) * link.damageScale;
-      const source = a.damage <= b.damage ? a : b;
-      const wasAlive = target.kind === "dummy" || target.health > 0;
-      target.health -= damage;
-      metrics = recordDamage(metrics, {
-        source: "link", damage, time: now, targetId: target.id,
-        artifactId: "teslaBullets", effectId: "teslaBullets.link",
-        rootTriggerId: source.rootTriggerId, lineageId: source.lineageId,
-        projectileId: source.id, killReactionDepth: 0, originPower: source.originPower,
-        x: target.x, y: target.y,
-      });
-      if (wasAlive && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
-      teslaCooldowns[cooldownKey] = now + link.cooldown;
-    }
-  }
-  targets = targets.filter((target) => target.kind === "dummy" || target.health > 0);
-  const activeCooldownKeys = new Set(teslaLinks.flatMap((link) => targets.map((target) => `${link.id}:${target.id}`)));
-  teslaCooldowns = Object.fromEntries(Object.entries(teslaCooldowns)
-    .filter(([key, nextAllowedAt]) => nextAllowedAt > now || activeCooldownKeys.has(key)));
-  metrics = retainTargetMetrics(metrics, targets.map((target) => target.id));
+  const combat = resolveCombatPhases({
+    projectiles: state.projectiles,
+    targets,
+    scheduledProjectiles,
+    pendingEmissions: state.pendingEmissions,
+    areas: state.areas,
+    vfxCommands: state.vfxCommands,
+    metrics,
+    nextId: state.nextId,
+    step: state.step + 1,
+    now,
+  }, {
+    dt,
+    room: state.room,
+    props: ROOM_PROPS,
+    build: state.build,
+    rng: state.rng,
+    player,
+    trajectoryTargets: state.targets,
+    teslaLinks: state.teslaLinks,
+    teslaCooldowns: state.teslaCooldowns,
+    fireRate: weapon.fireRate,
+  });
+  metrics = combat.metrics;
   const telemetry = summarizeMetrics(metrics, now);
   return {
-    ...state, player, aim, weapon, cylinder, scheduledProjectiles, projectiles: survivingProjectiles, targets, teslaLinks, teslaCooldowns, metrics, telemetry,
-    time: now, nextShotAt, nextId, rootSequence, paused: false, lastShotAt, lastHurtAt, diedAt,
+    ...state,
+    player,
+    aim,
+    weapon,
+    cylinder,
+    scheduledProjectiles: [...combat.scheduledProjectiles],
+    pendingEmissions: [...combat.pendingEmissions],
+    projectiles: [...combat.projectiles],
+    targets: [...combat.targets],
+    areas: [...combat.areas],
+    vfxCommands: [...combat.vfxCommands],
+    teslaLinks: [...combat.teslaLinks],
+    teslaCooldowns: { ...combat.teslaCooldowns },
+    metrics,
+    telemetry,
+    time: now,
+    step: combat.step,
+    nextShotAt,
+    nextId: combat.nextId,
+    rootSequence,
+    paused: false,
+    lastShotAt,
+    lastHurtAt,
+    diedAt,
   };
 }

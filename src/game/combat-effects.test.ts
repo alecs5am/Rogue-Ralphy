@@ -1,0 +1,333 @@
+import { expect, test } from "bun:test";
+import { compileCombatBuild } from "./combat-build";
+import {
+  collectCombatEvents,
+  queueEmission,
+  resolveAreaPhase,
+  resolveCombatPhases,
+  resolveEmissionPhase,
+  resolveImpactPhase,
+  resolveKillAndCleanupPhase,
+  resolveMotionPhase,
+  resolveTriggerPhase,
+  sortCombatEvents,
+  type CombatContext,
+  type CombatEvent,
+  type CombatRuntime,
+} from "./combat-effects";
+import { createMetrics } from "./metrics";
+import type { ProjectileSpec, ProjectileState } from "./projectiles";
+import { ROOM, ROOM_PROPS } from "./room";
+
+const projectile = (overrides: Partial<ProjectileState> = {}): ProjectileState => ({
+  id: "projectile-1",
+  triggerId: "trigger-1",
+  generation: 0,
+  rootTriggerId: "trigger-1",
+  lineageId: "trigger-1:0",
+  activatedEffectIds: Object.freeze(["baseRevolver.direct"]),
+  originPower: 20,
+  x: 200,
+  y: 300,
+  vx: 100,
+  vy: 0,
+  damage: 20,
+  speed: 100,
+  radius: 6,
+  lifetime: 8,
+  bornAt: 0,
+  remainingBounces: 0,
+  bounceRetention: 1,
+  freezeChance: 0,
+  freezeDuration: 0,
+  behaviors: Object.freeze({}),
+  hitTargetIds: [],
+  everHit: false,
+  travelled: 0,
+  ...overrides,
+});
+
+const runtime = (overrides: Partial<CombatRuntime> = {}): CombatRuntime => ({
+  projectiles: [],
+  targets: [],
+  scheduledProjectiles: [],
+  pendingEmissions: [],
+  areas: [],
+  vfxCommands: [],
+  metrics: createMetrics(),
+  nextId: 2,
+  step: 1,
+  now: 0.1,
+  ...overrides,
+});
+
+const build = compileCombatBuild({ shotgun: true });
+const context = (overrides: Partial<CombatContext> = {}): CombatContext => ({
+  dt: 0.1,
+  room: ROOM,
+  props: ROOM_PROPS,
+  build,
+  rng: () => 0.9,
+  player: { x: 480, y: 288, radius: 18 },
+  teslaLinks: [],
+  teslaCooldowns: {},
+  fireRate: 3,
+  ...overrides,
+});
+
+const impact = (
+  projectileId: string,
+  stableId: string,
+  eventTime: number,
+  kind: CombatEvent["kind"],
+): CombatEvent => ({
+  eventTime,
+  kind,
+  projectileId,
+  ...(kind === "target" ? { targetId: stableId } : { colliderId: stableId }),
+  point: { x: 1, y: 2 },
+  segment: { from: { x: 0, y: 2 }, to: { x: 2, y: 2 } },
+});
+
+test("same-step events sort by tolerant time projectile stable collider and semantic kind", () => {
+  const events = [
+    impact("projectile-2", "target-b", 0.2, "target"),
+    impact("projectile-1", "target-b", 0.2 + Number.EPSILON, "target"),
+    impact("projectile-1", "target-a", 0.2, "wall"),
+    impact("projectile-1", "same", 0.2, "target"),
+    impact("projectile-1", "same", 0.2, "prop"),
+  ];
+
+  expect(sortCombatEvents(events).map(({ projectileId, targetId, colliderId, kind }) => [
+    projectileId,
+    targetId ?? colliderId,
+    kind,
+  ])).toEqual([
+    ["projectile-1", "same", "prop"],
+    ["projectile-1", "same", "target"],
+    ["projectile-1", "target-a", "wall"],
+    ["projectile-1", "target-b", "target"],
+    ["projectile-2", "target-b", "target"],
+  ]);
+});
+
+test("equal-time events use prop wall target distance range lifetime priority", () => {
+  const kinds = ["lifetime", "range", "distance", "target", "wall", "prop"] as const;
+  const events = kinds.map((kind) => impact("projectile-1", "same", 0.5, kind));
+  expect(sortCombatEvents(events).map(({ kind }) => kind)).toEqual([
+    "prop", "wall", "target", "distance", "range", "lifetime",
+  ]);
+});
+
+test("generation-one cannot queue another emission", () => {
+  const rule = build.emissions.find(({ effectId }) => effectId === "shotgun.split")!;
+  expect(() => queueEmission(projectile({ generation: 1 }), rule, { step: 4, nextIds: [] }))
+    .toThrow("generation-one projectile cannot emit");
+});
+
+test("trigger phase drains fixed-step emissions separately from future wall-clock schedules", () => {
+  const spec: ProjectileSpec = {
+    triggerId: "trigger-pending",
+    heading: 0,
+    damage: 5,
+    speed: 100,
+    radius: 3,
+    lifetime: 2,
+    freezeChance: 1,
+    freezeDuration: 1,
+    bounces: 0,
+    bounceRetention: 1,
+    behaviors: Object.freeze({
+      homing: { radius: 96, turnRate: Math.PI },
+      penetration: { obstacles: true, targets: true },
+    }),
+  };
+  const { triggerId: _, ...scheduledSpec } = spec;
+  const triggered = resolveTriggerPhase(runtime({
+    now: 2,
+    step: 5,
+    scheduledProjectiles: [{
+      at: 3,
+      generation: 0,
+      rootTriggerId: "trigger-future",
+      lineageId: "trigger-future:0",
+      effectIds: ["baseRevolver.direct"],
+      spec: scheduledSpec,
+    }],
+    pendingEmissions: [{
+      atStep: 5,
+      effectId: "shotgun.split",
+      artifactId: "shotgun",
+      rootTriggerId: "trigger-pending",
+      lineageId: "trigger-pending:0",
+      generation: 1,
+      originPower: 20,
+      activatedEffectIds: ["baseRevolver.direct", "ghostSight.homing", "spectralBullets.penetration", "coldcaster.chill"],
+      specs: [spec],
+    }],
+  }), context());
+
+  expect(triggered.scheduledProjectiles).toHaveLength(1);
+  expect(triggered.pendingEmissions).toEqual([]);
+  expect(triggered.projectiles[0]).toMatchObject({
+    id: "projectile-2",
+    generation: 1,
+    rootTriggerId: "trigger-pending",
+    lineageId: "trigger-pending:0",
+    originPower: 20,
+    freezeChance: 1,
+    penetration: { obstacles: true, targets: true },
+    behaviors: { homing: { radius: 96 } },
+  });
+  expect(triggered.projectiles[0]!.activatedEffectIds).toEqual([
+    "baseRevolver.direct", "ghostSight.homing", "spectralBullets.penetration", "coldcaster.chill",
+  ]);
+});
+
+test("motion and collision preserve a merged corner normal and swept path", () => {
+  const base = resolveTriggerPhase(runtime({
+    projectiles: [projectile({ x: 880, y: 496, vx: 100, vy: 100 })],
+    now: 0.2,
+  }), context({ dt: 0.2 }));
+  const moved = resolveMotionPhase(base, context({ dt: 0.2 }));
+  const collided = collectCombatEvents(moved, context({ dt: 0.2 }));
+  const wall = collided.events.find(({ kind }) => kind === "wall");
+
+  expect(wall).toMatchObject({
+    projectileId: "projectile-1",
+    colliderId: "room",
+    eventTime: 0.5,
+    normal: { x: -1, y: -1 },
+    segment: { from: { x: 880, y: 496 }, to: { x: 900, y: 516 } },
+  });
+});
+
+test("every combat phase is observationally immutable", () => {
+  const initial = runtime({ projectiles: [projectile()] });
+  const unchanged = <T extends object, U>(value: T, run: (input: T) => U): U => {
+    const before = JSON.stringify(value);
+    const result = run(value);
+    expect(JSON.stringify(value)).toBe(before);
+    return result;
+  };
+
+  const triggered = unchanged(initial, (value) => resolveTriggerPhase(value, context()));
+  const moved = unchanged(triggered, (value) => resolveMotionPhase(value, context()));
+  const collided = unchanged(moved, (value) => collectCombatEvents(value, context()));
+  const impacted = unchanged(collided, (value) => resolveImpactPhase(value, context()));
+  const emitted = unchanged(impacted, (value) => resolveEmissionPhase(value, context()));
+  const area = unchanged(emitted, (value) => resolveAreaPhase(value, context()));
+  unchanged(area, (value) => resolveKillAndCleanupPhase(value, context()));
+});
+
+test("combat runtime rejects nonfinite values unsafe areas duplicate instances and deep kill reactions", () => {
+  const area = {
+    id: "area-1",
+    effectId: "ectoplasmSnare.pool",
+    artifactId: "ectoplasmSnare",
+    rootTriggerId: "trigger-1",
+    instanceKey: "dummy-1",
+    bornAt: 0,
+    expiresAt: 2,
+    tickInterval: 0.1,
+  } as const;
+  const duplicate = { ...area, id: "area-2" };
+  const badMetrics = {
+    ...createMetrics(),
+    hitEvents: [{
+      source: "reactive" as const,
+      damage: 1,
+      time: 0,
+      targetId: "dummy-1",
+      artifactId: "soulHarvester",
+      effectId: "soulHarvester.spirits",
+      rootTriggerId: "trigger-1",
+      killReactionDepth: 2 as 0 | 1,
+      originPower: 20,
+    }],
+  };
+
+  expect(() => resolveCombatPhases(runtime({
+    targets: [{ id: "dummy-1", kind: "dummy", immortal: true, x: 1, y: 1, radius: 22, health: Infinity, maxHealth: 1, speed: 0, frozenUntil: 0 }],
+  }), context())).toThrow("finite");
+  expect(() => resolveCombatPhases(runtime({ areas: [{ ...area, expiresAt: 3.01 }] }), context())).toThrow("three seconds");
+  expect(() => resolveCombatPhases(runtime({ areas: [{ ...area, tickInterval: 0.09 }] }), context())).toThrow("ten hertz");
+  expect(() => resolveCombatPhases(runtime({ areas: [area, duplicate] }), context())).toThrow("duplicate area");
+  expect(() => resolveCombatPhases(runtime({ metrics: badMetrics }), context())).toThrow("kill reaction depth");
+});
+
+test("VFX commands are finite unique bounded and expire deterministically", () => {
+  const vfx = {
+    id: "vfx-1",
+    kind: "impact",
+    artifactId: "baseRevolver",
+    bornAt: 0,
+    expiresAt: 0.2,
+    x: 4,
+    y: 5,
+  } as const;
+  const expiredArea = {
+    id: "area-expired",
+    effectId: "ectoplasmSnare.pool",
+    artifactId: "ectoplasmSnare",
+    rootTriggerId: "trigger-1",
+    instanceKey: "dummy-1",
+    bornAt: 0,
+    expiresAt: 0.2,
+    tickInterval: 0.1,
+  } as const;
+  const resolved = resolveCombatPhases(runtime({ now: 0.2, areas: [expiredArea], vfxCommands: [vfx] }), context());
+  expect(resolved.areas).toEqual([]);
+  expect(resolved.vfxCommands).toEqual([]);
+  expect(() => resolveCombatPhases(runtime({ vfxCommands: [vfx, { ...vfx }] }), context())).toThrow("duplicate VFX");
+  expect(() => resolveCombatPhases(runtime({ vfxCommands: [{ ...vfx, expiresAt: 3.01 }] }), context())).toThrow("three seconds");
+  expect(() => resolveCombatPhases(runtime({ vfxCommands: [{ ...vfx, x: Infinity }] }), context())).toThrow("finite");
+
+  const limit = Math.ceil(context().fireRate * 3 * (11 + context().build.maxDescendants));
+  const overBound = Array.from({ length: limit + 1 }, (_, index) => ({ ...vfx, id: `vfx-${index}` }));
+  expect(() => resolveCombatPhases(runtime({ vfxCommands: overBound }), context())).toThrow("derived bound");
+});
+
+test("a later equal-sweep impact skips a target killed by an earlier projectile", () => {
+  const target = {
+    id: "chaser-1",
+    kind: "chaser" as const,
+    immortal: false,
+    x: 600,
+    y: 300,
+    radius: 22,
+    health: 20,
+    maxHealth: 20,
+    speed: 0,
+    frozenUntil: 0,
+  };
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.2,
+    projectiles: [
+      projectile({ x: 500, vx: 600 }),
+      projectile({ id: "projectile-2", lineageId: "trigger-1:1", x: 500, vx: 600 }),
+    ],
+    targets: [target],
+  }), context({ dt: 0.2 }));
+
+  expect(resolved.metrics).toMatchObject({ hits: 1, kills: 1, successfulProjectiles: 1 });
+  expect(resolved.targets).toEqual([]);
+  expect(resolved.projectiles.map(({ id }) => id)).toEqual(["projectile-2"]);
+});
+
+test("an expiring ricochet records one outcome instead of surviving its final live segment", () => {
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.2,
+    projectiles: [projectile({
+      x: 880,
+      y: 300,
+      vx: 200,
+      bornAt: 0,
+      lifetime: 0.1,
+      remainingBounces: 1,
+    })],
+  }), context({ dt: 0.2 }));
+
+  expect(resolved.projectiles).toEqual([]);
+  expect(resolved.metrics).toMatchObject({ misses: 1, successfulProjectiles: 0 });
+});

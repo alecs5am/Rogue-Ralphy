@@ -1,3 +1,5 @@
+import { segmentCircleHitTime, type Point } from "./room";
+
 export type SpiralBehavior = Readonly<{ initialRadius: number; radialSpeed: number; angularSpeed: number; lifetime: number }>;
 export type HomingBehavior = Readonly<{ radius: number; turnRate: number }>;
 export type TeslaBehavior = Readonly<{ radius: number; neighbors: number; damageScale: number; cooldown: number }>;
@@ -46,6 +48,39 @@ export type TeslaLink = Readonly<{
   id: string; a: string; b: string; distance: number;
   damageScale: number; cooldown: number;
 }>;
+
+export type SweptCollisionCandidate = Readonly<{
+  colliderId: string;
+  eventTime: number;
+  point: Point;
+  normal: Point;
+}>;
+
+export function sweptCircleCollision(
+  from: Point,
+  to: Point,
+  projectile: Pick<ProjectileState, "radius" | "vx" | "vy">,
+  collider: Readonly<Point & { id: string; radius: number }>,
+): SweptCollisionCandidate | null {
+  const eventTime = segmentCircleHitTime(from, to, collider, projectile.radius + collider.radius);
+  if (eventTime === null) return null;
+  const point = {
+    x: from.x + (to.x - from.x) * eventTime,
+    y: from.y + (to.y - from.y) * eventTime,
+  };
+  let nx = point.x - collider.x;
+  let ny = point.y - collider.y;
+  const length = Math.hypot(nx, ny);
+  if (length > 0) {
+    nx /= length;
+    ny /= length;
+  } else {
+    const speed = Math.hypot(projectile.vx, projectile.vy) || 1;
+    nx = -projectile.vx / speed;
+    ny = -projectile.vy / speed;
+  }
+  return { colliderId: collider.id, eventTime, point, normal: { x: nx, y: ny } };
+}
 
 export function buildTeslaLinks(projectiles: readonly ProjectileState[]): TeslaLink[] {
   const teslaProjectiles = projectiles

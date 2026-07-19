@@ -42,7 +42,7 @@ test("records presentation timestamps only for successful events", () => {
     player: { ...game.player, health: 10 },
     targets: [{
       id: "fatal-chaser", kind: "chaser", x: game.player.x + 25, y: game.player.y + 25,
-      radius: 18, health: 80, maxHealth: 80, speed: 0, frozenUntil: 0,
+      radius: 18, health: 80, maxHealth: 80, immortal: false, speed: 0, frozenUntil: 0,
     }],
   };
   game = updateGame(game, idle, 0, 2);
@@ -63,7 +63,7 @@ test("dead player ignores intent while projectiles and targets keep updating", (
     player: { ...game.player, health: 10 },
     targets: [{
       id: "fatal-chaser", kind: "chaser", x: game.player.x + 25, y: game.player.y + 25,
-      radius: 18, health: 80, maxHealth: 80, speed: 0, frozenUntil: 0,
+      radius: 18, health: 80, maxHealth: 80, immortal: false, speed: 0, frozenUntil: 0,
     }],
   };
   game = updateGame(game, idle, 0, 2);
@@ -94,6 +94,74 @@ test("reset clears death and presentation timestamps", () => {
     lastHurtAt: null,
     diedAt: null,
     player: { health: 100 },
+  });
+});
+
+test("finite immortal dummies take damage without storing Infinity", () => {
+  let game = spawnDummy(createGame(() => 0.9), { x: 600, y: 270 });
+  const dummy = game.targets[0]!;
+  expect(dummy).toMatchObject({ kind: "dummy", immortal: true });
+  expect(Number.isFinite(dummy.health) && Number.isFinite(dummy.maxHealth)).toBe(true);
+
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  game = updateGame(game, idle, 0.3, 1.3);
+
+  expect(game.metrics.hits).toBe(1);
+  expect(game.targets[0]).toMatchObject({ id: dummy.id, health: dummy.health, immortal: true });
+});
+
+test("unpaused updates advance one combat step while pause preserves the whole combat runtime", () => {
+  const base = createGame(() => 0.9);
+  const advanced = updateGame(base, idle, STEP, STEP);
+  expect(advanced.step).toBe(base.step + 1);
+
+  const paused = updateGame(advanced, { ...idle, paused: true }, 10, 10);
+  expect(paused.step).toBe(advanced.step);
+  expect({
+    projectiles: paused.projectiles,
+    scheduledProjectiles: paused.scheduledProjectiles,
+    pendingEmissions: paused.pendingEmissions,
+    areas: paused.areas,
+    vfxCommands: paused.vfxCommands,
+    metrics: paused.metrics,
+    nextId: paused.nextId,
+  }).toEqual({
+    projectiles: advanced.projectiles,
+    scheduledProjectiles: advanced.scheduledProjectiles,
+    pendingEmissions: advanced.pendingEmissions,
+    areas: advanced.areas,
+    vfxCommands: advanced.vfxCommands,
+    metrics: advanced.metrics,
+    nextId: advanced.nextId,
+  });
+  expect(updateGame(paused, { ...idle, paused: true }, 10, 20)).toBe(paused);
+});
+
+test("clear targets and reset clean deferred combat and Tesla histories", () => {
+  let game = spawnDummy(setArtifact(createGame(() => 0.9), "shotgun", true), { x: 700, y: 400 });
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  game = updateGame(game, idle, 161 / game.weapon.speed, 1 + 161 / game.weapon.speed);
+  game = {
+    ...game,
+    areas: [{
+      id: "area-1", effectId: "ectoplasmSnare.pool", artifactId: "ectoplasmSnare",
+      rootTriggerId: "trigger-1", instanceKey: "dummy-1", bornAt: 1, expiresAt: 2, tickInterval: 0.1,
+    }],
+    vfxCommands: [{
+      id: "vfx-1", kind: "impact", artifactId: "shotgun", bornAt: 1, expiresAt: 2,
+      x: 600, y: 270,
+    }],
+    teslaLinks: [{ id: "projectile-1:projectile-2", a: "projectile-1", b: "projectile-2", distance: 1, damageScale: 0.25, cooldown: 0.15 }],
+    teslaCooldowns: { "projectile-1:projectile-2:dummy-1": 2 },
+  };
+  expect(game.pendingEmissions).toHaveLength(1);
+
+  const cleared = clearTargets(game);
+  expect(cleared).toMatchObject({
+    targets: [], pendingEmissions: [], areas: [], vfxCommands: [], teslaLinks: [], teslaCooldowns: {},
+  });
+  expect(resetLab(game)).toMatchObject({
+    step: 0, scheduledProjectiles: [], pendingEmissions: [], areas: [], vfxCommands: [], teslaLinks: [], teslaCooldowns: {},
   });
 });
 
@@ -220,10 +288,13 @@ test("normal projectile dies on the rock while spectral and Pinball continue", (
   const normal = fireThroughRock(createGame(() => 0.9), {});
   const spectral = fireThroughRock(createGame(() => 0.9), { spectralBullets: true });
   const pinball = fireThroughRock(createGame(() => 0.9), { pinball: true });
+  const pinballContinued = updateGame(pinball, idle, STEP, pinball.time + STEP);
   expect(normal.projectiles).toHaveLength(0);
   expect(spectral.projectiles).toHaveLength(1);
   expect(pinball.projectiles[0]?.remainingBounces).toBe(0);
   expect(pinball.projectiles[0]?.vx).toBeGreaterThan(0);
+  expect(pinballContinued.projectiles).toHaveLength(1);
+  expect(pinballContinued.projectiles[0]?.vx).toBeGreaterThan(0);
 });
 
 test("Spectral projectile damages two swept targets once each and keeps flying", () => {
@@ -303,6 +374,19 @@ test("Shotgun splits at the exact travelled distance without consuming another c
 
   game = updateGame(game, idle, 161 / game.weapon.speed, 1 + 161 / game.weapon.speed);
 
+  expect(game.projectiles).toHaveLength(0);
+  expect(game.pendingEmissions).toHaveLength(1);
+  expect(game.pendingEmissions[0]).toMatchObject({
+    atStep: game.step + 1,
+    effectId: "shotgun.split",
+    artifactId: "shotgun",
+    generation: 1,
+    rootTriggerId: "trigger-1",
+  });
+  expect(game.pendingEmissions[0]!.specs).toHaveLength(8);
+  expect(game.metrics).toMatchObject({ triggers: 1, projectiles: 1 });
+
+  game = updateGame(game, idle, 0, game.time);
   expect(game.projectiles).toHaveLength(8);
   expect(game.projectiles.every((projectile) => projectile.x === game.projectiles[0]!.x && projectile.y === game.projectiles[0]!.y)).toBe(true);
   expect(Math.hypot(game.projectiles[0]!.x - start.x, game.projectiles[0]!.y - start.y)).toBeCloseTo(160, 10);
@@ -314,6 +398,7 @@ test("Shotgun splits at the exact travelled distance without consuming another c
   )).toBe(true);
   expect(ammoCount(game.cylinder)).toBe(5);
   expect(game.metrics).toMatchObject({ triggers: 1, projectiles: 9 });
+  expect(game.pendingEmissions).toEqual([]);
 
   game = updateGame(game, idle, 129 / game.weapon.speed, game.time + 129 / game.weapon.speed);
   expect(game.projectiles).toHaveLength(8);
@@ -340,6 +425,10 @@ test("Spectral hits before the Shotgun threshold and then splits in the same swe
   game = updateGame(game, idle, 0.3, 1.3);
 
   expect(game.metrics.hits).toBe(1);
+  expect(game.projectiles).toHaveLength(0);
+  expect(game.pendingEmissions[0]?.specs).toHaveLength(8);
+
+  game = updateGame(game, idle, 0, game.time);
   expect(game.projectiles).toHaveLength(8);
   expect(game.projectiles.every((projectile) => projectile.behaviors.split === undefined && projectile.penetration?.targets)).toBe(true);
 });
@@ -355,6 +444,9 @@ test("Halo path counts toward the Shotgun split distance without teleporting chi
   }
 
   expect(parentBeforeSplit.travelled).toBeLessThan(160);
+  expect(game.projectiles).toEqual([]);
+  expect(game.pendingEmissions[0]?.specs).toHaveLength(8);
+  game = updateGame(game, idle, 0, game.time);
   expect(game.projectiles).toHaveLength(8);
   expect(game.projectiles.every((projectile) =>
     projectile.x === game.projectiles[0]!.x && projectile.y === game.projectiles[0]!.y && projectile.travelled === 0
@@ -407,7 +499,7 @@ test("physical collision wins a floating-point tie with a diagonal Shotgun split
 test("equal-time target collisions use stable target IDs instead of array order", () => {
   const target = (id: string) => ({
     id, kind: "dummy" as const, x: 600, y: 288, radius: 22,
-    health: Number.POSITIVE_INFINITY, maxHealth: Number.POSITIVE_INFINITY,
+    health: 1, maxHealth: 1, immortal: true,
     speed: 0, frozenUntil: 0,
   });
   const firstHit = (targets: ReturnType<typeof target>[]) => {

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createGame, setArtifact, spawnDummy, updateGame } from "./simulation";
-import { advanceTrajectory, buildTeslaLinks, splitProjectile, type ProjectileState, type TeslaBehavior } from "./projectiles";
+import { advanceTrajectory, buildTeslaLinks, splitProjectile, sweptCircleCollision, type ProjectileState, type TeslaBehavior } from "./projectiles";
 import { segmentCircleHitTime } from "./room";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
@@ -63,6 +63,29 @@ test("Tesla links use endpoint radii, neighbor caps, damage scale, and cooldown"
 test("segmentCircleHitTime finds a swept hit and rejects a miss", () => {
   expect(segmentCircleHitTime({ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 10, y: 2 }, 3)).toBeCloseTo(0.3882, 3);
   expect(segmentCircleHitTime({ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 10, y: 5 }, 3)).toBeNull();
+});
+
+test("swept projectile candidates retain stable collider point and normal context", () => {
+  const mover = { ...teslaProjectile("projectile-1", 0, 0, 20), radius: 0 };
+  const candidate = sweptCircleCollision(
+    { x: 0, y: 0 },
+    { x: 20, y: 0 },
+    mover,
+    { id: "target-a", x: 10, y: 2, radius: 3 },
+  );
+  expect(candidate).toMatchObject({
+    colliderId: "target-a",
+    eventTime: 0.38819660112501053,
+    point: { x: 7.76393202250021, y: 0 },
+    normal: { y: -0.6666666666666666 },
+  });
+  expect(candidate!.normal.x).toBeCloseTo(-0.74535599249993);
+  expect(sweptCircleCollision(
+    { x: 0, y: 0 },
+    { x: 20, y: 0 },
+    mover,
+    { id: "target-miss", x: 10, y: 20, radius: 3 },
+  )).toBeNull();
 });
 
 test("Shotgun splits into eight smaller pellets across a 48 degree forward cone", () => {
