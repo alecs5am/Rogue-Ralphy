@@ -348,6 +348,7 @@ git commit -m "feat: compile stable artifact combat rules"
 - Modify: `src/game/simulation.ts`
 - Modify: `src/game/simulation.test.ts`
 - Modify: `src/game/presentation.ts`
+- Modify: `src/assets.ts`
 - Modify: `src/main.ts`
 - Modify: `src/lab.ts`
 - Modify: `src/hud.ts`
@@ -436,7 +437,7 @@ Expected: tests PASS and `rg` returns no matches. Then delete `reload.ts` and `r
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/game/cylinder.ts src/game/cylinder.test.ts src/game/simulation.ts src/game/simulation.test.ts src/game/presentation.ts src/main.ts src/lab.ts src/hud.ts src/hud.test.ts src/game/reload.ts src/game/reload.test.ts
+git add src/game/cylinder.ts src/game/cylinder.test.ts src/game/simulation.ts src/game/simulation.test.ts src/game/presentation.ts src/assets.ts src/main.ts src/lab.ts src/hud.ts src/hud.test.ts src/game/reload.ts src/game/reload.test.ts
 git commit -m "feat: model ordered revolver cylinder"
 ```
 
