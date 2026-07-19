@@ -1,7 +1,7 @@
 import { createMetrics, recordDamage, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, attemptActiveReload, createReloadState, fireRateBuffAt, startReload, type ReloadState } from "./reload";
 import { buildShot, deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon, type ProjectileSpec } from "./weapon";
-import { advanceTrajectory, splitProjectile, type ProjectileState } from "./projectiles";
+import { advanceTrajectory, splitProjectile, synchronizeSpiralState, type ProjectileState } from "./projectiles";
 import { ROOM, ROOM_PROPS, TILE_SIZE, segmentCircleHitTime, type Point } from "./room";
 
 export { ROOM, TILE_SIZE } from "./room";
@@ -213,6 +213,14 @@ function reflect(projectile: ProjectileState, nx: number, ny: number): void {
   projectile.vy -= 2 * dot * ny;
   projectile.remainingBounces -= 1;
   projectile.damage *= projectile.bounceRetention;
+  if (projectile.behaviors.spiral) {
+    const { spiral: _, ...behaviors } = projectile.behaviors;
+    projectile.behaviors = Object.freeze(behaviors);
+    projectile.spiralOrigin = undefined;
+    projectile.spiralRadius = undefined;
+    projectile.spiralAngle = undefined;
+    projectile.spiralAngularSpeed = undefined;
+  }
 }
 
 type WallHit = { time: number; nx: number; ny: number };
@@ -326,10 +334,15 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
 
   const projectileStarts = new Map(projectiles.map((projectile) => [projectile.id, { x: projectile.x, y: projectile.y }]));
   const trajectoryStarts = new Map(projectiles.map((projectile) => [projectile.id, {
-    spiralRadius: projectile.spiralRadius,
     spiralAngle: projectile.spiralAngle,
   }]));
-  projectiles = projectiles.map((projectile) => advanceTrajectory(projectile, state.targets, dt));
+  const liveDurations = new Map(projectiles.map((projectile) => [projectile.id,
+    Math.max(0, Math.min(dt, projectile.lifetime - Math.max(0, now - dt - projectile.bornAt))),
+  ]));
+  const expiringProjectiles = new Set(projectiles
+    .filter((projectile) => now - projectile.bornAt >= projectile.lifetime)
+    .map((projectile) => projectile.id));
+  projectiles = projectiles.map((projectile) => advanceTrajectory(projectile, state.targets, liveDurations.get(projectile.id)!));
   let targets = state.targets.map((target) => {
     if (target.kind !== "chaser" || now < target.frozenUntil) return { ...target };
     const dx = player.x - target.x;
@@ -357,10 +370,15 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     for (const _ of children) metrics = recordProjectile(metrics);
   };
   for (const projectile of projectiles) {
-    if (now - projectile.bornAt >= projectile.lifetime) {
+    const expiresAfterMove = expiringProjectiles.has(projectile.id);
+    if (expiresAfterMove && liveDurations.get(projectile.id) === 0) {
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
       continue;
     }
+    const retainProjectile = () => {
+      if (expiresAfterMove) metrics = recordProjectileOutcome(metrics, projectile.everHit);
+      else survivingProjectiles.push(projectile);
+    };
     const end = { x: projectile.x, y: projectile.y };
     const start = projectileStarts.get(projectile.id)!;
     let from = start;
@@ -401,7 +419,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
         projectile.x = end.x;
         projectile.y = end.y;
         projectile.travelled += segmentDistance;
-        survivingProjectiles.push(projectile);
+        retainProjectile();
         break;
       }
 
@@ -413,11 +431,9 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
         const fullDistance = Math.hypot(end.x - start.x, end.y - start.y);
         const fraction = fullDistance === 0 ? 0 : Math.hypot(projectile.x - start.x, projectile.y - start.y) / fullDistance;
         const trajectoryStart = trajectoryStarts.get(projectile.id)!;
-        if (trajectoryStart.spiralRadius !== undefined && projectile.spiralRadius !== undefined) {
-          projectile.spiralRadius = trajectoryStart.spiralRadius + (projectile.spiralRadius - trajectoryStart.spiralRadius) * fraction;
-        }
         if (trajectoryStart.spiralAngle !== undefined && projectile.spiralAngle !== undefined) {
-          projectile.spiralAngle = trajectoryStart.spiralAngle + (projectile.spiralAngle - trajectoryStart.spiralAngle) * fraction;
+          const referenceAngle = trajectoryStart.spiralAngle + (projectile.spiralAngle - trajectoryStart.spiralAngle) * fraction;
+          synchronizeSpiralState(projectile, referenceAngle);
         }
       }
 
@@ -431,12 +447,12 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       }
       if (event.kind === "prop") {
         if (bounceOffProp(projectile, event.prop)) metrics = recordProjectileOutcome(metrics, projectile.everHit);
-        else survivingProjectiles.push(projectile);
+        else retainProjectile();
         break;
       }
       if (event.kind === "wall") {
         if (bounceOffWall(projectile, event)) metrics = recordProjectileOutcome(metrics, projectile.everHit);
-        else survivingProjectiles.push(projectile);
+        else retainProjectile();
         break;
       }
 
@@ -461,7 +477,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       }
       if (projectile.remainingBounces > 0) {
         bounceOffTarget(projectile, target);
-        survivingProjectiles.push(projectile);
+        retainProjectile();
       } else {
         metrics = recordProjectileOutcome(metrics, projectile.everHit);
       }

@@ -105,6 +105,10 @@ test("Halo path counts toward the Shotgun split distance without teleporting chi
   expect(game.projectiles.every((projectile) =>
     projectile.x === game.projectiles[0]!.x && projectile.y === game.projectiles[0]!.y && projectile.travelled === 0
   )).toBe(true);
+  expect(game.projectiles.every((projectile) =>
+    Math.abs(projectile.x - projectile.spiralOrigin!.x - Math.cos(projectile.spiralAngle!) * projectile.spiralRadius!) < 1e-10 &&
+    Math.abs(projectile.y - projectile.spiralOrigin!.y - Math.sin(projectile.spiralAngle!) * projectile.spiralRadius!) < 1e-10
+  )).toBe(true);
   expect(new Set(game.projectiles.map((projectile) => projectile.spiralAngularSpeed)).size).toBe(8);
 });
 
@@ -248,6 +252,57 @@ test("Pinball wall bounce retains 90% damage and cleanup consumes the depleted p
   game = updateGame(game, idle, 1.34, 2.97);
   expect(game.projectiles).toHaveLength(0);
   expect(game.telemetry).toMatchObject({ successfulProjectiles: 0, misses: 1, accuracy: 0 });
+});
+
+test("a Halo Pinball bounce continues as ordinary reflected flight", () => {
+  let game = setArtifact(setArtifact(createGame(() => 0.9), "haloChamber", true), "pinball", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 0);
+  game = {
+    ...game,
+    projectiles: game.projectiles.map((projectile) => ({
+      ...projectile,
+      x: 890,
+      y: 240,
+      spiralOrigin: Object.freeze({ x: 890, y: 300 }),
+      spiralRadius: 60,
+      spiralAngle: -Math.PI / 2,
+    })),
+  };
+
+  game = updateGame(game, idle, STEP, STEP);
+  const reflected = game.projectiles[0]!;
+  expect(reflected.remainingBounces).toBe(0);
+  expect(reflected.vx).toBeLessThan(0);
+  expect(reflected.behaviors.spiral).toBeUndefined();
+
+  game = updateGame(game, idle, STEP, STEP * 2);
+  expect(game.projectiles[0]?.vx).toBeCloseTo(reflected.vx);
+  expect(game.projectiles[0]?.vy).toBeCloseTo(reflected.vy);
+});
+
+test("a step crossing projectile lifetime resolves only its final live segment", () => {
+  const finalStep = (targetX: number) => {
+    let game = spawnDummy(createGame(() => 0.9), { x: targetX, y: 300 });
+    game = updateGame(game, { ...idle, firing: true }, 0, 0);
+    game = {
+      ...game,
+      time: 0.9,
+      projectiles: game.projectiles.map((projectile) => ({
+        ...projectile,
+        x: 100,
+        y: 300,
+        vx: 620,
+        vy: 0,
+        bornAt: 0,
+        lifetime: 1,
+      })),
+    };
+    return updateGame(game, idle, 0.2, 1.1);
+  };
+
+  expect(finalStep(180).metrics.hits).toBe(1);
+  expect(finalStep(200).metrics.hits).toBe(0);
+  expect(finalStep(200).projectiles).toHaveLength(0);
 });
 
 test("clearing targets drops per-target metrics but preserves global damage", () => {

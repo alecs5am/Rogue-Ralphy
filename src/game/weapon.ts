@@ -88,7 +88,9 @@ export function buildShot(weapon: DerivedWeapon, aimAngle: number, rng: () => nu
   const extraChance = weapon.multishot % 1;
   const count = Math.floor(weapon.multishot) + Number(rng() < extraChance - Number.EPSILON * Math.max(1, weapon.multishot));
   const projectiles = Array.from({ length: count }, (_, index) => {
-    const heading = count === 1
+    const heading = weapon.behaviors.spiral
+      ? aimAngle + Math.PI * 2 * index / count
+      : count === 1
       ? aimAngle
       : aimAngle - weapon.spread / 2 + weapon.spread * index / (count - 1);
     return {

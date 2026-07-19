@@ -56,14 +56,30 @@ function spiralVelocity(angle: number, radius: number, radialSpeed: number, angu
   };
 }
 
+export function synchronizeSpiralState(projectile: ProjectileState, referenceAngle = projectile.spiralAngle): void {
+  if (!projectile.spiralOrigin) return;
+  const dx = projectile.x - projectile.spiralOrigin.x;
+  const dy = projectile.y - projectile.spiralOrigin.y;
+  projectile.spiralRadius = Math.hypot(dx, dy);
+  const angle = Math.atan2(dy, dx);
+  projectile.spiralAngle = referenceAngle === undefined
+    ? angle
+    : referenceAngle + Math.atan2(Math.sin(angle - referenceAngle), Math.cos(angle - referenceAngle));
+}
+
 export function advanceTrajectory(projectile: ProjectileState, targets: readonly TrajectoryTarget[], dt: number): ProjectileState {
   const next = { ...projectile, hitTargetIds: [...projectile.hitTargetIds] };
   const spiral = next.behaviors.spiral;
-  if (spiral && next.spiralRadius !== undefined && next.spiralAngle !== undefined) {
+  let intendedSpiralAngle: number | undefined;
+  if (dt > 0 && spiral && next.spiralOrigin && next.spiralRadius !== undefined && next.spiralAngle !== undefined) {
     const angularSpeed = next.spiralAngularSpeed ?? spiral.angularSpeed;
-    Object.assign(next, spiralVelocity(next.spiralAngle, next.spiralRadius, spiral.radialSpeed, angularSpeed));
     next.spiralRadius += spiral.radialSpeed * dt;
     next.spiralAngle += angularSpeed * dt;
+    intendedSpiralAngle = next.spiralAngle;
+    const x = next.spiralOrigin.x + Math.cos(next.spiralAngle) * next.spiralRadius;
+    const y = next.spiralOrigin.y + Math.sin(next.spiralAngle) * next.spiralRadius;
+    next.vx = (x - next.x) / dt;
+    next.vy = (y - next.y) / dt;
   }
 
   const proposedEnd = { x: next.x + next.vx * dt, y: next.y + next.vy * dt };
@@ -93,6 +109,7 @@ export function advanceTrajectory(projectile: ProjectileState, targets: readonly
 
   next.x += next.vx * dt;
   next.y += next.vy * dt;
+  if (spiral && intendedSpiralAngle !== undefined) synchronizeSpiralState(next, intendedSpiralAngle);
   return next;
 }
 

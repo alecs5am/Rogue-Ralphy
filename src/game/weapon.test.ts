@@ -112,10 +112,10 @@ describe("buildShot", () => {
     expect(shot.projectiles[0]!.heading).toBeLessThan(shot.projectiles[1]!.heading);
   });
 
-  test("applies ordinary spread to Halo multishot", () => {
-    const shot = buildShot(deriveWeapon({ twinChamber: true, haloChamber: true }, 0), 0, () => 0, "trigger-test");
-    expect(shot.projectiles).toHaveLength(2);
+  test("spaces Halo multishot phases evenly around a full revolution", () => {
+    const shot = buildShot(deriveWeapon({ twinChamber: true, haloChamber: true, teslaBullets: true }, 0), 0, () => 0, "trigger-test");
+    expect(shot.projectiles).toHaveLength(3);
     expect(shot.projectiles.every((projectile) => projectile.behaviors.spiral !== undefined)).toBe(true);
-    expect(shot.projectiles[0]!.heading).toBeLessThan(shot.projectiles[1]!.heading);
+    expect(shot.projectiles.map((projectile) => projectile.heading)).toEqual([0, Math.PI * 2 / 3, Math.PI * 4 / 3]);
   });
 });

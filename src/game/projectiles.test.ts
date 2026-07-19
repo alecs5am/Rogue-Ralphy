@@ -81,3 +81,32 @@ test("Halo Shotgun children start together and vary their spiral angular speeds"
   )).toBe(true);
   expect(new Set(children.map((child) => child.spiralAngularSpeed)).size).toBe(8);
 });
+
+test("Halo physical position stays on its stored spiral radius and angle", () => {
+  let game = setArtifact(createGame(() => 0.9), "haloChamber", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+
+  game = updateGame(game, idle, 0.1, 1.1);
+
+  const projectile = game.projectiles[0]!;
+  expect(projectile.x - projectile.spiralOrigin!.x).toBeCloseTo(Math.cos(projectile.spiralAngle!) * projectile.spiralRadius!);
+  expect(projectile.y - projectile.spiralOrigin!.y).toBeCloseTo(Math.sin(projectile.spiralAngle!) * projectile.spiralRadius!);
+});
+
+test("Ghost Sight reacquires when its locked target is removed or dead", () => {
+  let game = spawnDummy(setArtifact(createGame(() => 0.9), "ghostSight", true), { x: 320, y: 395 });
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  game = {
+    ...game,
+    projectiles: game.projectiles.map((projectile) => ({ ...projectile, x: 200, y: 300, vx: 620, vy: 0 })),
+  };
+  game = updateGame(game, idle, 0.2, 1.2);
+  expect(game.projectiles[0]?.homingTargetId).toBe("dummy-1");
+
+  const locked = game.targets[0]!;
+  const replacement = { ...locked, id: "dummy-2", x: 350, y: 480 };
+  const reacquire = (targets: typeof game.targets) => updateGame({ ...game, targets }, idle, 0.1, 1.3);
+
+  expect(reacquire([replacement]).projectiles[0]?.homingTargetId).toBe("dummy-2");
+  expect(reacquire([{ ...locked, health: 0 }, replacement]).projectiles[0]?.homingTargetId).toBe("dummy-2");
+});
