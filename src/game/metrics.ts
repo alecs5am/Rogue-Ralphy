@@ -4,7 +4,7 @@ export type DamageEvent = {
   projectileId?: string; triggerId?: string; artifactId?: string;
   x?: number; y?: number; firstProjectileHit?: boolean;
 };
-export type HitEvent = { time: number; damage: number; targetId: string; x?: number; y?: number };
+export type HitEvent = Omit<DamageEvent, "firstProjectileHit">;
 export type TargetMetrics = { damage: number; hits: number; kills: number };
 
 export type Metrics = {
@@ -30,7 +30,7 @@ export function recordProjectile(metrics: Metrics): Metrics {
 }
 
 export function recordDamage(metrics: Metrics, event: DamageEvent): Metrics {
-  const hitEvent: HitEvent = { time: event.time, damage: event.damage, targetId: event.targetId, ...(event.x === undefined || event.y === undefined ? {} : { x: event.x, y: event.y }) };
+  const { firstProjectileHit: _, ...hitEvent } = event;
   const hitEvents = [...metrics.hitEvents.filter((candidate) => candidate.time > event.time - 3), hitEvent];
   const rollingDps = hitEvents.reduce((total, event) => total + event.damage, 0) / 3;
   const target = metrics.targetMetrics[event.targetId] ?? { damage: 0, hits: 0, kills: 0 };

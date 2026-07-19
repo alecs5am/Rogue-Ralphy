@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ARTIFACT_CATALOG, getOwnedArtifacts, validateArtifactCatalog } from "./artifacts";
+import { ARTIFACT_CATALOG, getOwnedArtifacts, validateArtifactCatalog, type ArtifactDefinition } from "./artifacts";
 import { buildShot, deriveWeapon } from "./weapon";
 
 describe("artifact catalog", () => {
@@ -11,6 +11,23 @@ describe("artifact catalog", () => {
   test("ownership remains boolean and unique", () => {
     expect(getOwnedArtifacts({ teslaBullets: true }).map(({ id }) => id)).toEqual(["teslaBullets"]);
     expect(() => getOwnedArtifacts({ teslaBullets: 2 } as never)).toThrow("teslaBullets must be true when present");
+  });
+
+  test("rejects artifact icons that are not registered asset keys", () => {
+    const catalog = [{ ...ARTIFACT_CATALOG[0], icon: "not-a-real-asset" }] as unknown as readonly ArtifactDefinition[];
+    expect(validateArtifactCatalog(catalog)).toContain(
+      "artifact twinChamber icon not-a-real-asset is not registered in ASSET_PATHS",
+    );
+  });
+
+  test("reports a useful validation error for an unknown runtime effect", () => {
+    const catalog = [{
+      ...ARTIFACT_CATALOG[0],
+      effects: [{ kind: "teleport" }],
+    }] as unknown as readonly ArtifactDefinition[];
+    expect(validateArtifactCatalog(catalog)).toContain(
+      "twinChamber.effects[0] has unknown effect kind: teleport",
+    );
   });
 });
 

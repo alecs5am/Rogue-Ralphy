@@ -102,9 +102,38 @@ test("Tesla deals 25 percent of the lower endpoint damage on a 150ms cooldown", 
   const ready = updateGame(blocked, idle, 0, 1.16);
 
   expect(first.telemetry.totalDamage).toBe(2);
+  expect(first.metrics.hitEvents[0]).toMatchObject({
+    source: "tesla", artifactId: "teslaBullets", targetId: "dummy-1", x: 600, y: 270,
+  });
   expect(blocked.telemetry.totalDamage).toBe(2);
   expect(ready.telemetry.totalDamage).toBe(4);
   expect(ready.telemetry).toMatchObject({ hits: 0, secondaryHits: 2, successfulProjectiles: 0 });
+});
+
+test("Tesla resolution uses conservative non-default endpoint damage and cooldown descriptors", () => {
+  const base = teslaArcAcrossDummy([20, 10]);
+  const game = {
+    ...base,
+    projectiles: base.projectiles.map((projectile, index) => ({
+      ...projectile,
+      behaviors: {
+        ...projectile.behaviors,
+        tesla: {
+          radius: 120,
+          neighbors: 3,
+          damageScale: index === 0 ? 0.4 : 0.3,
+          cooldown: index === 0 ? 0.2 : 0.4,
+        },
+      },
+    })),
+  };
+
+  const first = updateGame(game, idle, 0, 1);
+  const blocked = updateGame(first, idle, 0, 1.39);
+  const ready = updateGame(blocked, idle, 0, 1.41);
+
+  expect(first.teslaLinks[0]).toMatchObject({ damageScale: 0.3, cooldown: 0.4 });
+  expect([first, blocked, ready].map(({ telemetry }) => telemetry.totalDamage)).toEqual([3, 3, 6]);
 });
 
 test("Tesla stores current links and prunes expired cooldowns after an endpoint disappears", () => {
@@ -219,6 +248,49 @@ test("physical collision wins a floating-point tie with a diagonal Shotgun split
 
   expect(game.metrics.hits).toBe(1);
   expect(game.projectiles).toHaveLength(0);
+});
+
+test("equal-time target collisions use stable target IDs instead of array order", () => {
+  const target = (id: string) => ({
+    id, kind: "dummy" as const, x: 600, y: 288, radius: 22,
+    health: Number.POSITIVE_INFINITY, maxHealth: Number.POSITIVE_INFINITY,
+    speed: 0, frozenUntil: 0,
+  });
+  const firstHit = (targets: ReturnType<typeof target>[]) => {
+    let game: ReturnType<typeof createGame> = { ...createGame(() => 0.9), targets };
+    game = updateGame(game, { ...idle, aimX: 900, aimY: 288, firing: true }, 0, 1);
+    return updateGame(game, idle, 0.3, 1.3).metrics.hitEvents[0]?.targetId;
+  };
+
+  expect(firstHit([target("dummy-z"), target("dummy-a")])).toBe("dummy-a");
+  expect(firstHit([target("dummy-a"), target("dummy-z")])).toBe("dummy-a");
+});
+
+test("equal-time prop collisions use stable prop IDs instead of array order", () => {
+  const props = ROOM_PROPS as unknown as Array<{
+    id: string; kind: "rock" | "crate" | "labMarker";
+    x: number; y: number; size: number; collisionRadius: number;
+  }>;
+  const originalOrder = [...props];
+  const originalValues = props.map((prop) => ({ ...prop }));
+  let velocities: number[] = [];
+  try {
+    Object.assign(props.find(({ id }) => id === "rock")!, { x: 600, y: 278, collisionRadius: 20 });
+    Object.assign(props.find(({ id }) => id === "crate")!, { x: 600, y: 298, collisionRadius: 20 });
+    const collide = () => {
+      let game = setArtifact(createGame(() => 0.9), "pinball", true);
+      game = updateGame(game, { ...idle, aimX: 900, aimY: 288, firing: true }, 0, 1);
+      return updateGame(game, idle, 0.3, 1.3).projectiles[0]?.vy ?? 0;
+    };
+    velocities = [collide()];
+    props.reverse();
+    velocities.push(collide());
+  } finally {
+    props.splice(0, props.length, ...originalOrder);
+    props.forEach((prop, index) => Object.assign(prop, originalValues[index]));
+  }
+
+  expect(Math.sign(velocities[0]!)).toBe(Math.sign(velocities[1]!));
 });
 
 test("uses a 13 by 7 tile field inside one-tile walls", () => {

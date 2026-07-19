@@ -7,6 +7,34 @@ test("Tesla damage raises DPS without successful projectile accuracy", () => {
   expect(summarizeMetrics(metrics, 1)).toMatchObject({ totalDamage: 5, hits: 0, secondaryHits: 1, successfulProjectiles: 0 });
 });
 
+test("recorded direct damage history retains projectile and trigger provenance", () => {
+  const metrics = recordDamage(createMetrics(), {
+    source: "direct", damage: 20, time: 1, targetId: "dummy-1",
+    projectileId: "projectile-7", triggerId: "trigger-6", artifactId: "hollowPoint",
+    x: 640, y: 270, firstProjectileHit: true,
+  });
+
+  expect(metrics.hitEvents[0]).toEqual({
+    source: "direct", damage: 20, time: 1, targetId: "dummy-1",
+    projectileId: "projectile-7", triggerId: "trigger-6", artifactId: "hollowPoint",
+    x: 640, y: 270,
+  });
+});
+
+test("recorded Tesla damage history retains secondary provenance", () => {
+  const metrics = recordDamage(createMetrics(), {
+    source: "tesla", damage: 5, time: 2, targetId: "dummy-2",
+    projectileId: "projectile-2", triggerId: "trigger-1", artifactId: "teslaBullets",
+    x: 600, y: 288,
+  });
+
+  expect(metrics.hitEvents[0]).toEqual({
+    source: "tesla", damage: 5, time: 2, targetId: "dummy-2",
+    projectileId: "projectile-2", triggerId: "trigger-1", artifactId: "teslaBullets",
+    x: 600, y: 288,
+  });
+});
+
 test("reports strict rolling three-second DPS globally and per target", () => {
   let metrics = createMetrics();
   metrics = recordHit(metrics, 100, 1, "dummy-1", true);
@@ -25,7 +53,7 @@ test("prunes expired hit history without losing cumulative target totals", () =>
   metrics = recordKill(metrics, "expired");
   metrics = recordHit(metrics, 30, 4, "recent", true);
 
-  expect(metrics.hitEvents).toEqual([{ time: 4, damage: 30, targetId: "recent" }]);
+  expect(metrics.hitEvents).toEqual([{ source: "direct", time: 4, damage: 30, targetId: "recent" }]);
   expect(summarizeMetrics(metrics, 4)).toMatchObject({
     totalDamage: 130,
     hits: 2,

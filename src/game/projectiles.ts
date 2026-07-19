@@ -25,32 +25,47 @@ export type ProjectileState = {
   freezeChance: number; freezeDuration: number;
   behaviors: ProjectileBehaviors; penetration?: PenetrationBehavior; hitTargetIds: string[]; everHit: boolean;
   travelled: number; maxTravel?: number;
+  splitParentId?: string; splitOrigin?: Readonly<{ x: number; y: number }>;
   spiralOrigin?: Readonly<{ x: number; y: number }>;
   spiralRadius?: number; spiralAngle?: number; spiralAngularSpeed?: number;
+  spiralLaunchPending?: boolean;
   homingTargetId?: string; homingMarkerRemaining?: number;
 };
 
 export type TrajectoryTarget = Readonly<{ id: string; x: number; y: number; health: number }>;
-export type TeslaLink = Readonly<{ id: string; a: string; b: string; distance: number }>;
+export type TeslaLink = Readonly<{
+  id: string; a: string; b: string; distance: number;
+  damageScale: number; cooldown: number;
+}>;
 
 export function buildTeslaLinks(projectiles: readonly ProjectileState[]): TeslaLink[] {
   const teslaProjectiles = projectiles
-    .filter((projectile) => projectile.behaviors.tesla)
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .flatMap((projectile) => projectile.behaviors.tesla
+      ? [{ projectile, tesla: projectile.behaviors.tesla }]
+      : [])
+    .sort((a, b) => a.projectile.id.localeCompare(b.projectile.id));
   const candidates: TeslaLink[] = [];
   for (let first = 0; first < teslaProjectiles.length; first += 1) {
     for (let second = first + 1; second < teslaProjectiles.length; second += 1) {
-      const a = teslaProjectiles[first]!;
-      const b = teslaProjectiles[second]!;
+      const { projectile: a, tesla: aTesla } = teslaProjectiles[first]!;
+      const { projectile: b, tesla: bTesla } = teslaProjectiles[second]!;
       const distance = Math.hypot(a.x - b.x, a.y - b.y);
-      if (distance <= 96) candidates.push({ id: `${a.id}:${b.id}`, a: a.id, b: b.id, distance });
+      if (distance <= Math.min(aTesla.radius, bTesla.radius)) candidates.push({
+        id: `${a.id}:${b.id}`,
+        a: a.id,
+        b: b.id,
+        distance,
+        damageScale: Math.min(aTesla.damageScale, bTesla.damageScale),
+        cooldown: Math.max(aTesla.cooldown, bTesla.cooldown),
+      });
     }
   }
   candidates.sort((a, b) => a.distance - b.distance || a.id.localeCompare(b.id));
 
+  const caps = new Map(teslaProjectiles.map(({ projectile, tesla }) => [projectile.id, tesla.neighbors]));
   const degrees = new Map<string, number>();
   return candidates.filter(({ a, b }) => {
-    if ((degrees.get(a) ?? 0) >= 2 || (degrees.get(b) ?? 0) >= 2) return false;
+    if ((degrees.get(a) ?? 0) >= caps.get(a)! || (degrees.get(b) ?? 0) >= caps.get(b)!) return false;
     degrees.set(a, (degrees.get(a) ?? 0) + 1);
     degrees.set(b, (degrees.get(b) ?? 0) + 1);
     return true;
@@ -75,13 +90,6 @@ function distanceToSegmentSquared(point: TrajectoryTarget, from: ProjectileState
   return (point.x - x) ** 2 + (point.y - y) ** 2;
 }
 
-function spiralVelocity(angle: number, radius: number, radialSpeed: number, angularSpeed: number): { vx: number; vy: number } {
-  return {
-    vx: Math.cos(angle) * radialSpeed - Math.sin(angle) * angularSpeed * radius,
-    vy: Math.sin(angle) * radialSpeed + Math.cos(angle) * angularSpeed * radius,
-  };
-}
-
 export function synchronizeSpiralState(projectile: ProjectileState, referenceAngle = projectile.spiralAngle): void {
   if (!projectile.spiralOrigin) return;
   const dx = projectile.x - projectile.spiralOrigin.x;
@@ -97,8 +105,9 @@ export function advanceTrajectory(projectile: ProjectileState, targets: readonly
   const next = { ...projectile, hitTargetIds: [...projectile.hitTargetIds] };
   next.homingMarkerRemaining = Math.max(0, (next.homingMarkerRemaining ?? 0) - dt);
   const spiral = next.behaviors.spiral;
+  const launchSpiral = dt > 0 && spiral && next.spiralLaunchPending;
   let intendedSpiralAngle: number | undefined;
-  if (dt > 0 && spiral && next.spiralOrigin && next.spiralRadius !== undefined && next.spiralAngle !== undefined) {
+  if (dt > 0 && spiral && !launchSpiral && next.spiralOrigin && next.spiralRadius !== undefined && next.spiralAngle !== undefined) {
     const angularSpeed = next.spiralAngularSpeed ?? spiral.angularSpeed;
     next.spiralRadius += spiral.radialSpeed * dt;
     next.spiralAngle += angularSpeed * dt;
@@ -138,6 +147,10 @@ export function advanceTrajectory(projectile: ProjectileState, targets: readonly
   next.x += next.vx * dt;
   next.y += next.vy * dt;
   if (spiral && intendedSpiralAngle !== undefined) synchronizeSpiralState(next, intendedSpiralAngle);
+  else if (launchSpiral) {
+    synchronizeSpiralState(next);
+    next.spiralLaunchPending = false;
+  }
   return next;
 }
 
@@ -146,15 +159,14 @@ export function splitProjectile(parent: ProjectileState, nextIds: Iterable<strin
   if (!split) return [];
   const { split: _, ...inheritedBehaviors } = parent.behaviors;
   const heading = Math.atan2(parent.vy, parent.vx);
+  const splitOrigin = Object.freeze({ x: parent.x, y: parent.y });
   return Array.from(nextIds).slice(0, split.count).map((id, index) => {
     const childHeading = heading + Math.PI * 2 * index / split.count;
     const spiral = inheritedBehaviors.spiral;
     const angularSpeed = spiral && split.count > 1
       ? spiral.angularSpeed * (0.75 + 0.5 * index / (split.count - 1))
       : spiral?.angularSpeed;
-    const velocity = spiral && parent.spiralRadius !== undefined && parent.spiralAngle !== undefined && angularSpeed !== undefined
-      ? spiralVelocity(parent.spiralAngle, parent.spiralRadius, spiral.radialSpeed, angularSpeed)
-      : { vx: Math.cos(childHeading) * parent.speed, vy: Math.sin(childHeading) * parent.speed };
+    const velocity = { vx: Math.cos(childHeading) * parent.speed, vy: Math.sin(childHeading) * parent.speed };
     return {
       ...parent,
       id,
@@ -165,7 +177,10 @@ export function splitProjectile(parent: ProjectileState, nextIds: Iterable<strin
       everHit: false,
       travelled: 0,
       maxTravel: split.childRange,
+      splitParentId: parent.id,
+      splitOrigin,
       spiralAngularSpeed: angularSpeed,
+      spiralLaunchPending: spiral ? true : undefined,
       homingTargetId: undefined,
       homingMarkerRemaining: 0,
     };

@@ -158,10 +158,12 @@ function drawProjectiles(
 		if (
 			projectile.maxTravel !== undefined &&
 			projectile.travelled < 64 &&
-			!splitBursts.has(projectile.triggerId)
+			projectile.splitParentId !== undefined &&
+			projectile.splitOrigin !== undefined &&
+			!splitBursts.has(projectile.splitParentId)
 		) {
-			centeredImage(context, assets, "shotgunSplit", projectile, size * 4);
-			splitBursts.add(projectile.triggerId);
+			centeredImage(context, assets, "shotgunSplit", projectile.splitOrigin, size * 4);
+			splitBursts.add(projectile.splitParentId);
 		}
 		if (projectile.behaviors.spiral) {
 			context.globalAlpha = 0.55;

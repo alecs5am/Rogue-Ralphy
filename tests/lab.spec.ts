@@ -32,9 +32,14 @@ test("catalog telemetry", async ({ page }) => {
 		"96 px radius · max 2 links · 25% damage · 0.15s cooldown",
 	);
 	await page.getByRole("button", { name: "Take Shotgun" }).click();
-	await expect(page.locator('[data-stat="split"]')).toContainText("8 × 128 px");
+	await expect(page.locator('[data-stat="split"]')).toHaveText(
+		"160 px distance · 8 pellets · 128 px child range",
+	);
 	await page.getByRole("button", { name: "Take Spectral Bullets" }).click();
 	await expect(page.locator('[data-stat="penetration"]')).toContainText("COVER + TARGETS");
+	await page.getByRole("button", { name: "Take Halo Chamber" }).click();
+	await expect(page.locator('[data-stat="spiral"]')).toHaveText("4s duration · 48 px/s growth");
+	await expect(page.locator('[data-stat="orbit"]')).toHaveCount(0);
 });
 
 test("imagegen combat hud", async ({ page }) => {
@@ -53,6 +58,16 @@ test("imagegen combat hud", async ({ page }) => {
 	);
 	await expect(page.locator('[data-stat="secondary-hits"]')).toHaveText("0");
 	await expect(page.locator("#hud svg, #hud [data-css-art]")).toHaveCount(0);
+	expect(await page.evaluate(async () => {
+		const hud = document.querySelector("#hud");
+		if (!hud) return -1;
+		let writes = 0;
+		const observer = new MutationObserver((records) => { writes += records.length; });
+		observer.observe(hud, { attributes: true, childList: true, characterData: true, subtree: true });
+		await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+		observer.disconnect();
+		return writes;
+	})).toBe(0);
 });
 
 for (const reducedMotion of [false, true]) {
@@ -254,6 +269,17 @@ for (const viewport of [
 		for (const [name, note] of ARTIFACTS) {
 			await expect(page.getByRole("button", { name: `Take ${name}` })).toBeVisible();
 			await expect(page.getByText(note, { exact: true })).toBeVisible();
+		}
+		if (viewport.width === 1024) {
+			const names = page.locator(".artifact-copy h3");
+			expect(await names.evaluateAll((elements) => elements.every((element) =>
+				getComputedStyle(element).whiteSpace !== "nowrap" && element.scrollWidth <= element.clientWidth
+			))).toBe(true);
+			const spectralName = page.locator('[data-artifact="spectralBullets"] h3');
+			await expect(spectralName).toHaveText("Spectral Bullets");
+			expect(await spectralName.evaluate((element) =>
+				element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight)
+			)).toBe(true);
 		}
 		await page.getByRole("button", { name: "Take all" }).click();
 		await expect(page.locator(".artifact-card.active")).toHaveCount(11);

@@ -228,6 +228,7 @@ function reflect(projectile: ProjectileState, nx: number, ny: number): void {
     projectile.spiralRadius = undefined;
     projectile.spiralAngle = undefined;
     projectile.spiralAngularSpeed = undefined;
+    projectile.spiralLaunchPending = undefined;
   }
 }
 
@@ -398,14 +399,14 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       const propHit = projectile.penetration?.obstacles ? undefined : ROOM_PROPS
         .map((prop) => ({ kind: "prop" as const, prop, time: segmentCircleHitTime(from, end, prop, prop.collisionRadius + projectile.radius) }))
         .filter((hit): hit is { kind: "prop"; prop: (typeof ROOM_PROPS)[number]; time: number } => hit.time !== null)
-        .sort((a, b) => a.time - b.time)[0];
+        .sort((a, b) => a.time - b.time || a.prop.id.localeCompare(b.prop.id))[0];
       const wall = firstWallHit(from, end, projectile.radius, state.room);
       const wallHit = wall && { kind: "wall" as const, ...wall };
       const targetHit = targets
         .filter((target) => target.health > 0 && !projectile.hitTargetIds.includes(target.id))
         .map((target) => ({ kind: "target" as const, target, time: segmentCircleHitTime(from, end, target, target.radius + projectile.radius) }))
         .filter((hit): hit is { kind: "target"; target: TargetState; time: number } => hit.time !== null)
-        .sort((a, b) => a.time - b.time)[0];
+        .sort((a, b) => a.time - b.time || a.target.id.localeCompare(b.target.id))[0];
       const splitRemaining = (projectile.behaviors.split?.distance ?? Number.POSITIVE_INFINITY) - projectile.travelled;
       const splitHit = splitRemaining <= segmentDistance
         ? { kind: "split" as const, time: segmentDistance === 0 ? 0 : Math.max(0, splitRemaining / segmentDistance) }
@@ -504,7 +505,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       if (target.health <= 0 || segmentCircleHitTime(a, b, target, target.radius) === null) continue;
       const cooldownKey = `${link.id}:${target.id}`;
       if (now < (teslaCooldowns[cooldownKey] ?? 0)) continue;
-      const damage = Math.min(a.damage, b.damage) * 0.25;
+      const damage = Math.min(a.damage, b.damage) * link.damageScale;
       const wasAlive = target.kind === "dummy" || target.health > 0;
       target.health -= damage;
       metrics = recordDamage(metrics, {
@@ -512,7 +513,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
         x: target.x, y: target.y,
       });
       if (wasAlive && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
-      teslaCooldowns[cooldownKey] = now + 0.15;
+      teslaCooldowns[cooldownKey] = now + link.cooldown;
     }
   }
   targets = targets.filter((target) => target.kind === "dummy" || target.health > 0);

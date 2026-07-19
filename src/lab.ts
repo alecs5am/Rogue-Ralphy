@@ -57,7 +57,7 @@ export function mountLab(
 		const card = document.createElement("article");
 		card.className = "artifact-card";
 		card.dataset.artifact = artifact.id;
-		const iconKey = artifact.icon as AssetKey;
+		const iconKey = artifact.icon;
 		const icon = missing.includes(iconKey)
 			? '<span class="missing-icon" aria-hidden="true"></span>'
 			: `<img src="${ASSET_PATHS[iconKey]}" alt="">`;
@@ -154,7 +154,7 @@ export function mountLab(
 		["tesla", "Tesla"],
 		["split", "Split"],
 		["penetration", "Penetration"],
-		["orbit", "Orbit"],
+		["spiral", "Spiral"],
 		["homing", "Homing"],
 		["deadeye", "Deadeye"],
 	] as const;
@@ -226,13 +226,13 @@ export function mountLab(
 				? `${state.weapon.behaviors.tesla.radius} px radius · max ${state.weapon.behaviors.tesla.neighbors} links · ${format.percent(state.weapon.behaviors.tesla.damageScale)} damage · ${format.number(state.weapon.behaviors.tesla.cooldown, 2)}s cooldown`
 				: "OFF",
 			split: state.weapon.behaviors.split
-				? `${state.weapon.behaviors.split.count} × ${state.weapon.behaviors.split.childRange} px`
+				? `${state.weapon.behaviors.split.distance} px distance · ${state.weapon.behaviors.split.count} pellets · ${state.weapon.behaviors.split.childRange} px child range`
 				: "OFF",
 			penetration: state.weapon.behaviors.penetration
 				? `${state.weapon.behaviors.penetration.obstacles ? "COVER" : ""}${state.weapon.behaviors.penetration.obstacles && state.weapon.behaviors.penetration.targets ? " + " : ""}${state.weapon.behaviors.penetration.targets ? "TARGETS" : ""}`
 				: "OFF",
-			orbit: state.weapon.behaviors.spiral
-				? `${state.weapon.behaviors.spiral.lifetime}s · ${state.weapon.behaviors.spiral.initialRadius}px`
+			spiral: state.weapon.behaviors.spiral
+				? `${state.weapon.behaviors.spiral.lifetime}s duration · ${state.weapon.behaviors.spiral.radialSpeed} px/s growth`
 				: "OFF",
 			homing: state.weapon.behaviors.homing
 				? `${format.degrees(state.weapon.behaviors.homing.turnRate)}/s · ${state.weapon.behaviors.homing.radius}px`

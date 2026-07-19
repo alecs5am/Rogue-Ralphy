@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { heartStateAt, formatResource } from "./hud";
+import { heartStateAt, formatResource, setAttributeIfChanged, setPropertyIfChanged } from "./hud";
 
 const hearts = (health: number) => Array.from({ length: 5 }, (_, index) => heartStateAt(health, index));
 
@@ -12,4 +12,32 @@ test("projects full half and empty hearts at HUD health boundaries", () => {
 
 test("formats bounded HUD resources with two digits", () => {
 	expect([-1, 0, 7.9, 99, 100].map(formatResource)).toEqual(["00", "00", "07", "99", "99"]);
+});
+
+test("HUD projection skips unchanged DOM property writes", () => {
+	let writes = 0;
+	let value = "same";
+	const probe = {
+		get value() { return value; },
+		set value(next: string) { writes += 1; value = next; },
+	};
+
+	setPropertyIfChanged(probe, "value", "same");
+	expect(writes).toBe(0);
+	setPropertyIfChanged(probe, "value", "changed");
+	expect(writes).toBe(1);
+});
+
+test("HUD image projection compares relative source attributes without URL normalization", () => {
+	let writes = 0;
+	let source = "/assets/heart.png";
+	const image = {
+		getAttribute: () => source,
+		setAttribute: (_: string, value: string) => { writes += 1; source = value; },
+	};
+
+	setAttributeIfChanged(image, "src", "/assets/heart.png");
+	expect(writes).toBe(0);
+	setAttributeIfChanged(image, "src", "/assets/heart-half.png");
+	expect(writes).toBe(1);
 });

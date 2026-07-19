@@ -1,14 +1,21 @@
 import { expect, test } from "bun:test";
 import { createGame, setArtifact, spawnDummy, updateGame } from "./simulation";
-import { advanceTrajectory, buildTeslaLinks, splitProjectile, type ProjectileState } from "./projectiles";
+import { advanceTrajectory, buildTeslaLinks, splitProjectile, type ProjectileState, type TeslaBehavior } from "./projectiles";
 import { segmentCircleHitTime } from "./room";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
 
-const teslaProjectile = (id: string, x: number, y: number, damage: number, triggerId = id): ProjectileState => ({
+const teslaProjectile = (
+  id: string,
+  x: number,
+  y: number,
+  damage: number,
+  triggerId = id,
+  tesla: TeslaBehavior = { radius: 96, neighbors: 2, damageScale: 0.25, cooldown: 0.15 },
+): ProjectileState => ({
   id, triggerId, x, y, damage, vx: 0, vy: 0, speed: 0, radius: 6, lifetime: 8, bornAt: 0,
   remainingBounces: 0, bounceRetention: 1, freezeChance: 0, freezeDuration: 0,
-  behaviors: { tesla: { radius: 96, neighbors: 2, damageScale: 0.25, cooldown: 0.15 } },
+  behaviors: { tesla },
   hitTargetIds: [], everHit: false, travelled: 0,
 });
 
@@ -30,6 +37,25 @@ test("Tesla links each projectile to at most two nearest neighbors within 96 pix
   expect([...degrees.values()].every((degree) => degree <= 2)).toBe(true);
   expect(links.some(({ a, b }) => a === "d" || b === "d")).toBe(false);
   expect(links.map(({ id }) => id)).toEqual(["a:b", "b:c", "a:c"]);
+});
+
+test("Tesla links use endpoint radii, neighbor caps, damage scale, and cooldown", () => {
+  const behavior = (overrides: Partial<TeslaBehavior>): TeslaBehavior => ({
+    radius: 100, neighbors: 3, damageScale: 0.4, cooldown: 0.1, ...overrides,
+  });
+  expect(buildTeslaLinks([
+    teslaProjectile("short", 0, 0, 20, "short", behavior({ radius: 50 })),
+    teslaProjectile("far", 60, 0, 20, "far", behavior({ radius: 100 })),
+  ])).toEqual([]);
+
+  const links = buildTeslaLinks([
+    teslaProjectile("a", 0, 0, 20, "a", behavior({ neighbors: 1, damageScale: 0.4, cooldown: 0.1 })),
+    teslaProjectile("b", 10, 0, 20, "b", behavior({ damageScale: 0.2, cooldown: 0.35 })),
+    teslaProjectile("c", 20, 0, 20, "c", behavior({ damageScale: 0.3, cooldown: 0.2 })),
+  ]);
+
+  expect(links.map(({ id }) => id)).toEqual(["a:b", "b:c"]);
+  expect(links[0]).toMatchObject({ damageScale: 0.2, cooldown: 0.35 });
 });
 
 test("segmentCircleHitTime finds a swept hit and rejects a miss", () => {
@@ -63,6 +89,27 @@ test("Shotgun children inherit compatible effects but cannot split recursively",
     child.penetration?.obstacles === true && child.penetration.targets === true &&
     child.behaviors.homing?.turnRate === 3 * Math.PI && child.behaviors.homing.radius === 96 && child.freezeChance > 0 &&
     child.remainingBounces === 1 && child.behaviors.tesla !== undefined && child.behaviors.split === undefined
+  )).toBe(true);
+});
+
+test("Shotgun children identify each splitting parent and keep its fixed split origin", () => {
+  let game = setArtifact(createGame(() => 0.9), "shotgun", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  const firstParent = game.projectiles[0]!;
+  const secondParent = { ...firstParent, id: "projectile-other", x: firstParent.x + 12, y: firstParent.y + 8 };
+
+  const children = [firstParent, secondParent].flatMap((parent, parentIndex) =>
+    splitProjectile(parent, Array.from({ length: 8 }, (_, index) => `pellet-${parentIndex}-${index}`))
+  );
+
+  expect(new Set(children.map(({ splitParentId }) => splitParentId))).toEqual(
+    new Set([firstParent.id, secondParent.id]),
+  );
+  expect(children.slice(0, 8).every(({ splitOrigin }) =>
+    splitOrigin?.x === firstParent.x && splitOrigin.y === firstParent.y
+  )).toBe(true);
+  expect(children.slice(8).every(({ splitOrigin }) =>
+    splitOrigin?.x === secondParent.x && splitOrigin.y === secondParent.y
   )).toBe(true);
 });
 
@@ -123,17 +170,43 @@ test("Ghost Sight shows a brief acquisition marker without dropping its lock", (
   expect(settled.homingTargetId).toBe(target.id);
 });
 
-test("Halo Shotgun children start together and vary their spiral angular speeds", () => {
+test("Halo Shotgun children fan evenly without teleporting off their fixed-origin spiral", () => {
   let game = setArtifact(setArtifact(createGame(() => 0.9), "haloChamber", true), "shotgun", true);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   const parent = game.projectiles[0]!;
 
   const children = splitProjectile(parent, Array.from({ length: 8 }, (_, index) => `pellet-${index}`));
+  const headings = children
+    .map((child) => (Math.atan2(child.vy, child.vx) + Math.PI * 2) % (Math.PI * 2))
+    .sort((a, b) => a - b);
+  const spacings = headings.map((heading, index) =>
+    ((headings[(index + 1) % headings.length] ?? 0) - heading + Math.PI * 2) % (Math.PI * 2)
+  );
 
   expect(children.every((child) =>
     child.x === parent.x && child.y === parent.y && child.spiralOrigin === parent.spiralOrigin
   )).toBe(true);
+  expect(spacings.every((spacing) => Math.abs(spacing - Math.PI / 4) < 1e-10)).toBe(true);
   expect(new Set(children.map((child) => child.spiralAngularSpeed)).size).toBe(8);
+
+  const advanced = children.map((child) => advanceTrajectory(child, [], 0.01));
+  const movementHeadings = advanced
+    .map((child, index) => (Math.atan2(child.y - children[index]!.y, child.x - children[index]!.x) + Math.PI * 2) % (Math.PI * 2))
+    .sort((a, b) => a - b);
+  const movementSpacings = movementHeadings.map((movementHeading, index) =>
+    ((movementHeadings[(index + 1) % movementHeadings.length] ?? 0) - movementHeading + Math.PI * 2) % (Math.PI * 2)
+  );
+  expect(movementSpacings.every((spacing) => Math.abs(spacing - Math.PI / 4) < 1e-10)).toBe(true);
+  expect(advanced.every((child) => child.spiralOrigin === parent.spiralOrigin)).toBe(true);
+  expect(advanced.every((child) =>
+    Math.abs(child.x - child.spiralOrigin!.x - Math.cos(child.spiralAngle!) * child.spiralRadius!) < 1e-10 &&
+    Math.abs(child.y - child.spiralOrigin!.y - Math.sin(child.spiralAngle!) * child.spiralRadius!) < 1e-10
+  )).toBe(true);
+
+  const continued = advanced.map((child) => advanceTrajectory(child, [], 0.01));
+  expect(continued.every((child, index) =>
+    child.spiralOrigin === parent.spiralOrigin && child.spiralRadius! > advanced[index]!.spiralRadius!
+  )).toBe(true);
 });
 
 test("Halo physical position stays on its stored spiral radius and angle", () => {

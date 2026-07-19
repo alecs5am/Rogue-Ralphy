@@ -10,6 +10,16 @@ export const heartStateAt = (health: number, index: number): "full" | "half" | "
 	return remaining >= 20 ? "full" : remaining >= 10 ? "half" : "empty";
 };
 export const formatResource = (value: number): string => String(clampResource(value)).padStart(2, "0");
+export function setPropertyIfChanged<T, K extends keyof T>(target: T, key: K, value: T[K]): void {
+	if (target[key] !== value) target[key] = value;
+}
+export function setAttributeIfChanged(
+	target: Pick<Element, "getAttribute" | "setAttribute">,
+	name: string,
+	value: string,
+): void {
+	if (target.getAttribute(name) !== value) target.setAttribute(name, value);
+}
 
 const image = (src: string, alt: string): HTMLImageElement => {
 	const element = document.createElement("img");
@@ -68,15 +78,15 @@ export function updateHud(state: GameState): void {
 			: heart === "half"
 				? [ASSET_PATHS.heartHalf, "Half heart"]
 				: [ASSET_PATHS.heartEmpty, "Empty heart"];
-		icon.src = src;
-		icon.alt = alt;
+		setAttributeIfChanged(icon, "src", src);
+		setPropertyIfChanged(icon, "alt", alt);
 	}
 	for (const [index, icon] of ammo.entries()) {
 		const loaded = index < state.reload.ammo;
-		icon.src = loaded ? ASSET_PATHS.ammoLoaded : ASSET_PATHS.ammoEmpty;
-		icon.alt = loaded ? "Loaded cartridge" : "Empty cartridge slot";
+		setAttributeIfChanged(icon, "src", loaded ? ASSET_PATHS.ammoLoaded : ASSET_PATHS.ammoEmpty);
+		setPropertyIfChanged(icon, "alt", loaded ? "Loaded cartridge" : "Empty cartridge slot");
 	}
 	if (!resources) return;
 	for (const key of ["coins", "bombs", "keys"] as const)
-		resources[key].textContent = formatResource(state.resources[key]);
+		setPropertyIfChanged(resources[key], "textContent", formatResource(state.resources[key]));
 }

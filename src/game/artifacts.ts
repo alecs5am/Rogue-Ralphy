@@ -1,3 +1,5 @@
+import { ASSET_PATHS, type AssetKey } from "../assets";
+
 const degrees = Math.PI / 180;
 
 export type ArtifactEffect =
@@ -18,7 +20,7 @@ export type ArtifactDefinition = {
   id: string;
   name: string;
   note: string;
-  icon: string;
+  icon: AssetKey;
   category: "weapon" | "trajectory" | "status" | "utility";
   tags: readonly string[];
   effects: readonly ArtifactEffect[];
@@ -59,6 +61,7 @@ function validateEffect(effect: ArtifactEffect, prefix: string): string[] {
     case "tesla": return positive(effect.radius) && Number.isInteger(effect.neighbors) && positive(effect.neighbors) && probability(effect.damageScale) && positive(effect.cooldown) ? [] : [`${prefix}.tesla parameters must be finite and positive`];
     case "split": return positive(effect.distance) && Number.isInteger(effect.count) && positive(effect.count) && positive(effect.childRange) && probability(effect.damageScale) ? [] : [`${prefix}.split parameters must be finite and positive`];
     case "penetration": return [];
+    default: return [`${prefix} has unknown effect kind: ${String((effect as { kind?: unknown }).kind)}`];
   }
 }
 
@@ -69,6 +72,7 @@ export function validateArtifactCatalog(catalog: readonly ArtifactDefinition[]):
     if (!definition.id || ids.has(definition.id)) errors.push(`duplicate artifact id: ${definition.id}`);
     ids.add(definition.id);
     if (!definition.name || !definition.note || !definition.icon) errors.push(`artifact ${definition.id} must include display metadata`);
+    else if (!Object.hasOwn(ASSET_PATHS, definition.icon)) errors.push(`artifact ${definition.id} icon ${definition.icon} is not registered in ASSET_PATHS`);
     definition.effects.forEach((effect, index) => errors.push(...validateEffect(effect, `${definition.id}.effects[${index}]`)));
   }
   return errors;
