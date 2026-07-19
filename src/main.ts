@@ -146,12 +146,7 @@ async function start(): Promise<void> {
 			accumulator = 0;
 		}
 
-		const moving =
-			!state.paused &&
-			(pressed.has("w") ||
-				pressed.has("a") ||
-				pressed.has("s") ||
-				pressed.has("d"));
+		const moving = !state.paused && Math.hypot(state.player.vx, state.player.vy) > 0;
 		renderGame(context, state, assets, { moving, reducedMotion });
 		updateLab(state);
 		setText(hudHealth, `HP ${state.player.health}`);

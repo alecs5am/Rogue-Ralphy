@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { clearTargets, createGame, setArtifact, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
+import { clearTargets, createGame, resetLab, setArtifact, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
 const heading = (velocity: { vx: number; vy: number }) => Math.atan2(velocity.vy, velocity.vx);
+const playerSpeed = (game: ReturnType<typeof createGame>) => Math.hypot(game.player.vx, game.player.vy);
 
 test("uses a 13 by 7 tile field inside one-tile walls", () => {
   const game = createGame(() => 0);
@@ -192,7 +193,86 @@ test("player movement clamps its circle within every room boundary", () => {
   for (const { input, axis, bound } of cases) {
     const moved = updateGame(game, { ...idle, ...input }, 10, 10);
     expect(moved.player[axis]).toBe(bound);
+    expect(moved.player[axis === "x" ? "vx" : "vy"]).toBe(0);
   }
+});
+
+test("accelerates linearly to full cardinal speed in 0.3 seconds", () => {
+  let game = createGame(() => 0);
+  expect(game.player).toMatchObject({ vx: 0, vy: 0, speed: 240 });
+
+  game = updateGame(game, { ...idle, moveX: 1 }, 0.15, 0.15);
+  expect(game.player.vx).toBeCloseTo(120);
+  expect(game.player.vy).toBe(0);
+
+  game = updateGame(game, { ...idle, moveX: 1 }, 0.15, 0.3);
+  expect(game.player.vx).toBeCloseTo(240);
+  expect(playerSpeed(game)).toBeCloseTo(240);
+});
+
+test("normalizes diagonal target speed while accelerating", () => {
+  const game = updateGame(
+    createGame(() => 0),
+    { ...idle, moveX: 1, moveY: 1 },
+    0.3,
+    0.3,
+  );
+  expect(game.player.vx).toBeCloseTo(240 / Math.SQRT2);
+  expect(game.player.vy).toBeCloseTo(240 / Math.SQRT2);
+  expect(playerSpeed(game)).toBeCloseTo(240);
+});
+
+test("decelerates to rest in 0.3 seconds and reverses in 0.6 seconds", () => {
+  const right = { ...idle, moveX: 1 };
+  const left = { ...idle, moveX: -1 };
+  let game = updateGame(createGame(() => 0), right, 0.3, 0.3);
+
+  game = updateGame(game, idle, 0.15, 0.45);
+  expect(game.player.vx).toBeCloseTo(120);
+  game = updateGame(game, idle, 0.15, 0.6);
+  expect(game.player.vx).toBe(0);
+
+  game = updateGame(game, right, 0.3, 0.9);
+  game = updateGame(game, left, 0.3, 1.2);
+  expect(game.player.vx).toBeCloseTo(0);
+  game = updateGame(game, left, 0.3, 1.5);
+  expect(game.player.vx).toBeCloseTo(-240);
+});
+
+test("walls clear only the blocked velocity component", () => {
+  const game = createGame(() => 0);
+  const atRightWall = {
+    ...game,
+    player: {
+      ...game.player,
+      x: game.room.maxX - game.player.radius,
+      vx: 240,
+      vy: 0,
+    },
+  };
+  const moved = updateGame(
+    atRightWall,
+    { ...idle, moveX: 1, moveY: 1 },
+    0.05,
+    0.05,
+  );
+
+  expect(moved.player.x).toBe(game.room.maxX - game.player.radius);
+  expect(moved.player.vx).toBe(0);
+  expect(moved.player.vy).toBeGreaterThan(0);
+  expect(moved.player.y).toBeGreaterThan(game.player.y);
+});
+
+test("pause preserves velocity and reset clears it", () => {
+  const moving = updateGame(
+    createGame(() => 0),
+    { ...idle, moveX: 1 },
+    0.15,
+    0.15,
+  );
+  const paused = updateGame(moving, { ...idle, paused: true }, 1, 1.15);
+  expect(paused.player).toEqual(moving.player);
+  expect(resetLab(moving).player).toMatchObject({ vx: 0, vy: 0 });
 });
 
 test("all artifacts compose on every projectile", () => {

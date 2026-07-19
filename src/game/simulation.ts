@@ -9,6 +9,7 @@ export type InputIntent = {
 };
 
 export type PlayerState = Point & {
+  vx: number; vy: number;
   radius: number; health: number; maxHealth: number; speed: number; invulnerableUntil: number;
 };
 
@@ -54,12 +55,16 @@ const tileCenter = (column: number, row: number): Point => ({
 const PLAYER = {
   x: ROOM.width / 2,
   y: ROOM.height / 2,
+  vx: 0,
+  vy: 0,
   radius: 18,
   health: 100,
   maxHealth: 100,
   speed: 240,
   invulnerableUntil: 0,
 } as const;
+
+const PLAYER_ACCELERATION = 800;
 
 const DUMMY_POINTS: Point[] = [
   tileCenter(10, 3), tileCenter(10, 2), tileCenter(10, 4),
@@ -72,6 +77,20 @@ const EDGE_POINTS: Point[] = [
 ];
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+function moveVelocityToward(
+  vx: number,
+  vy: number,
+  targetVx: number,
+  targetVy: number,
+  maxDelta: number,
+): { vx: number; vy: number } {
+  const dx = targetVx - vx;
+  const dy = targetVy - vy;
+  const distance = Math.hypot(dx, dy);
+  if (distance === 0 || distance <= maxDelta) return { vx: targetVx, vy: targetVy };
+  const scale = maxDelta / distance;
+  return { vx: vx + dx * scale, vy: vy + dy * scale };
+}
 const distanceSquared = (a: Point, b: Point) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
 const overlaps = (a: Point & { radius: number }, b: Point & { radius: number }) => distanceSquared(a, b) < (a.radius + b.radius) ** 2;
 
@@ -276,10 +295,23 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
 
   const magnitude = Math.hypot(input.moveX, input.moveY);
   const movementScale = magnitude > 1 ? 1 / magnitude : 1;
+  const velocity = moveVelocityToward(
+    state.player.vx,
+    state.player.vy,
+    input.moveX * movementScale * state.player.speed,
+    input.moveY * movementScale * state.player.speed,
+    PLAYER_ACCELERATION * dt,
+  );
+  const nextX = state.player.x + velocity.vx * dt;
+  const nextY = state.player.y + velocity.vy * dt;
+  const x = clamp(nextX, state.room.minX + state.player.radius, state.room.maxX - state.player.radius);
+  const y = clamp(nextY, state.room.minY + state.player.radius, state.room.maxY - state.player.radius);
   let player: PlayerState = {
     ...state.player,
-    x: clamp(state.player.x + input.moveX * movementScale * state.player.speed * dt, state.room.minX + state.player.radius, state.room.maxX - state.player.radius),
-    y: clamp(state.player.y + input.moveY * movementScale * state.player.speed * dt, state.room.minY + state.player.radius, state.room.maxY - state.player.radius),
+    x,
+    y,
+    vx: x === nextX ? velocity.vx : 0,
+    vy: y === nextY ? velocity.vy : 0,
   };
   const aim = { x: input.aimX, y: input.aimY };
   let metrics = state.metrics;
