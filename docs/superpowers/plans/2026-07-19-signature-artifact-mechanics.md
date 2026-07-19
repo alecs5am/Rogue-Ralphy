@@ -547,15 +547,21 @@ git commit -m "feat: add signature projectile relations"
 - Create: `src/game/reactive.ts`
 - Create: `src/game/reactive.test.ts`
 - Modify: `src/game/trigger.ts`
+- Modify: `src/game/trigger.test.ts`
 - Modify: `src/game/cylinder.ts`
+- Modify: `src/game/cylinder.test.ts`
+- Modify: `src/game/projectiles.ts`
+- Modify: `src/game/projectiles.test.ts`
 - Modify: `src/game/combat-effects.ts`
+- Modify: `src/game/metrics.ts`
+- Modify: `src/game/metrics.test.ts`
 - Modify: `src/game/simulation.ts`
 - Modify: `src/game/simulation.test.ts`
 
 **Interfaces:**
 
-- Produces: recoil windows, Stillwater charge, Dustline threshold, Bonanza delivery, Locket orbitals, and Undertaker decoy.
-- Consumes: player motion/clamping, ordered cylinder, root/lineage state, damage/kill events, and VFX commands.
+- Produces: numeric recoil windows, Stillwater charge, Dustline snapshots, ordered Bonanza delivery, deterministic Locket orbitals, Undertaker's Coat decoy, phase-eight cylinder refunds, and provenance-complete HUD/world VFX commands.
+- Consumes: fixed-step player motion/clamping, ordered cylinder, Task-1 root/Locket state, Task-2 canonical paths, Task-3 ordered kill contexts/Dustline tokens, damage/contact events, and VFX commands.
 
 - [ ] **Step 1: Write six failing signature tests**
 
@@ -571,6 +577,12 @@ const ROW_SIX = [
 ```
 
 Cover overlapping recoil windows/direction filtering, stationary charge cancellation, exact `192 px` crossing, Shotgun remaining `32 px`, delayed ordinary refund, Locket highest non-bell selection/bell-only armed cadence, three-orbital cap, pre-hit decoy position, and no fatal-hit decoy.
+
+Keep fixed-step player order explicit: reload/buff → input acceleration and player move/clamp → Stillwater update → accepted fire/root → chaser movement/contact → combat phases → phase-eight refunds/cleanup. Recoil changes velocity only after this step's player displacement and can clamp/refund no earlier than the next movement phase. Same-step contact occurs after accepted fire and never retroactively cancels that root; fatal contact still allows the already accepted root, then applies ordinary death precedence.
+
+Recoil windows store numeric `rootIndex`, full `recoilBoots.recoil` effect ID, vector, `expiresAt`, and one-shot state. A window is live only while `expiresAt > now`; at a corner it refunds at most once if either blocked axis has a strictly into-boundary vector component. Orthogonal/away windows remain. Queue refunds in numeric root order. The global due-refund comparator is `arrivesAt`, then full effect ID (`bonanzaClip.refund` before `recoilBoots.recoil`), then numeric root index; multiple refunds pop distinct current `emptied` slots.
+
+Stillwater measures post-input/post-clamp `hypot(vx, vy) < 1` (`1` clears), accumulates fixed-step duration, and becomes charged at exactly `0.6 s` before same-step fire. Only accepted damage clears it; invulnerable contact does not. An accepted root consumes the charge and snapshots all delayed Fan/echo entries permanently. Clear progress/charge when unowned or reset. Recoil from the root is observed on the next movement step.
 
 - [ ] **Step 2: Write refund and overlap tests**
 
@@ -589,6 +601,12 @@ test("Bonanza arrival cancels reload and restores an ordinary round", () => {
 });
 ```
 
+Task 1 returns a closed Locket orbital seed instead of merely dropping the converted projectile: root/rootIndex/lineage/local ordinal, eligible source effects, fully transformed damage/radius/origin power, and trigger time. Conversion happens immediately at accepted-root `now` even if the selected Fan candidate would have launched later. It never creates projectile telemetry and remains excluded from Big Iron, Deadeye, Grave, Dustline, Tesla links, and projectile accuracy. Pass numeric health and active-orbital count into trigger expansion. At `health <= 40`, every third accepted owned root arms; health above `40` or unowned resets. A due bell-only trigger stays armed. If three orbitals are live, keep it armed and launch candidates normally until a slot opens.
+
+Locket orbitals use radius `40`, duration `2.5 s`, angular speed `2π rad/s`, and the lowest free stable slot's start angle `2π × slot / 3`. Timed records are live only while `expiresAt > now`. Swept contacts sort by orbital ID then chaser ID; the first consumes the orbital. Classify damage `source: "reactive"`, `lastGaspLocket/lastGaspLocket.orbital`, with source root/lineage/origin power and no projectile accuracy/count.
+
+Dustline listens to Task-2 monotonic actual-path distance. Physical prop/wall/target impact at exactly `192 px` wins over the distance transition. At the one crossing, snapshot exact interpolated position/time/tangent, current damage/radius/speed, compatible inherited motion/penetration/direct-status/Tesla/bounce traits, root/lineage/origin power, and creation provenance. Fire at `crossedAt + 0.12` through the first eligible fixed-step materialization, generation one, `0.35` damage, `192 px` range, and no Dustline/emission/reactive eligibility. Parent mutation/death cannot change it. With Shotgun at `160`, create one parent-owned afterimage seed from the pre-split tangent/current values; transfer only a `32 px` penetration token to each pellet, and pellets never create afterimages. Return/bounce/Halo all use monotonic path and can cross once.
+
 - [ ] **Step 3: Run tests and confirm failure**
 
 Run: `bun test src/game/reactive.test.ts src/game/simulation.test.ts src/game/cylinder.test.ts`
@@ -598,19 +616,36 @@ Expected: FAIL because row-six state and reducers do not exist.
 - [ ] **Step 4: Implement explicit bounded player state**
 
 ```ts
-export type RecoilWindow = Readonly<{ rootTriggerId: string; vector: Point; expiresAt: number; refunded: boolean }>;
-export type ProtectiveOrbital = Readonly<{ id: string; rootTriggerId: string; damage: number; angle: number; expiresAt: number }>;
+export type RecoilWindow = Readonly<{
+  effectId: "recoilBoots.recoil"; rootTriggerId: string; rootIndex: number;
+  vector: Point; expiresAt: number; refunded: boolean;
+}>;
+export type ProtectiveOrbital = Readonly<{
+  id: string; rootTriggerId: string; rootIndex: number; lineageId: string; originPower: number;
+  damage: number; radius: number; angle: number; angularSpeed: number; expiresAt: number;
+}>;
 export type DecoyState = Readonly<{ x: number; y: number; expiresAt: number }>;
-export type PendingRefund = Readonly<{ effectId: "bonanzaClip" | "recoilBoots"; rootTriggerId: string; arrivesAt: number }>;
+export type PendingRefund = Readonly<{
+  effectId: "bonanzaClip.refund" | "recoilBoots.recoil";
+  rootTriggerId: string; rootIndex: number; arrivesAt: number;
+}>;
 ```
 
 Prune timed records every step. Apply recoil as additive velocity, refund only windows pointing into the clamped boundary, and resolve pending refunds in phase-eight effect-ID order. Decoy retargeting affects chasers only; Ralphy keeps control while alive.
 
+Bonanza consumes Task-3 ordered immutable kill contexts. Only the first reactive-eligible depth-zero kill per `effectId + rootTriggerId` creates one delivery; generation-one kills and depth-one reactions cannot. Create it even when the cylinder is full, snapshot death origin/root index/provenance, and arrive at exact kill time `+0.25`. Extra kills never create another. Phase eight applies the ordinary-round refund at `now >= arrivesAt`; full capacity is a no-op and does not cancel reload. A due refund resolves after same-step fire/automatic reload start and restores the then-most-recent empty slot, cancelling active reload only when the capacity is not full. Recoil and Bonanza may each refund once in stable order.
+
+Undertaker's Coat is the canonical slot-36 name/ID (`undertakersCoat`); do not introduce a parallel Second Skin artifact. Accepted contact means health actually decreases at `now >= invulnerableUntil`. Snapshot post-move/pre-hit position. A nonfatal hit sets invulnerability through at least `now + 1`, replaces the singleton decoy through `now + 1`, and clears Stillwater; chasers retarget only on the next movement step. Dummies/projectile homing and player control are unchanged. Fatal contact creates no decoy. Prune at `expiresAt <= now`; stable multi-chaser contact uses target ID.
+
+Extend VFX records with full effect/root/lineage provenance and a semantic world/HUD destination. Upsert one Stillwater ward; emit one skid per refunded recoil window, one Dustline snapshot/fire cue, one Bonanza soul delivery persisting through even a no-op arrival, one orbital/consume cue, and one decoy. Derive and validate bounds: recoil by fire-rate × `0.35`, one Bonanza delivery per live root, one Dustline afterimage per eligible generation-zero source (Shotgun still one), three orbitals, one decoy. Earned snapshots persist after loadout removal; reset clears all. Clear Targets drops target references but preserves an in-flight earned ammo delivery.
+
+Add exact cross-row tests for Stillwater→Bell→Locket→Big Iron ordering, Stillwater+Shotgun+Dustline, bell-only and cap-full armed Locket, same-root Bonanza+Recoil, lethal/nonfatal Coat contact, and bounded all-row cleanup. A converted orbital may retain Stillwater but never Big Iron/Tesla/Deadeye/Grave/Dustline. Dustline copies prior numeric transforms then applies `0.35` once. Eligible generation-zero ring/status/area kills may activate Bonanza; generation-one kills may not. Recoil runs once per accepted cartridge root regardless of projectile count.
+
 - [ ] **Step 5: Run tests and commit**
 
 ```bash
-bun test src/game/reactive.test.ts src/game/trigger.test.ts src/game/cylinder.test.ts src/game/simulation.test.ts
-git add src/game/reactive.ts src/game/reactive.test.ts src/game/trigger.ts src/game/cylinder.ts src/game/combat-effects.ts src/game/simulation.ts src/game/simulation.test.ts
+bun test src/game/reactive.test.ts src/game/trigger.test.ts src/game/cylinder.test.ts src/game/projectiles.test.ts src/game/combat-effects.test.ts src/game/metrics.test.ts src/game/simulation.test.ts
+git add src/game/reactive.ts src/game/reactive.test.ts src/game/trigger.ts src/game/trigger.test.ts src/game/cylinder.ts src/game/cylinder.test.ts src/game/projectiles.ts src/game/projectiles.test.ts src/game/combat-effects.ts src/game/metrics.ts src/game/metrics.test.ts src/game/simulation.ts src/game/simulation.test.ts
 git commit -m "feat: add signature Ralphy reactive rules"
 ```
 
