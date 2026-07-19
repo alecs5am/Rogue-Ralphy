@@ -147,11 +147,13 @@ git commit -m "feat: add signature trigger artifacts"
 - Modify: `src/game/projectiles.ts`
 - Modify: `src/game/projectiles.test.ts`
 - Modify: `src/game/combat-effects.ts`
+- Modify: `src/game/simulation.ts`
+- Modify: `src/game/simulation.test.ts`
 
 **Interfaces:**
 
-- Produces: `applyMotionRules(projectile, targets, dt, now)` and exact converge, spiral, homing, relay, wave, return, and comet state.
-- Consumes: compiled motion rules and stable projectile/target identifiers.
+- Produces: `applyMotionRules(projectile, targets, dt, now)`, a canonical swept polyline, and exact converge, spiral, homing, relay, wave, return, and comet state.
+- Consumes: compiled motion rules, Task-1 per-projectile motion seeds, stable projectile/target identifiers, Wanted Brand input, and a bounded lineage relay ledger.
 
 - [ ] **Step 1: Write six failing signature tests**
 
@@ -168,6 +170,10 @@ const ROW_TWO = [
 
 Test values immediately before and after `240 px`, ages `0/.5/1`, stable child wave phase, and swept collision against the visible sine curve.
 
+Task 1 supplies explicit serializable seeds on each projectile: immutable `baseHeading`, optional Twin `converge: { side: -1 | 1, distance }`, separate `haloPhase`, and numeric `childIndex/childCount`. Never infer these values from lineage strings. Twin center/Dealer shots omit convergence. Progress uses monotonic actual path distance clamped to `[0, 1]`; its lateral offset permanently becomes zero after convergence. Halo phases use numeric `localOrdinal` order across sources sharing a volley time; echoes retain the source phase.
+
+`MotionResult` returns an ordered polyline rather than one chord. Every subsegment records its endpoints, cumulative actual distance, and absolute normalized time within the fixed step. Motion collision, distance thresholds, later Wake/Crossfire paths, and rendering consume this same canonical path. Wailing Lead uses `22 × (sin(2πs/144 + phase) − sin(phase))`, generation-zero phase `0`, and stable generation-one sibling phase `2π × childIndex / childCount`; this keeps children at their emission point. Tessellate deterministically with no segment exceeding `π/8` wave-phase advance, and convert local segment hits back to full-step event time before Task-5 sorting.
+
 - [ ] **Step 2: Write motion composition tests**
 
 ```ts
@@ -181,6 +187,12 @@ test("target reducers use Pinball then retained Ghost then Wanted and highest st
   expect(result).toMatchObject({ targetId: "relay", turnRate: 3 * Math.PI });
 });
 ```
+
+Keep Task-5 event order unchanged: tolerant full-step time → projectile ID → stable target/collider ID → semantic kind. Distance events carry an explicit motion/effect discriminator; a Shotgun distance removes/splits, while Undertaker's Return turns and survives.
+
+Pinball relay state is lineage-wide runtime state, not a copied projectile boolean. The first successful wall or prop bounce marks the lineage consumed even when no relay target exists, applies the `1.35` speed multiplier once, emits one relay VFX, and selects the Euclidean-nearest live target within `160 px` of impact with stable-ID tie-breaking. Ordinary target ricochets do not activate relay. Store relay and Ghost locks separately: live relay wins, retained Ghost remains underneath, then Wanted Brand, then ordinary Ghost acquisition; a lost relay never reacquires. Wanted steering applies to generation zero only. Clear the bounded relay ledger when the root has no live/scheduled/pending/area/status references and on lab reset.
+
+Every materialized generation-one child receives a fresh `bornAt = now`, age/travelled/leg distance `0`, empty target-hit histories and locks, and its explicit stable child motion seed. Shotgun starts at the exact split position, preserves Halo origin, takes one physical cone-launch step, then resynchronizes to the origin; echoes restart at the original trigger origin/heading with the source convergence side/distance and Halo phase. Children inherit compatible motion, penetration, direct-status, Tesla, and bounce state but never emission or kill-reactive eligibility.
 
 - [ ] **Step 3: Run tests and confirm failure**
 
@@ -204,11 +216,17 @@ export function applyMotionRules(input: MotionInput): MotionResult {
 
 Use actual travelled distance for thresholds, split outbound/return target-hit histories, and maximum applicable turn rate rather than additive caps. Pinball relay acceleration/acquisition occurs once per lineage even with extra bounces.
 
+Comet Spur stores spawn baselines and applies non-compounding factors at `p = clamp((time - bornAt) / 1, 0, 1)`: speed/radius `1 + 0.5p`, damage `1 + 0.35p`. Advance factors by ratios so bounce/return retention persists, integrate the linear speed factor over the elapsed age interval, and interpolate radius/damage at exact hit time. A generation-one child treats its already-scaled materialized values as fresh baselines.
+
+Undertaker's Return splits the motion step at exactly `240` actual swept-path pixels, scales current damage once by `0.65`, reverses the pre-homing base tangent, preserves remaining `dt`, keeps total travelled monotonic, resets leg distance, and expires after `240` inbound pixels. Tag path/events by leg and use separate outbound/return hit histories so Spectral may hit once per leg. Physical impact at the exact turn wins. Return replaces a parent's remaining Shotgun range with the full inbound budget (maximum total `480`); generation-one children with less than `240` residual range expire before returning.
+
+Unsteered/unmodified Halo remains exactly `r = 24 + 48t`, `θ = phase + 3πt`, immutable origin, and `4 s` lifetime. Composed Homing/Comet may alter the live path without moving that origin. Ghost steering runs only after spiral/converge/wave/Comet/Return and resynchronizes polar state. A physical Pinball bounce removes only Halo spiral state and continues as ordinary reflected flight.
+
 - [ ] **Step 5: Run tests and commit**
 
 ```bash
-bun test src/game/motions.test.ts src/game/projectiles.test.ts src/game/simulation.test.ts
-git add src/game/motions.ts src/game/motions.test.ts src/game/projectiles.ts src/game/projectiles.test.ts src/game/combat-effects.ts
+bun test src/game/motions.test.ts src/game/projectiles.test.ts src/game/combat-effects.test.ts src/game/simulation.test.ts
+git add src/game/motions.ts src/game/motions.test.ts src/game/projectiles.ts src/game/projectiles.test.ts src/game/combat-effects.ts src/game/simulation.ts src/game/simulation.test.ts
 git commit -m "feat: compose signature projectile motions"
 ```
 
