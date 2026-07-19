@@ -317,3 +317,73 @@ test("Ghost Sight reacquires when its locked target is removed or dead", () => {
   expect(reacquire([replacement]).projectiles[0]?.homingTargetId).toBe("dummy-2");
   expect(reacquire([{ ...locked, health: 0 }, replacement]).projectiles[0]?.homingTargetId).toBe("dummy-2");
 });
+
+test("Wailing Lead follows its visible sine path", () => {
+  let game = setArtifact(createGame(() => 0.9), "wailingLead", true);
+  game = updateGame(game, { ...idle, aimY: game.player.y, firing: true }, 0, 0);
+  const start = game.projectiles[0]!;
+
+  game = updateGame(game, idle, 36 / start.speed, 36 / start.speed);
+
+  expect(game.projectiles[0]!.y - start.y).toBeCloseTo(22, 6);
+});
+
+test("Undertaker's Return reverses immediately after 240 actual path pixels", () => {
+  let game = setArtifact(createGame(() => 0.9), "undertakersReturn", true);
+  game = updateGame(game, { ...idle, aimY: game.player.y, firing: true }, 0, 0);
+  const speed = game.projectiles[0]!.speed;
+
+  game = updateGame(game, idle, 241 / speed, 241 / speed);
+
+  expect(game.projectiles[0]).toMatchObject({ returnLeg: "return", damage: 13 });
+  expect(game.projectiles[0]!.vx).toBeLessThan(0);
+});
+
+test("Comet Spur uses non-compounding half-age factors", () => {
+  let game = setArtifact(createGame(() => 0.9), "cometSpur", true);
+  game = updateGame(game, { ...idle, aimY: game.player.y, firing: true }, 0, 0);
+
+  game = updateGame(game, idle, 0.5, 0.5);
+
+  expect(game.projectiles[0]!.speed).toBeCloseTo(775, 10);
+  expect(game.projectiles[0]!.radius).toBeCloseTo(6.25, 10);
+  expect(game.projectiles[0]!.damage).toBeCloseTo(23.5, 10);
+});
+
+test("Pinball's first wall bounce accelerates its lineage once", () => {
+  let game = setArtifact(createGame(() => 0.9), "pinball", true);
+  game = updateGame(game, { ...idle, aimY: game.player.y, firing: true }, 0, 0);
+
+  game = updateGame(game, idle, 0.63, 0.63);
+
+  expect(Math.hypot(game.projectiles[0]!.vx, game.projectiles[0]!.vy)).toBeCloseTo(620 * 1.35);
+});
+
+test("numeric volley ordinals seed Twin and Halo while echoes retain the source phase", () => {
+  let game = createGame(() => 0.9);
+  for (const id of ["twinChamber", "haloChamber", "fanThePhantom", "graveEcho"] as const) {
+    game = setArtifact(game, id, true);
+  }
+  game = updateGame(game, { ...idle, aimY: game.player.y, firing: true }, 0, 0);
+
+  expect(game.projectiles.map(({ baseHeading }) => baseHeading)).toEqual([
+    -8 * Math.PI / 180,
+    -8 * Math.PI / 180,
+  ]);
+  expect(game.projectiles.map(({ converge }) => converge)).toEqual([
+    { side: -1, distance: 420 },
+    { side: 1, distance: 420 },
+  ]);
+  expect(game.projectiles.map(({ childIndex, childCount, haloPhase }) => [childIndex, childCount, haloPhase]))
+    .toEqual([[0, 2, 0], [1, 2, Math.PI]]);
+
+  const groups = new Map<string, typeof game.scheduledProjectiles>();
+  for (const scheduled of game.scheduledProjectiles) {
+    const key = `${scheduled.at}:${scheduled.generation}`;
+    groups.set(key, [...(groups.get(key) ?? []), scheduled]);
+  }
+  for (const scheduled of groups.values()) {
+    const ordered = [...scheduled].sort((a, b) => a.localOrdinal - b.localOrdinal);
+    expect(ordered.map(({ spec }) => spec.motionPhase)).toEqual([0, Math.PI]);
+  }
+});

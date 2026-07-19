@@ -517,3 +517,150 @@ test("an expiring ricochet records one outcome instead of surviving its final li
   expect(resolved.projectiles).toEqual([]);
   expect(resolved.metrics).toMatchObject({ misses: 1, successfulProjectiles: 0 });
 });
+
+test("Wailing Lead collision follows the canonical sine polyline instead of its endpoint chord", () => {
+  const waveBuild = compileCombatBuild({ wailingLead: true });
+  const target = {
+    id: "curve-target", kind: "dummy" as const, x: 236, y: 322, radius: 0,
+    health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0,
+  };
+  const base = runtime({
+    now: 0.72,
+    projectiles: [projectile({
+      x: 200, y: 300, vx: 100, speed: 100, radius: 0, baseHeading: 0,
+      motionRules: waveBuild.motions, wavePhase: 0, waveDistance: 0,
+    })],
+    targets: [target],
+  });
+  const motion = context({ dt: 0.72, build: waveBuild, props: [] });
+  const collided = collectCombatEvents(resolveMotionPhase(base, motion), motion);
+
+  expect(collided.events.find(({ kind }) => kind === "target")).toMatchObject({
+    targetId: target.id,
+    eventTime: 0.5,
+    point: { x: 236, y: 322 },
+  });
+});
+
+test("Spectral Undertaker hits once on each exact outbound and return leg", () => {
+  const returnBuild = compileCombatBuild({ undertakersReturn: true, spectralBullets: true });
+  const target = {
+    id: "return-target", kind: "dummy" as const, x: 300, y: 300, radius: 0,
+    health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0,
+  };
+  const resolved = resolveCombatPhases(runtime({
+    now: 3.8,
+    projectiles: [projectile({
+      x: 200, y: 300, vx: 100, speed: 100, radius: 0, damage: 100,
+      penetration: { obstacles: true, targets: true },
+      behaviors: { penetration: { obstacles: true, targets: true } },
+      motionRules: returnBuild.motions,
+      outboundHitTargetIds: [], returnHitTargetIds: [], legTravelled: 0,
+    })],
+    targets: [target],
+  }), context({ dt: 3.8, build: returnBuild, props: [] }));
+
+  expect(resolved.metrics).toMatchObject({ hits: 2, totalDamage: 165 });
+  expect(resolved.projectiles[0]).toMatchObject({
+    returnLeg: "return",
+    outboundHitTargetIds: [target.id],
+    returnHitTargetIds: [target.id],
+  });
+});
+
+test("a physical hit at the exact Undertaker turn wins", () => {
+  const returnBuild = compileCombatBuild({ undertakersReturn: true });
+  const target = {
+    id: "turn-target", kind: "dummy" as const, x: 440, y: 300, radius: 0,
+    health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0,
+  };
+  const resolved = resolveCombatPhases(runtime({
+    now: 2.5,
+    projectiles: [projectile({
+      x: 200, y: 300, vx: 100, speed: 100, radius: 0,
+      motionRules: returnBuild.motions, legTravelled: 0,
+    })],
+    targets: [target],
+  }), context({ dt: 2.5, build: returnBuild, props: [] }));
+
+  expect(resolved.metrics.hits).toBe(1);
+  expect(resolved.projectiles).toEqual([]);
+});
+
+test("Comet damage and radius interpolate at the exact swept hit time", () => {
+  const cometBuild = compileCombatBuild({ cometSpur: true });
+  const target = {
+    id: "comet-target", kind: "dummy" as const, x: 268.75, y: 300, radius: 0,
+    health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0,
+  };
+  const base = runtime({
+    now: 1,
+    projectiles: [projectile({
+      x: 200, y: 300, vx: 100, speed: 100, radius: 10, damage: 100,
+      motionRules: cometBuild.motions,
+    })],
+    targets: [target],
+  });
+  const motion = context({ dt: 1, build: cometBuild, props: [] });
+  const collision = collectCombatEvents(resolveMotionPhase(base, motion), motion)
+    .events.find(({ kind }) => kind === "target")!;
+  const resolved = resolveCombatPhases(base, motion);
+
+  expect(collision.targetId).toBe(target.id);
+  expect(collision.eventTime).toBeCloseTo(0.5, 10);
+  expect(collision.radius).toBeCloseTo(12.5, 10);
+  expect(resolved.metrics.hitEvents[0]?.damage).toBeCloseTo(117.5, 10);
+  expect(resolved.metrics.hitEvents[0]?.time).toBeCloseTo(0.5, 10);
+});
+
+test("Pinball consumes one lineage relay across simultaneous physical bounces and cleans it with the root", () => {
+  const pinballBuild = compileCombatBuild({ pinball: true });
+  const shared = {
+    lineageId: "shared-lineage",
+    rootTriggerId: "shared-root",
+    triggerId: "shared-root",
+    remainingBounces: 1,
+    radius: 1,
+    motionRules: pinballBuild.motions,
+  } as const;
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.1,
+    projectiles: [
+      projectile({ ...shared, id: "projectile-a", x: 890, y: 200, vx: 100, speed: 100 }),
+      projectile({ ...shared, id: "projectile-b", x: 70, y: 400, vx: -100, speed: 100 }),
+    ],
+  }), context({ dt: 0.1, build: pinballBuild, props: [] }));
+
+  expect(Object.keys(resolved.relayLedger ?? {})).toEqual([shared.lineageId]);
+  expect(resolved.vfxCommands.filter(({ kind }) => kind === "pinball.relay")).toHaveLength(1);
+  expect(resolved.projectiles.map(({ vx, vy }) => Math.hypot(vx, vy)).sort((a, b) => a - b))
+    .toEqual([100, 135]);
+
+  const cleaned = resolveCombatPhases({ ...resolved, projectiles: [], now: 0.2, step: 2 }, context({
+    dt: 0,
+    build: pinballBuild,
+    props: [],
+  }));
+  expect(cleaned.relayLedger).toEqual({});
+});
+
+test("ordinary target ricochets do not consume Pinball relay", () => {
+  const pinballBuild = compileCombatBuild({ pinball: true });
+  const target = {
+    id: "ricochet-target", kind: "dummy" as const, x: 250, y: 300, radius: 0,
+    health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0,
+  };
+  const resolved = resolveCombatPhases(runtime({
+    now: 1,
+    projectiles: [projectile({
+      x: 200, y: 300, vx: 100, speed: 100, radius: 0, remainingBounces: 1,
+      motionRules: pinballBuild.motions,
+    })],
+    targets: [target],
+  }), context({ dt: 1, build: pinballBuild, props: [] }));
+
+  expect(resolved.metrics.hits).toBe(1);
+  expect(resolved.relayLedger).toEqual({});
+  expect(resolved.vfxCommands).toEqual([]);
+  expect(Math.hypot(resolved.projectiles[0]!.vx, resolved.projectiles[0]!.vy)).toBeCloseTo(100);
+});

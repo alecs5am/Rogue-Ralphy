@@ -1,4 +1,6 @@
 import { segmentCircleHitTime, type Point } from "./room";
+import { applyMotionRules } from "./motions";
+import type { MotionRule } from "./combat-build";
 
 export type SpiralBehavior = Readonly<{ initialRadius: number; radialSpeed: number; angularSpeed: number; lifetime: number }>;
 export type HomingBehavior = Readonly<{ radius: number; turnRate: number }>;
@@ -13,6 +15,10 @@ export type SplitBehavior = Readonly<{
 }>;
 export type PenetrationBehavior = Readonly<{ obstacles: boolean; targets: boolean }>;
 export type ConvergeBehavior = Readonly<{ distance: number; lateralOffset: number }>;
+export type RelayBehavior = Readonly<{ speedScale: number; radius: number; turnRate: number }>;
+export type WaveBehavior = Readonly<{ amplitude: number; wavelength: number }>;
+export type ReturnBehavior = Readonly<{ outbound: number; inbound: number; damageScale: number }>;
+export type CometBehavior = Readonly<{ duration: number; speedScale: number; radiusScale: number; damageScale: number }>;
 export type BellDescriptor = Readonly<{ interval: number; count: number; radius: number; damageScale: number }>;
 export type BellPulseState = Readonly<Omit<BellDescriptor, "count"> & { nextAt: number; remaining: number }>;
 export type EmissionProvenance = Readonly<{ artifactId: string; effectId: string }>;
@@ -21,6 +27,10 @@ export type ProjectileBehaviors = Readonly<{
   converge?: ConvergeBehavior;
   spiral?: SpiralBehavior;
   homing?: HomingBehavior;
+  relay?: RelayBehavior;
+  wave?: WaveBehavior;
+  return?: ReturnBehavior;
+  comet?: CometBehavior;
   tesla?: TeslaBehavior;
   split?: SplitBehavior;
   penetration?: PenetrationBehavior;
@@ -51,6 +61,27 @@ export type ProjectileState = {
   homingTargetId?: string; homingMarkerRemaining?: number;
   launchHeading?: number;
   convergeOffset?: number;
+  baseHeading?: number;
+  converge?: Readonly<{ side: -1 | 1; distance: number }>;
+  convergeDone?: boolean;
+  haloPhase?: number;
+  childIndex?: number;
+  childCount?: number;
+  wavePhase?: number;
+  waveDistance?: number;
+  returnLeg?: "outbound" | "return";
+  legTravelled?: number;
+  outboundHitTargetIds?: string[];
+  returnHitTargetIds?: string[];
+  cometSpeedFactor?: number;
+  cometRadiusFactor?: number;
+  cometDamageFactor?: number;
+  relayTargetId?: string;
+  relayLost?: boolean;
+  reflected?: boolean;
+  wantedTargetId?: string;
+  wantedTurnRate?: number;
+  motionRules?: readonly MotionRule[];
   bellPulse?: BellPulseState;
 };
 
@@ -127,24 +158,6 @@ export function buildTeslaLinks(projectiles: readonly ProjectileState[]): TeslaL
   });
 }
 
-const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
-const HOMING_MARKER_DURATION = 0.18;
-
-function turnToward(current: number, desired: number, limit: number): number {
-  const difference = Math.atan2(Math.sin(desired - current), Math.cos(desired - current));
-  return current + clamp(difference, -limit, limit);
-}
-
-function distanceToSegmentSquared(point: TrajectoryTarget, from: ProjectileState, to: { x: number; y: number }): number {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const lengthSquared = dx * dx + dy * dy;
-  const amount = lengthSquared === 0 ? 0 : clamp(((point.x - from.x) * dx + (point.y - from.y) * dy) / lengthSquared, 0, 1);
-  const x = from.x + dx * amount;
-  const y = from.y + dy * amount;
-  return (point.x - x) ** 2 + (point.y - y) ** 2;
-}
-
 export function synchronizeSpiralState(projectile: ProjectileState, referenceAngle = projectile.spiralAngle): void {
   if (!projectile.spiralOrigin) return;
   const dx = projectile.x - projectile.spiralOrigin.x;
@@ -157,87 +170,7 @@ export function synchronizeSpiralState(projectile: ProjectileState, referenceAng
 }
 
 export function advanceTrajectory(projectile: ProjectileState, targets: readonly TrajectoryTarget[], dt: number): ProjectileState {
-  const next = { ...projectile, hitTargetIds: [...projectile.hitTargetIds] };
-  next.homingMarkerRemaining = Math.max(0, (next.homingMarkerRemaining ?? 0) - dt);
-  const spiral = next.behaviors.spiral;
-  const launchSpiral = dt > 0 && spiral && next.spiralLaunchPending;
-  let intendedSpiralAngle: number | undefined;
-  if (dt > 0 && spiral && !launchSpiral && next.spiralOrigin && next.spiralRadius !== undefined && next.spiralAngle !== undefined) {
-    const angularSpeed = next.spiralAngularSpeed ?? spiral.angularSpeed;
-    next.spiralRadius += spiral.radialSpeed * dt;
-    next.spiralAngle += angularSpeed * dt;
-    intendedSpiralAngle = next.spiralAngle;
-    const x = next.spiralOrigin.x + Math.cos(next.spiralAngle) * next.spiralRadius;
-    const y = next.spiralOrigin.y + Math.sin(next.spiralAngle) * next.spiralRadius;
-    next.vx = (x - next.x) / dt;
-    next.vy = (y - next.y) / dt;
-  }
-
-  const proposedEnd = { x: next.x + next.vx * dt, y: next.y + next.vy * dt };
-  const homing = next.behaviors.homing;
-  if (homing) {
-    let target = targets.find((candidate) => candidate.id === next.homingTargetId && candidate.health > 0);
-    if (!target) {
-      const candidates = targets
-        .filter((candidate) => candidate.health > 0)
-        .map((candidate) => ({ candidate, distance: distanceToSegmentSquared(candidate, next, proposedEnd) }))
-        .filter(({ distance }) => distance <= homing.radius ** 2)
-        .sort((a, b) => a.distance - b.distance || a.candidate.id.localeCompare(b.candidate.id));
-      target = candidates[0]?.candidate;
-      next.homingTargetId = target?.id;
-      if (target) next.homingMarkerRemaining = HOMING_MARKER_DURATION;
-    }
-    if (target) {
-      const heading = turnToward(
-        Math.atan2(next.vy, next.vx),
-        Math.atan2(target.y - next.y, target.x - next.x),
-        homing.turnRate * dt,
-      );
-      const speed = Math.hypot(next.vx, next.vy);
-      next.vx = Math.cos(heading) * speed;
-      next.vy = Math.sin(heading) * speed;
-    }
-  }
-
-  next.x += next.vx * dt;
-  next.y += next.vy * dt;
-  if (spiral && intendedSpiralAngle !== undefined) synchronizeSpiralState(next, intendedSpiralAngle);
-  else if (launchSpiral) {
-    synchronizeSpiralState(next);
-    next.spiralLaunchPending = false;
-  }
-  const converge = next.behaviors.converge;
-  if (dt > 0 && converge) {
-    const progress = (distance: number) => Math.min(1, Math.max(0, distance / converge.distance));
-    const offset = (distance: number) => {
-      const amount = progress(distance);
-      return amount === 0 || amount === 1 ? 0 : converge.lateralOffset * Math.sin(Math.PI * amount);
-    };
-    const before = offset(projectile.travelled);
-    const heading = next.launchHeading ?? Math.atan2(projectile.vy, projectile.vx);
-    const nx = -Math.sin(heading);
-    const ny = Math.cos(heading);
-    const retainedOffset = spiral && intendedSpiralAngle !== undefined ? 0 : projectile.convergeOffset ?? before;
-    const baseX = next.x;
-    const baseY = next.y;
-    let change = offset(projectile.travelled + Math.hypot(baseX - projectile.x, baseY - projectile.y)) - retainedOffset;
-    for (let iteration = 0; iteration < 12; iteration += 1) {
-      const actualDistance = Math.hypot(
-        baseX + nx * change - projectile.x,
-        baseY + ny * change - projectile.y,
-      );
-      const corrected = offset(projectile.travelled + actualDistance) - retainedOffset;
-      if (Math.abs(corrected - change) <= 1e-12) {
-        change = corrected;
-        break;
-      }
-      change = corrected;
-    }
-    next.x = baseX + nx * change;
-    next.y = baseY + ny * change;
-    next.convergeOffset = retainedOffset + change;
-  }
-  return next;
+  return applyMotionRules(projectile, targets, dt, projectile.bornAt + dt).projectile;
 }
 
 export function splitProjectile(parent: ProjectileState, nextIds: Iterable<string>): ProjectileState[] {
@@ -267,6 +200,7 @@ export function splitProjectile(parent: ProjectileState, nextIds: Iterable<strin
       hitTargetIds: [],
       everHit: false,
       travelled: 0,
+      bornAt: parent.bornAt,
       maxTravel: split.childRange,
       splitParentId: parent.id,
       splitOrigin,
@@ -274,6 +208,21 @@ export function splitProjectile(parent: ProjectileState, nextIds: Iterable<strin
       spiralLaunchPending: spiral ? true : undefined,
       homingTargetId: undefined,
       homingMarkerRemaining: 0,
+      relayTargetId: undefined,
+      relayLost: undefined,
+      wantedTargetId: undefined,
+      baseHeading: childHeading,
+      childIndex: index,
+      childCount: split.count,
+      wavePhase: 2 * Math.PI * index / split.count,
+      waveDistance: 0,
+      returnLeg: "outbound",
+      legTravelled: 0,
+      outboundHitTargetIds: [],
+      returnHitTargetIds: [],
+      cometSpeedFactor: undefined,
+      cometRadiusFactor: undefined,
+      cometDamageFactor: undefined,
     };
   });
 }

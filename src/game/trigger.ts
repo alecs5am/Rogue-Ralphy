@@ -213,7 +213,10 @@ export function expandTrigger(context: TriggerContext) {
   }
 
   if (context.weapon.projectileBase.behaviors.spiral) {
-    roots.forEach((root, index) => { root.spec = { ...root.spec, motionPhase: Math.PI * 2 * index / roots.length }; });
+    for (const at of new Set(roots.map(({ at }) => at))) {
+      const volley = roots.filter((root) => root.at === at).sort((a, b) => a.localOrdinal - b.localOrdinal);
+      volley.forEach((root, index) => { root.spec = { ...root.spec, motionPhase: Math.PI * 2 * index / volley.length }; });
+    }
   }
 
   const origin = Object.freeze({ ...context.origin });

@@ -1,4 +1,4 @@
-import type { CombatBuild, EmissionRule } from "./combat-build";
+import type { CombatBuild, EmissionRule, MotionRule } from "./combat-build";
 import {
   recordDamage,
   recordKill,
@@ -8,15 +8,14 @@ import {
   type Metrics,
 } from "./metrics";
 import {
-  advanceTrajectory,
   buildTeslaLinks,
   splitProjectile,
-  sweptCircleCollision,
   synchronizeSpiralState,
   type ProjectileSpec,
   type ProjectileState,
   type TeslaLink,
 } from "./projectiles";
+import { applyMotionRules, type MotionDistanceEffect, type MotionLeg } from "./motions";
 import { segmentCircleHitTime, type Point } from "./room";
 import { compareScheduledProjectiles, type ScheduledProjectile } from "./trigger";
 
@@ -29,6 +28,12 @@ export type CombatEvent = Readonly<{
   point: Point;
   normal?: Point;
   segment?: Readonly<{ from: Point; to: Point }>;
+  segmentIndex?: number;
+  segmentTime?: number;
+  leg?: MotionLeg;
+  damage?: number;
+  radius?: number;
+  distanceEffect?: "shotgun" | MotionDistanceEffect;
 }>;
 
 export type PendingEmission = Readonly<{
@@ -88,6 +93,7 @@ export type CombatRuntime = Readonly<{
   nextId: number;
   step: number;
   now: number;
+  relayLedger?: Readonly<Record<string, Readonly<{ rootTriggerId: string }>>>;
 }>;
 
 type RoomGeometry = Readonly<{
@@ -114,12 +120,22 @@ export type CombatContext = Readonly<{
 
 type SweptSegment = Readonly<{
   projectileId: string;
+  index: number;
   from: Point;
   to: Point;
   distance: number;
+  startTime: number;
+  endTime: number;
   liveDuration: number;
   expiresAfterMove: boolean;
   startTravelled: number;
+  endTravelled: number;
+  startRadius: number;
+  endRadius: number;
+  startDamage: number;
+  endDamage: number;
+  leg: MotionLeg;
+  distanceEffect?: MotionDistanceEffect;
   startSpiralAngle?: number;
   endSpiralAngle?: number;
 }>;
@@ -144,6 +160,8 @@ const EVENT_PRIORITY: Readonly<Record<CombatEvent["kind"], number>> = {
 };
 
 const compareString = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
+const EPSILON = 1e-10;
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const tolerantDifference = (a: number, b: number): number => {
   const difference = a - b;
   const tolerance = Number.EPSILON * 128 * Math.max(1, Math.abs(a), Math.abs(b));
@@ -167,6 +185,9 @@ const cloneProjectile = (projectile: ProjectileState): ProjectileState => ({
   ]))),
   penetration: projectile.penetration && { ...projectile.penetration },
   hitTargetIds: [...projectile.hitTargetIds],
+  outboundHitTargetIds: projectile.outboundHitTargetIds && [...projectile.outboundHitTargetIds],
+  returnHitTargetIds: projectile.returnHitTargetIds && [...projectile.returnHitTargetIds],
+  motionRules: projectile.motionRules && [...projectile.motionRules],
   splitOrigin: projectile.splitOrigin,
   spiralOrigin: projectile.spiralOrigin,
   bellPulse: projectile.bellPulse && { ...projectile.bellPulse },
@@ -183,6 +204,7 @@ function phaseState(runtime: CombatRuntime | CombatPhaseState, context: CombatCo
     emissionRequests: previous.emissionRequests ?? [],
     teslaLinks: previous.teslaLinks ?? context.teslaLinks,
     teslaCooldowns: previous.teslaCooldowns ?? context.teslaCooldowns,
+    relayLedger: runtime.relayLedger ?? {},
   };
 }
 
@@ -252,6 +274,7 @@ function projectileSpec(projectile: ProjectileState): ProjectileSpec {
     bounces: projectile.remainingBounces,
     bounceRetention: projectile.bounceRetention,
     behaviors: projectile.behaviors,
+    motionPhase: projectile.haloPhase,
   });
 }
 
@@ -269,6 +292,7 @@ export function queueEmission(
   const templates = splitProjectile(cloneProjectile(projectile), ids).map((child) => Object.freeze(cloneProjectile({
     ...child,
     emission,
+    activatedEffectIds: child.activatedEffectIds.filter((effectId) => effectId !== rule.effectId),
   })));
   return Object.freeze({
     atStep: options.step + 1,
@@ -279,7 +303,7 @@ export function queueEmission(
     generation: 1,
     originPower: projectile.originPower,
     specs: Object.freeze(templates.map(projectileSpec)),
-    activatedEffectIds: Object.freeze([...projectile.activatedEffectIds]),
+    activatedEffectIds: Object.freeze(projectile.activatedEffectIds.filter((effectId) => effectId !== rule.effectId)),
     templates: Object.freeze(templates),
   });
 }
@@ -289,6 +313,8 @@ function materializeScheduled(
   context: CombatContext,
   now: number,
   id: string,
+  childIndex = 0,
+  childCount = 1,
 ): ProjectileState {
   const { spec } = scheduled;
   const aimAngle = scheduled.aim ?? spec.heading;
@@ -298,10 +324,18 @@ function materializeScheduled(
     y: origin.y + Math.sin(aimAngle) * (context.player.radius + spec.radius + 2),
   };
   const spiral = spec.behaviors.spiral;
-  const motionPhase = spec.motionPhase ?? spec.heading;
+  const motionPhase = scheduled.generation === 0
+    ? 2 * Math.PI * childIndex / Math.max(1, childCount)
+    : spec.motionPhase ?? spec.heading;
   const spiralOrigin = spiral ? Object.freeze({ ...muzzle }) : undefined;
   const spiralRadius = spiral?.initialRadius;
   const spiralAngle = spiral ? motionPhase : undefined;
+  const motionRules = context.build.motions.filter((rule) =>
+    scheduled.effectIds.includes(rule.effectId) || (rule.kind === "converge" && spec.behaviors.converge !== undefined));
+  const converge = spec.behaviors.converge ? {
+    side: (spec.behaviors.converge.lateralOffset < 0 ? -1 : 1) as -1 | 1,
+    distance: spec.behaviors.converge.distance,
+  } : undefined;
   return {
     id,
     triggerId: scheduled.rootTriggerId,
@@ -333,6 +367,19 @@ function materializeScheduled(
     hitTargetIds: [],
     everHit: false,
     travelled: 0,
+    baseHeading: spec.heading,
+    converge,
+    convergeDone: false,
+    haloPhase: spiral ? motionPhase : undefined,
+    childIndex,
+    childCount,
+    wavePhase: scheduled.generation === 0 ? 0 : 2 * Math.PI * childIndex / Math.max(1, childCount),
+    waveDistance: 0,
+    returnLeg: "outbound",
+    legTravelled: 0,
+    outboundHitTargetIds: [],
+    returnHitTargetIds: [],
+    motionRules,
     spiralOrigin,
     spiralRadius,
     spiralAngle,
@@ -356,7 +403,26 @@ function materializePending(
   nextId: number,
 ): Readonly<{ projectiles: ProjectileState[]; nextId: number }> {
   if (pending.templates) return {
-    projectiles: pending.templates.map(cloneProjectile),
+    projectiles: pending.templates.map((template) => ({
+      ...cloneProjectile(template),
+      bornAt: now,
+      travelled: 0,
+      legTravelled: 0,
+      returnLeg: "outbound" as const,
+      hitTargetIds: [],
+      outboundHitTargetIds: [],
+      returnHitTargetIds: [],
+      everHit: false,
+      homingTargetId: undefined,
+      homingMarkerRemaining: 0,
+      relayTargetId: undefined,
+      relayLost: undefined,
+      wantedTargetId: undefined,
+      cometSpeedFactor: undefined,
+      cometRadiusFactor: undefined,
+      cometDamageFactor: undefined,
+      waveDistance: 0,
+    })),
     nextId,
   };
   let id = nextId;
@@ -393,8 +459,12 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
   const duePending = pending.filter(({ atStep }) => atStep <= runtime.step);
   const futurePending = pending.filter(({ atStep }) => atStep > runtime.step);
   let nextId = runtime.nextId;
-  const created = dueSchedules.map((scheduledProjectile) =>
-    materializeScheduled(scheduledProjectile, context, runtime.now, `projectile-${nextId++}`));
+  const created = dueSchedules.map((scheduledProjectile) => {
+    const siblings = dueSchedules.filter((candidate) => candidate.rootTriggerId === scheduledProjectile.rootTriggerId
+      && candidate.at === scheduledProjectile.at && candidate.generation === scheduledProjectile.generation);
+    const childIndex = siblings.findIndex((candidate) => candidate === scheduledProjectile);
+    return materializeScheduled(scheduledProjectile, context, runtime.now, `projectile-${nextId++}`, childIndex, siblings.length);
+  });
   for (const emission of duePending) {
     const materialized = materializePending(emission, context, runtime.now, nextId);
     created.push(...materialized.projectiles);
@@ -425,31 +495,46 @@ export function resolveMotionPhase(runtime: CombatRuntime | CombatPhaseState, co
       context.dt,
       projectile.lifetime - Math.max(0, current.now - context.dt - projectile.bornAt),
     ));
-    const moved = advanceTrajectory(projectile, context.trajectoryTargets ?? current.targets, liveDuration);
-    segments.push({
+    const motionNow = current.now - context.dt + liveDuration;
+    const result = applyMotionRules(projectile, context.trajectoryTargets ?? current.targets, liveDuration, motionNow);
+    result.path.forEach((path, index) => segments.push({
       projectileId: projectile.id,
-      from: { x: projectile.x, y: projectile.y },
-      to: { x: moved.x, y: moved.y },
-      distance: Math.hypot(moved.x - projectile.x, moved.y - projectile.y),
+      index,
+      from: path.from,
+      to: path.to,
+      distance: path.endDistance - path.startDistance,
+      startTime: path.startTime,
+      endTime: path.endTime,
       liveDuration,
-      expiresAfterMove: current.now - projectile.bornAt >= projectile.lifetime,
-      startTravelled: projectile.travelled,
-      startSpiralAngle: projectile.spiralAngle,
-      endSpiralAngle: moved.spiralAngle,
-    });
-    return moved;
+      expiresAfterMove: index === result.path.length - 1
+        && (current.now - projectile.bornAt >= projectile.lifetime || result.expired),
+      startTravelled: path.startDistance,
+      endTravelled: path.endDistance,
+      startRadius: path.startRadius,
+      endRadius: path.endRadius,
+      startDamage: path.startDamage,
+      endDamage: path.endDamage,
+      leg: path.leg,
+      distanceEffect: path.distanceEffect,
+      startSpiralAngle: path.startSpiralAngle,
+      endSpiralAngle: path.endSpiralAngle,
+    }));
+    return result.projectile;
   });
   return { ...current, projectiles, segments, events: [], emissionRequests: [] };
 }
 
 type WallHit = Readonly<{ time: number; normal: Point }>;
 
-function firstWallHit(from: Point, to: Point, radius: number, room: RoomGeometry): WallHit | undefined {
+function firstWallHit(from: Point, to: Point, startRadius: number, endRadius: number, room: RoomGeometry): WallHit | undefined {
   const hits: Readonly<{ time: number; normal: Point }>[] = [];
-  if (to.x < room.minX + radius) hits.push({ time: (room.minX + radius - from.x) / (to.x - from.x), normal: { x: 1, y: 0 } });
-  else if (to.x > room.maxX - radius) hits.push({ time: (room.maxX - radius - from.x) / (to.x - from.x), normal: { x: -1, y: 0 } });
-  if (to.y < room.minY + radius) hits.push({ time: (room.minY + radius - from.y) / (to.y - from.y), normal: { x: 0, y: 1 } });
-  else if (to.y > room.maxY - radius) hits.push({ time: (room.maxY - radius - from.y) / (to.y - from.y), normal: { x: 0, y: -1 } });
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const dr = endRadius - startRadius;
+  if (to.x - endRadius < room.minX) hits.push({ time: (room.minX + startRadius - from.x) / (dx - dr), normal: { x: 1, y: 0 } });
+  else if (to.x + endRadius > room.maxX) hits.push({ time: (room.maxX - startRadius - from.x) / (dx + dr), normal: { x: -1, y: 0 } });
+  if (to.y - endRadius < room.minY) hits.push({ time: (room.minY + startRadius - from.y) / (dy - dr), normal: { x: 0, y: 1 } });
+  else if (to.y + endRadius > room.maxY) hits.push({ time: (room.maxY - startRadius - from.y) / (dy + dr), normal: { x: 0, y: -1 } });
   const first = [...hits].sort((a, b) => a.time - b.time)[0];
   if (!first) return undefined;
   const simultaneous = hits.filter((hit) => tolerantDifference(hit.time, first.time) === 0);
@@ -467,6 +552,53 @@ const pointAt = (segment: SweptSegment, time: number): Point => ({
   y: segment.from.y + (segment.to.y - segment.from.y) * time,
 });
 
+function growingCircleHit(
+  segment: SweptSegment,
+  projectile: ProjectileState,
+  collider: Readonly<Point & { id: string; radius: number }>,
+) {
+  const dx = segment.to.x - segment.from.x;
+  const dy = segment.to.y - segment.from.y;
+  const ox = segment.from.x - collider.x;
+  const oy = segment.from.y - collider.y;
+  const startRadius = segment.startRadius + collider.radius;
+  const radiusDelta = segment.endRadius - segment.startRadius;
+  const a = dx * dx + dy * dy - radiusDelta * radiusDelta;
+  const b = 2 * (ox * dx + oy * dy - startRadius * radiusDelta);
+  const c = ox * ox + oy * oy - startRadius * startRadius;
+  let time: number | null = null;
+  if (c <= 0) time = 0;
+  else if (Math.abs(a) <= Number.EPSILON) {
+    const candidate = b === 0 ? -1 : -c / b;
+    if (candidate >= 0 && candidate <= 1) time = candidate;
+  } else {
+    const discriminant = b * b - 4 * a * c;
+    const tolerance = Number.EPSILON * 128 * Math.max(1, b * b, Math.abs(4 * a * c));
+    if (discriminant >= -tolerance) {
+      const root = Math.sqrt(Math.max(0, discriminant));
+      const roots = [(-b - root) / (2 * a), (-b + root) / (2 * a)]
+        .filter((candidate) => candidate >= -EPSILON && candidate <= 1 + EPSILON)
+        .map((candidate) => clamp(candidate, 0, 1))
+        .sort((first, second) => first - second);
+      time = roots[0] ?? null;
+    }
+  }
+  if (time === null) return null;
+  const point = pointAt(segment, time);
+  let nx = point.x - collider.x;
+  let ny = point.y - collider.y;
+  const length = Math.hypot(nx, ny);
+  if (length > 0) {
+    nx /= length;
+    ny /= length;
+  } else {
+    const speed = Math.hypot(projectile.vx, projectile.vy) || 1;
+    nx = -projectile.vx / speed;
+    ny = -projectile.vy / speed;
+  }
+  return { colliderId: collider.id, eventTime: time, point, normal: { x: nx, y: ny } };
+}
+
 export function collectCombatEvents(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const current = phaseState(runtime, context);
   const projectileById = new Map(current.projectiles.map((projectile) => [projectile.id, projectile]));
@@ -475,18 +607,27 @@ export function collectCombatEvents(runtime: CombatRuntime | CombatPhaseState, c
     const projectile = projectileById.get(segment.projectileId);
     if (!projectile) continue;
     const path = { from: { ...segment.from }, to: { ...segment.to } };
+    const fullTime = (local: number) => segment.startTime + (segment.endTime - segment.startTime) * local;
+    const eventFields = (local: number) => ({
+      eventTime: fullTime(local),
+      segmentTime: local,
+      segmentIndex: segment.index,
+      leg: segment.leg,
+      radius: segment.startRadius + (segment.endRadius - segment.startRadius) * local,
+      damage: segment.startDamage + (segment.endDamage - segment.startDamage) * local,
+    });
     if (segment.expiresAfterMove && segment.liveDuration === 0) {
-      events.push({ eventTime: 0, kind: "lifetime", projectileId: projectile.id, point: { ...segment.from }, segment: path });
+      events.push({ ...eventFields(0), kind: "lifetime", projectileId: projectile.id, point: { ...segment.from }, segment: path });
       continue;
     }
     if (!projectile.penetration?.obstacles) {
       for (const prop of context.props) {
-        const hit = sweptCircleCollision(segment.from, segment.to, projectile, {
+        const hit = growingCircleHit(segment, projectile, {
           id: prop.id, x: prop.x, y: prop.y, radius: prop.collisionRadius,
         });
-        if (!hit) continue;
+        if (!hit || (segment.index > 0 && hit.eventTime <= EPSILON)) continue;
         events.push({
-          eventTime: hit.eventTime,
+          ...eventFields(hit.eventTime),
           kind: "prop",
           projectileId: projectile.id,
           colliderId: hit.colliderId,
@@ -496,9 +637,9 @@ export function collectCombatEvents(runtime: CombatRuntime | CombatPhaseState, c
         });
       }
     }
-    const wall = firstWallHit(segment.from, segment.to, projectile.radius, context.room);
+    const wall = firstWallHit(segment.from, segment.to, segment.startRadius, segment.endRadius, context.room);
     if (wall) events.push({
-      eventTime: wall.time,
+      ...eventFields(wall.time),
       kind: "wall",
       projectileId: projectile.id,
       colliderId: "room",
@@ -507,11 +648,14 @@ export function collectCombatEvents(runtime: CombatRuntime | CombatPhaseState, c
       segment: path,
     });
     for (const target of current.targets) {
-      if (target.health <= 0 || projectile.hitTargetIds.includes(target.id)) continue;
-      const hit = sweptCircleCollision(segment.from, segment.to, projectile, target);
-      if (!hit) continue;
+      const history = segment.leg === "return"
+        ? projectile.returnHitTargetIds ?? []
+        : projectile.outboundHitTargetIds ?? projectile.hitTargetIds;
+      if (target.health <= 0 || history.includes(target.id)) continue;
+      const hit = growingCircleHit(segment, projectile, target);
+      if (!hit || (segment.index > 0 && hit.eventTime <= EPSILON)) continue;
       events.push({
-        eventTime: hit.eventTime,
+        ...eventFields(hit.eventTime),
         kind: "target",
         projectileId: projectile.id,
         targetId: target.id,
@@ -522,20 +666,28 @@ export function collectCombatEvents(runtime: CombatRuntime | CombatPhaseState, c
     }
     if (projectile.generation === 0 && projectile.behaviors.split) {
       const remaining = projectile.behaviors.split.distance - segment.startTravelled;
-      if (remaining <= segment.distance) {
+      if (remaining >= -EPSILON && remaining <= segment.distance + EPSILON) {
         const time = segment.distance === 0 ? 0 : Math.max(0, remaining / segment.distance);
-        events.push({ eventTime: time, kind: "distance", projectileId: projectile.id, point: pointAt(segment, time), segment: path });
+        events.push({ ...eventFields(time), kind: "distance", distanceEffect: "shotgun", projectileId: projectile.id, point: pointAt(segment, time), segment: path });
       }
     }
+    if (segment.distanceEffect) events.push({
+      ...eventFields(1),
+      kind: "distance",
+      distanceEffect: segment.distanceEffect,
+      projectileId: projectile.id,
+      point: { ...segment.to },
+      segment: path,
+    });
     if (projectile.maxTravel !== undefined) {
       const remaining = projectile.maxTravel - segment.startTravelled;
-      if (remaining <= segment.distance) {
+      if (remaining >= -EPSILON && remaining <= segment.distance + EPSILON) {
         const time = segment.distance === 0 ? 0 : Math.max(0, remaining / segment.distance);
-        events.push({ eventTime: time, kind: "range", projectileId: projectile.id, point: pointAt(segment, time), segment: path });
+        events.push({ ...eventFields(time), kind: "range", projectileId: projectile.id, point: pointAt(segment, time), segment: path });
       }
     }
     if (segment.expiresAfterMove) events.push({
-      eventTime: 1,
+      ...eventFields(1),
       kind: "lifetime",
       projectileId: projectile.id,
       point: { ...segment.to },
@@ -554,6 +706,7 @@ function reflect(projectile: ProjectileState, normal: Point): void {
   projectile.vy -= 2 * dot * ny;
   projectile.remainingBounces -= 1;
   projectile.damage *= projectile.bounceRetention;
+  projectile.reflected = true;
   if (projectile.behaviors.spiral) {
     const { spiral: _, ...behaviors } = projectile.behaviors;
     projectile.behaviors = Object.freeze(behaviors);
@@ -562,6 +715,9 @@ function reflect(projectile: ProjectileState, normal: Point): void {
     projectile.spiralAngle = undefined;
     projectile.spiralAngularSpeed = undefined;
     projectile.spiralLaunchPending = undefined;
+  }
+  if (projectile.motionRules?.some(({ kind }) => kind === "spiral")) {
+    projectile.motionRules = projectile.motionRules.filter(({ kind }) => kind !== "spiral");
   }
 }
 
@@ -578,30 +734,71 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
   const projectileById = new Map(projectiles.map((projectile) => [projectile.id, projectile]));
   const targets = current.targets.map(cloneTarget);
   const targetById = new Map(targets.map((target) => [target.id, target]));
-  const segmentById = new Map(current.segments.map((segment) => [segment.projectileId, segment]));
+  const segmentByKey = new Map(current.segments.map((segment) => [`${segment.projectileId}\0${segment.index}`, segment]));
   const removed = new Set<string>();
   const settled = new Set<string>();
   const emissionRequests: EmissionRequest[] = [];
+  const vfxCommands = [...current.vfxCommands];
+  const relayLedger = { ...(current.relayLedger ?? {}) };
+  let nextId = current.nextId;
   let metrics = current.metrics;
 
   for (const event of current.events) {
     if (removed.has(event.projectileId) || settled.has(event.projectileId)) continue;
     const projectile = projectileById.get(event.projectileId);
-    const segment = segmentById.get(event.projectileId);
+    const segment = segmentByKey.get(`${event.projectileId}\0${event.segmentIndex ?? 0}`)
+      ?? current.segments.find(({ projectileId }) => projectileId === event.projectileId);
     if (!projectile || !segment) continue;
     if (event.kind === "target") {
       const target = targetById.get(event.targetId!);
       if (!target || (!target.immortal && target.health <= 0)) continue;
+      const history = event.leg === "return"
+        ? projectile.returnHitTargetIds ?? []
+        : projectile.outboundHitTargetIds ?? projectile.hitTargetIds;
+      if (history.includes(target.id)) continue;
     }
 
+    const localTime = event.segmentTime ?? (segment.endTime === segment.startTime
+      ? 0
+      : clamp((event.eventTime - segment.startTime) / (segment.endTime - segment.startTime), 0, 1));
     projectile.x = event.point.x;
     projectile.y = event.point.y;
-    projectile.travelled = segment.startTravelled + segment.distance * event.eventTime;
+    projectile.travelled = segment.startTravelled + segment.distance * localTime;
+    projectile.radius = event.radius ?? segment.startRadius + (segment.endRadius - segment.startRadius) * localTime;
+    projectile.damage = event.damage ?? segment.startDamage + (segment.endDamage - segment.startDamage) * localTime;
+    const segmentDuration = (segment.endTime - segment.startTime) * segment.liveDuration;
+    if (segmentDuration > 0) {
+      projectile.vx = (segment.to.x - segment.from.x) / segmentDuration;
+      projectile.vy = (segment.to.y - segment.from.y) / segmentDuration;
+    }
+    const comet = projectile.motionRules?.find((rule): rule is Extract<MotionRule, { kind: "comet" }> => rule.kind === "comet")
+      ?? projectile.behaviors.comet;
+    if (comet) {
+      const age = Math.max(0, current.now - context.dt + event.eventTime * context.dt - projectile.bornAt);
+      const progress = clamp(age / comet.duration, 0, 1);
+      const speedFactor = 1 + (comet.speedScale - 1) * progress;
+      const priorSpeedFactor = projectile.cometSpeedFactor ?? speedFactor;
+      projectile.speed *= speedFactor / priorSpeedFactor;
+      const velocity = Math.hypot(projectile.vx, projectile.vy);
+      if (velocity > 0) {
+        projectile.vx = projectile.vx / velocity * projectile.speed;
+        projectile.vy = projectile.vy / velocity * projectile.speed;
+      }
+      projectile.cometSpeedFactor = speedFactor;
+      projectile.cometRadiusFactor = 1 + (comet.radiusScale - 1) * progress;
+      projectile.cometDamageFactor = 1 + (comet.damageScale - 1) * progress;
+    }
     if (event.kind !== "target" || !projectile.penetration?.targets) {
-      synchronizeImpactSpiral(projectile, segment, event.eventTime);
+      synchronizeImpactSpiral(projectile, segment, localTime);
     }
 
     if (event.kind === "distance") {
+      if (event.distanceEffect === "undertakersReturn") continue;
+      if (event.distanceEffect === "return-expire") {
+        metrics = recordProjectileOutcome(metrics, projectile.everHit);
+        removed.add(projectile.id);
+        continue;
+      }
       const rule = context.build.emissions.find((candidate) =>
         candidate.kind === "splitCone" && projectile.activatedEffectIds.includes(candidate.effectId));
       if (rule && projectile.generation === 0) emissionRequests.push({ projectile: cloneProjectile(projectile), rule });
@@ -622,11 +819,33 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
         if (event.kind === "prop") {
           const prop = context.props.find(({ id }) => id === event.colliderId)!;
           const normalLength = Math.hypot(event.normal!.x, event.normal!.y) || 1;
-          const separation = prop.collisionRadius + projectile.radius + 0.01;
+          const separation = prop.collisionRadius + (event.radius ?? projectile.radius) + 0.01;
           projectile.x = prop.x + event.normal!.x / normalLength * separation;
           projectile.y = prop.y + event.normal!.y / normalLength * separation;
         }
         reflect(projectile, event.normal!);
+        const relay = projectile.motionRules?.find((rule): rule is Extract<MotionRule, { kind: "relay" }> => rule.kind === "relay")
+          ?? projectile.behaviors.relay;
+        if (relay && !relayLedger[projectile.lineageId]) {
+          relayLedger[projectile.lineageId] = { rootTriggerId: projectile.rootTriggerId };
+          projectile.speed = Math.hypot(projectile.vx, projectile.vy) * relay.speedScale;
+          projectile.vx *= relay.speedScale;
+          projectile.vy *= relay.speedScale;
+          projectile.relayTargetId = targets
+            .filter((target) => target.health > 0 && Math.hypot(target.x - event.point.x, target.y - event.point.y) <= relay.radius)
+            .sort((a, b) => Math.hypot(a.x - event.point.x, a.y - event.point.y)
+              - Math.hypot(b.x - event.point.x, b.y - event.point.y) || a.id.localeCompare(b.id))[0]?.id;
+          vfxCommands.push({
+            id: `vfx-${nextId++}`,
+            kind: "pinball.relay",
+            artifactId: "pinball",
+            bornAt: current.now,
+            expiresAt: current.now + 0.18,
+            x: event.point.x,
+            y: event.point.y,
+            targetId: projectile.relayTargetId,
+          });
+        }
         if (segment.expiresAfterMove) {
           metrics = recordProjectileOutcome(metrics, projectile.everHit);
           removed.add(projectile.id);
@@ -638,7 +857,11 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     const target = targetById.get(event.targetId!)!;
     const firstHit = !projectile.everHit;
     projectile.everHit = true;
-    projectile.hitTargetIds.push(target.id);
+    const history = event.leg === "return"
+      ? projectile.returnHitTargetIds ?? (projectile.returnHitTargetIds = [])
+      : projectile.outboundHitTargetIds ?? (projectile.outboundHitTargetIds = []);
+    history.push(target.id);
+    projectile.hitTargetIds = history;
     if (!target.immortal) (target as { health: number }).health -= projectile.damage;
     if (projectile.freezeChance > 0 && context.rng() < projectile.freezeChance) {
       (target as { frozenUntil: number }).frozenUntil = Math.max(target.frozenUntil, current.now + projectile.freezeDuration);
@@ -646,7 +869,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     metrics = recordDamage(metrics, {
       source: "direct",
       damage: projectile.damage,
-      time: current.now,
+      time: current.now - context.dt + event.eventTime * context.dt,
       targetId: target.id,
       artifactId: "baseRevolver",
       effectId: "baseRevolver.direct",
@@ -678,16 +901,16 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
 
   for (const projectile of projectiles) {
     if (removed.has(projectile.id) || settled.has(projectile.id)) continue;
-    const segment = segmentById.get(projectile.id);
     const final = finalProjectiles.get(projectile.id);
-    if (!segment || !final) continue;
-    projectile.x = segment.to.x;
-    projectile.y = segment.to.y;
-    projectile.travelled = segment.startTravelled + segment.distance;
-    projectile.spiralRadius = final.spiralRadius;
-    projectile.spiralAngle = final.spiralAngle;
-    projectile.spiralAngularSpeed = final.spiralAngularSpeed;
-    projectile.spiralLaunchPending = final.spiralLaunchPending;
+    if (!final) continue;
+    const outboundHitTargetIds = [...(projectile.outboundHitTargetIds ?? [])];
+    const returnHitTargetIds = [...(projectile.returnHitTargetIds ?? [])];
+    const everHit = projectile.everHit;
+    Object.assign(projectile, cloneProjectile(final));
+    projectile.outboundHitTargetIds = outboundHitTargetIds;
+    projectile.returnHitTargetIds = returnHitTargetIds;
+    projectile.hitTargetIds = projectile.returnLeg === "return" ? returnHitTargetIds : outboundHitTargetIds;
+    projectile.everHit = everHit;
   }
 
   return {
@@ -696,6 +919,9 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     targets,
     metrics,
     emissionRequests,
+    vfxCommands,
+    relayLedger,
+    nextId,
   };
 }
 
@@ -810,6 +1036,12 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
 export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const current = phaseState(runtime, context);
   const targets = current.targets.filter((target) => target.immortal || target.health > 0).map(cloneTarget);
+  const activeRoots = new Set([
+    ...current.projectiles.map(({ rootTriggerId }) => rootTriggerId),
+    ...current.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
+    ...current.pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
+    ...current.areas.map(({ rootTriggerId }) => rootTriggerId),
+  ]);
   return {
     ...current,
     targets,
@@ -819,6 +1051,8 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     events: [],
     segments: [],
     emissionRequests: [],
+    relayLedger: Object.fromEntries(Object.entries(current.relayLedger ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
   };
 }
 

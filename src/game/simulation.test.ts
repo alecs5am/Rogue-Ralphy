@@ -6,6 +6,7 @@ import { ROOM_PROPS } from "./room";
 import type { ScheduledProjectile } from "./trigger";
 import { buildShot } from "./weapon";
 import { resetMetrics, summarizeMetrics } from "./metrics";
+import { applyMotionRules } from "./motions";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
 const heading = (velocity: { vx: number; vy: number }) => Math.atan2(velocity.vy, velocity.vx);
@@ -1023,4 +1024,43 @@ test("an active projectile is not a miss until lifetime cleanup resolves it", ()
   game = updateGame(game, idle, 0, 9);
   expect(game.projectiles).toHaveLength(0);
   expect(game.telemetry).toMatchObject({ successfulProjectiles: 0, misses: 1, accuracy: 0 });
+});
+
+test("materialized Shotgun children reset motion state and use fresh Comet baselines", () => {
+  let game = createGame(() => 0.9);
+  for (const id of ["shotgun", "cometSpur", "wailingLead", "haloChamber", "ghostSight"] as const) {
+    game = setArtifact(game, id, true);
+  }
+  game = updateGame(game, { ...idle, aimY: game.player.y, firing: true }, 0, 0);
+  for (let tick = 0; tick < 240 && game.pendingEmissions.length === 0; tick += 1) {
+    game = updateGame(game, idle, STEP, game.time + STEP);
+  }
+  expect(game.pendingEmissions).toHaveLength(1);
+  const materializedAt = game.time;
+
+  game = updateGame(game, idle, 0, materializedAt);
+
+  expect(game.projectiles).toHaveLength(8);
+  game.projectiles.forEach((child, index) => {
+    expect(child).toMatchObject({
+      generation: 1,
+      bornAt: materializedAt,
+      travelled: 0,
+      legTravelled: 0,
+      returnLeg: "outbound",
+      childIndex: index,
+      childCount: 8,
+      hitTargetIds: [],
+      outboundHitTargetIds: [],
+      returnHitTargetIds: [],
+      homingTargetId: undefined,
+      relayTargetId: undefined,
+    });
+    expect(child.wavePhase).toBeCloseTo(2 * Math.PI * index / 8, 10);
+    expect(child.activatedEffectIds).not.toContain("shotgun.split");
+  });
+  const child = game.projectiles[0]!;
+  const grown = applyMotionRules(child, [], 0.5, child.bornAt + 0.5).projectile;
+  expect(grown.damage).toBeCloseTo(child.damage * 1.175, 10);
+  expect(grown.radius).toBeCloseTo(child.radius * 1.25, 10);
 });

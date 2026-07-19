@@ -40,6 +40,7 @@ export type GameState = {
   cylinder: CylinderState; scheduledProjectiles: ScheduledProjectile[]; pendingEmissions: PendingEmission[];
   projectiles: ProjectileState[]; targets: TargetState[]; areas: AreaState[]; vfxCommands: VfxCommand[];
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
+  relayLedger: Record<string, Readonly<{ rootTriggerId: string }>>;
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; step: number; nextShotAt: number; nextId: number; rootSequence: number; paused: boolean; rng: () => number;
   dealerCounter: number; locketState: LocketState;
@@ -116,6 +117,7 @@ export function createGame(rng: () => number = Math.random): GameState {
     vfxCommands: [],
     teslaLinks: [],
     teslaCooldowns: {},
+    relayLedger: {},
     metrics,
     telemetry: summarizeMetrics(metrics, 0),
     time: 0,
@@ -195,6 +197,10 @@ export function spawnWave(state: GameState): GameState {
 
 export function clearTargets(state: GameState): GameState {
   const metrics = retainTargetMetrics(state.metrics, []);
+  const activeRoots = new Set([
+    ...state.projectiles.map(({ rootTriggerId }) => rootTriggerId),
+    ...state.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
+  ]);
   return {
     ...state,
     targets: [],
@@ -203,6 +209,8 @@ export function clearTargets(state: GameState): GameState {
     vfxCommands: [],
     teslaLinks: [],
     teslaCooldowns: {},
+    relayLedger: Object.fromEntries(Object.entries(state.relayLedger)
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
     metrics,
     telemetry: summarizeMetrics(metrics, state.time),
   };
@@ -324,6 +332,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     nextId: state.nextId,
     step: state.step + 1,
     now,
+    relayLedger: state.relayLedger,
   }, {
     dt,
     room: state.room,
@@ -352,6 +361,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     vfxCommands: [...combat.vfxCommands],
     teslaLinks: [...combat.teslaLinks],
     teslaCooldowns: { ...combat.teslaCooldowns },
+    relayLedger: { ...(combat.relayLedger ?? {}) },
     metrics,
     telemetry,
     time: now,
