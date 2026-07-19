@@ -63,17 +63,40 @@ test("segmentCircleHitTime finds a swept hit and rejects a miss", () => {
   expect(segmentCircleHitTime({ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 10, y: 5 }, 3)).toBeNull();
 });
 
-test("Shotgun splits into eight 35 percent pellets with a 128 pixel range", () => {
+test("Shotgun splits into eight smaller pellets across a 48 degree forward cone", () => {
   let game = setArtifact(createGame(() => 0.9), "shotgun", true);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   const parent = { ...game.projectiles[0]!, travelled: 160 };
-
   const children = splitProjectile(parent, Array.from({ length: 8 }, (_, index) => `pellet-${index}`));
+  const degrees = Math.PI / 180;
+  const parentHeading = Math.atan2(parent.vy, parent.vx);
 
   expect(children).toHaveLength(8);
-  expect(children.every((child) => child.damage === 7 && child.maxTravel === 128 && child.travelled === 0)).toBe(true);
-  expect(children.every((child) => child.behaviors.split === undefined)).toBe(true);
-  expect(new Set(children.map((child) => Math.round(Math.atan2(child.vy, child.vx) * 1e6))).size).toBe(8);
+  children.forEach((child, index) => {
+    const childHeading = Math.atan2(child.vy, child.vx);
+    const relative = Math.atan2(Math.sin(childHeading - parentHeading), Math.cos(childHeading - parentHeading));
+    expect(relative).toBeCloseTo((-24 + index * 48 / 7) * degrees);
+    expect(Math.cos(relative)).toBeGreaterThan(0);
+    expect(child).toMatchObject({ damage: 5, radius: 2.75, maxTravel: 320, travelled: 0 });
+    expect(child.behaviors.split).toBeUndefined();
+  });
+});
+
+const pelletFor = (ids: readonly ("shotgun" | "bigIron" | "hollowPoint")[]) => {
+  let game = createGame(() => 0.9);
+  for (const id of ids) game = setArtifact(game, id, true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  return splitProjectile(game.projectiles[0]!, ["pellet"])[0]!;
+};
+
+test.each([
+  [["shotgun"], 2.75, 5],
+  [["shotgun", "bigIron"], 3.4375, 5],
+  [["shotgun", "hollowPoint"], 2.75, 6.75],
+] as const)("Shotgun scales the current parent for %o", (ids, radius, damage) => {
+  const pellet = pelletFor(ids);
+  expect(pellet.radius).toBeCloseTo(radius);
+  expect(pellet.damage).toBeCloseTo(damage);
 });
 
 test("Shotgun children inherit compatible effects but cannot split recursively", () => {
@@ -170,38 +193,32 @@ test("Ghost Sight shows a brief acquisition marker without dropping its lock", (
   expect(settled.homingTargetId).toBe(target.id);
 });
 
-test("Halo Shotgun children fan evenly without teleporting off their fixed-origin spiral", () => {
+test("Halo Shotgun launches a forward cone before resuming the fixed-origin spiral", () => {
   let game = setArtifact(setArtifact(createGame(() => 0.9), "haloChamber", true), "shotgun", true);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   const parent = game.projectiles[0]!;
-
   const children = splitProjectile(parent, Array.from({ length: 8 }, (_, index) => `pellet-${index}`));
-  const headings = children
-    .map((child) => (Math.atan2(child.vy, child.vx) + Math.PI * 2) % (Math.PI * 2))
-    .sort((a, b) => a - b);
-  const spacings = headings.map((heading, index) =>
-    ((headings[(index + 1) % headings.length] ?? 0) - heading + Math.PI * 2) % (Math.PI * 2)
-  );
+  const parentHeading = Math.atan2(parent.vy, parent.vx);
+  const relative = (heading: number) =>
+    Math.atan2(Math.sin(heading - parentHeading), Math.cos(heading - parentHeading));
 
   expect(children.every((child) =>
     child.x === parent.x && child.y === parent.y && child.spiralOrigin === parent.spiralOrigin
   )).toBe(true);
-  expect(spacings.every((spacing) => Math.abs(spacing - Math.PI / 4) < 1e-10)).toBe(true);
+  children.forEach((child, index) => {
+    expect(relative(Math.atan2(child.vy, child.vx)))
+      .toBeCloseTo((-24 + index * 48 / 7) * Math.PI / 180);
+  });
   expect(new Set(children.map((child) => child.spiralAngularSpeed)).size).toBe(8);
 
   const advanced = children.map((child) => advanceTrajectory(child, [], 0.01));
-  const movementHeadings = advanced
-    .map((child, index) => (Math.atan2(child.y - children[index]!.y, child.x - children[index]!.x) + Math.PI * 2) % (Math.PI * 2))
-    .sort((a, b) => a - b);
-  const movementSpacings = movementHeadings.map((movementHeading, index) =>
-    ((movementHeadings[(index + 1) % movementHeadings.length] ?? 0) - movementHeading + Math.PI * 2) % (Math.PI * 2)
-  );
-  expect(movementSpacings.every((spacing) => Math.abs(spacing - Math.PI / 4) < 1e-10)).toBe(true);
-  expect(advanced.every((child) => child.spiralOrigin === parent.spiralOrigin)).toBe(true);
-  expect(advanced.every((child) =>
-    Math.abs(child.x - child.spiralOrigin!.x - Math.cos(child.spiralAngle!) * child.spiralRadius!) < 1e-10 &&
-    Math.abs(child.y - child.spiralOrigin!.y - Math.sin(child.spiralAngle!) * child.spiralRadius!) < 1e-10
-  )).toBe(true);
+  advanced.forEach((child, index) => {
+    const dx = child.x - children[index]!.x;
+    const dy = child.y - children[index]!.y;
+    expect(relative(Math.atan2(dy, dx)))
+      .toBeCloseTo((-24 + index * 48 / 7) * Math.PI / 180);
+    expect(child.spiralOrigin).toBe(parent.spiralOrigin);
+  });
 
   const continued = advanced.map((child) => advanceTrajectory(child, [], 0.01));
   expect(continued.every((child, index) =>

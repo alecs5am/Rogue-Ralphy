@@ -51,7 +51,11 @@ export function deriveWeapon(loadout: ArtifactLoadout, fireRateBuff: number): De
         case "spiral": behaviors = { ...behaviors, spiral: effect }; break;
         case "homing": behaviors = { ...behaviors, homing: effect }; break;
         case "tesla": behaviors = { ...behaviors, tesla: effect }; break;
-        case "split": behaviors = { ...behaviors, split: effect }; break;
+        case "split": {
+          const { kind: _, ...split } = effect;
+          behaviors = { ...behaviors, split };
+          break;
+        }
         case "penetration": behaviors = { ...behaviors, penetration: effect }; break;
         default: {
           const exhaustive: never = effect;

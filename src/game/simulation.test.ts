@@ -172,13 +172,19 @@ test("Shotgun splits at the exact travelled distance without consuming another c
   expect(game.projectiles).toHaveLength(8);
   expect(game.projectiles.every((projectile) => projectile.x === game.projectiles[0]!.x && projectile.y === game.projectiles[0]!.y)).toBe(true);
   expect(Math.hypot(game.projectiles[0]!.x - start.x, game.projectiles[0]!.y - start.y)).toBeCloseTo(160, 10);
-  expect(game.projectiles.every((projectile) => projectile.maxTravel === 128 && projectile.behaviors.split === undefined)).toBe(true);
+  expect(game.projectiles.every((projectile) =>
+    projectile.maxTravel === 320
+      && projectile.damage === 5
+      && projectile.radius === 2.75
+      && projectile.behaviors.split === undefined
+  )).toBe(true);
   expect(game.reload.ammo).toBe(5);
   expect(game.metrics).toMatchObject({ triggers: 1, projectiles: 9 });
 
   game = updateGame(game, idle, 129 / game.weapon.speed, game.time + 129 / game.weapon.speed);
-  expect(game.projectiles).toHaveLength(0);
-  expect(game.metrics.misses).toBe(8);
+  expect(game.projectiles).toHaveLength(8);
+  expect(game.projectiles.every((projectile) => Math.abs(projectile.travelled - 129) < 1e-8)).toBe(true);
+  expect(game.metrics.misses).toBe(0);
 });
 
 test("a swept target before the Shotgun threshold is hit before splitting", () => {

@@ -1,7 +1,14 @@
 export type SpiralBehavior = Readonly<{ initialRadius: number; radialSpeed: number; angularSpeed: number; lifetime: number }>;
 export type HomingBehavior = Readonly<{ radius: number; turnRate: number }>;
 export type TeslaBehavior = Readonly<{ radius: number; neighbors: number; damageScale: number; cooldown: number }>;
-export type SplitBehavior = Readonly<{ distance: number; count: number; childRange: number; damageScale: number }>;
+export type SplitBehavior = Readonly<{
+  distance: number;
+  count: number;
+  childRange: number;
+  damageScale: number;
+  fanAngle: number;
+  radiusScale: number;
+}>;
 export type PenetrationBehavior = Readonly<{ obstacles: boolean; targets: boolean }>;
 
 export type ProjectileBehaviors = Readonly<{
@@ -161,7 +168,10 @@ export function splitProjectile(parent: ProjectileState, nextIds: Iterable<strin
   const heading = Math.atan2(parent.vy, parent.vx);
   const splitOrigin = Object.freeze({ x: parent.x, y: parent.y });
   return Array.from(nextIds).slice(0, split.count).map((id, index) => {
-    const childHeading = heading + Math.PI * 2 * index / split.count;
+    const coneOffset = split.count === 1
+      ? 0
+      : -split.fanAngle / 2 + split.fanAngle * index / (split.count - 1);
+    const childHeading = heading + coneOffset;
     const spiral = inheritedBehaviors.spiral;
     const angularSpeed = spiral && split.count > 1
       ? spiral.angularSpeed * (0.75 + 0.5 * index / (split.count - 1))
@@ -172,6 +182,7 @@ export function splitProjectile(parent: ProjectileState, nextIds: Iterable<strin
       id,
       ...velocity,
       damage: parent.damage * split.damageScale,
+      radius: parent.radius * split.radiusScale,
       behaviors: Object.freeze(inheritedBehaviors),
       hitTargetIds: [],
       everHit: false,

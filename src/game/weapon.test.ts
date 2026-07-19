@@ -102,6 +102,17 @@ describe("artifact formulas", () => {
   test("Ghost Sight applies fixed homing", () => {
     expect(deriveWeapon({ ghostSight: true }, 0).behaviors.homing).toMatchObject({ radius: 96, turnRate: 3 * Math.PI });
   });
+
+  test("Shotgun derives the approved directional split", () => {
+    expect(deriveWeapon({ shotgun: true }, 0).behaviors.split).toEqual({
+      distance: 160,
+      count: 8,
+      childRange: 320,
+      damageScale: 0.25,
+      fanAngle: 48 * Math.PI / 180,
+      radiusScale: 0.55,
+    });
+  });
 });
 
 describe("buildShot", () => {

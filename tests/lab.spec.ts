@@ -33,7 +33,7 @@ test("catalog telemetry", async ({ page }) => {
 	);
 	await page.getByRole("button", { name: "Take Shotgun" }).click();
 	await expect(page.locator('[data-stat="split"]')).toHaveText(
-		"160 px distance · 8 pellets · 128 px child range",
+		"160 px distance · 8 pellets · 320 px child range · 48° cone · 25% damage · 55% size",
 	);
 	await page.getByRole("button", { name: "Take Spectral Bullets" }).click();
 	await expect(page.locator('[data-stat="penetration"]')).toContainText("COVER + TARGETS");

@@ -31,6 +31,21 @@ describe("artifact catalog", () => {
       "twinChamber.effects[0] has unknown effect kind: teleport",
     );
   });
+
+  test("rejects invalid Shotgun cone and radius scales", () => {
+    const shotgun = ARTIFACT_CATALOG.find(({ id }) => id === "shotgun")!;
+    const invalid = (fanAngle: number, radiusScale: number) => [{
+      ...shotgun,
+      effects: [{ kind: "split", distance: 160, count: 8, childRange: 320,
+        damageScale: 0.25, fanAngle, radiusScale }],
+    }] as unknown as readonly ArtifactDefinition[];
+    expect(validateArtifactCatalog(invalid(Math.PI * 2 + 0.01, 0.55))).toContain(
+      "shotgun.effects[0].split parameters must be finite and positive",
+    );
+    expect(validateArtifactCatalog(invalid(Math.PI / 4, 1.01))).toContain(
+      "shotgun.effects[0].split parameters must be finite and positive",
+    );
+  });
 });
 
 describe("probabilistic multishot", () => {

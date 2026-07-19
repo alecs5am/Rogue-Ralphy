@@ -13,7 +13,7 @@ export type ArtifactEffect =
   | { kind: "spiral"; initialRadius: number; radialSpeed: number; angularSpeed: number; lifetime: number }
   | { kind: "homing"; radius: number; turnRate: number }
   | { kind: "tesla"; radius: number; neighbors: number; damageScale: number; cooldown: number }
-  | { kind: "split"; distance: number; count: number; childRange: number; damageScale: number }
+  | { kind: "split"; distance: number; count: number; childRange: number; damageScale: number; fanAngle: number; radiusScale: number }
   | { kind: "penetration"; obstacles: boolean; targets: boolean };
 
 export type ArtifactDefinition = {
@@ -48,7 +48,7 @@ export const ARTIFACT_CATALOG = [
       { kind: "tesla", radius: 96, neighbors: 2, damageScale: 0.25, cooldown: 0.15 },
     ],
   },
-  { id: "shotgun", name: "Shotgun", note: "split after 160 px", icon: "shotgun", category: "trajectory", tags: ["split"], effects: [{ kind: "split", distance: 160, count: 8, childRange: 128, damageScale: 0.35 }] },
+  { id: "shotgun", name: "Shotgun", note: "split after 160 px", icon: "shotgun", category: "trajectory", tags: ["split"], effects: [{ kind: "split", distance: 160, count: 8, childRange: 320, damageScale: 0.25, fanAngle: 48 * Math.PI / 180, radiusScale: 0.55 }] },
   { id: "spectralBullets", name: "Spectral Bullets", note: "pierce cover and targets", icon: "spectralBullets", category: "trajectory", tags: ["penetration", "spectral"], effects: [{ kind: "penetration", obstacles: true, targets: true }] },
 ] as const satisfies readonly ArtifactDefinition[];
 
@@ -71,7 +71,17 @@ function validateEffect(effect: ArtifactEffect, prefix: string): string[] {
     case "spiral": return positive(effect.initialRadius) && positive(effect.radialSpeed) && positive(effect.angularSpeed) && positive(effect.lifetime) ? [] : [`${prefix}.spiral parameters must be finite and positive`];
     case "homing": return positive(effect.radius) && positive(effect.turnRate) ? [] : [`${prefix}.homing parameters must be finite and positive`];
     case "tesla": return positive(effect.radius) && Number.isInteger(effect.neighbors) && positive(effect.neighbors) && probability(effect.damageScale) && positive(effect.cooldown) ? [] : [`${prefix}.tesla parameters must be finite and positive`];
-    case "split": return positive(effect.distance) && Number.isInteger(effect.count) && positive(effect.count) && positive(effect.childRange) && probability(effect.damageScale) ? [] : [`${prefix}.split parameters must be finite and positive`];
+    case "split":
+      return positive(effect.distance)
+        && Number.isInteger(effect.count)
+        && positive(effect.count)
+        && positive(effect.childRange)
+        && probability(effect.damageScale)
+        && positive(effect.fanAngle)
+        && effect.fanAngle <= Math.PI * 2
+        && probability(effect.radiusScale)
+        ? []
+        : [`${prefix}.split parameters must be finite and positive`];
     case "penetration": return [];
     default: return [`${prefix} has unknown effect kind: ${String((effect as { kind?: unknown }).kind)}`];
   }

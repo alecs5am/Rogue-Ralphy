@@ -226,7 +226,7 @@ export function mountLab(
 				? `${state.weapon.behaviors.tesla.radius} px radius · max ${state.weapon.behaviors.tesla.neighbors} links · ${format.percent(state.weapon.behaviors.tesla.damageScale)} damage · ${format.number(state.weapon.behaviors.tesla.cooldown, 2)}s cooldown`
 				: "OFF",
 			split: state.weapon.behaviors.split
-				? `${state.weapon.behaviors.split.distance} px distance · ${state.weapon.behaviors.split.count} pellets · ${state.weapon.behaviors.split.childRange} px child range`
+				? `${state.weapon.behaviors.split.distance} px distance · ${state.weapon.behaviors.split.count} pellets · ${state.weapon.behaviors.split.childRange} px child range · ${format.degrees(state.weapon.behaviors.split.fanAngle)} cone · ${format.percent(state.weapon.behaviors.split.damageScale)} damage · ${format.percent(state.weapon.behaviors.split.radiusScale)} size`
 				: "OFF",
 			penetration: state.weapon.behaviors.penetration
 				? `${state.weapon.behaviors.penetration.obstacles ? "COVER" : ""}${state.weapon.behaviors.penetration.obstacles && state.weapon.behaviors.penetration.targets ? " + " : ""}${state.weapon.behaviors.penetration.targets ? "TARGETS" : ""}`
