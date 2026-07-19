@@ -130,6 +130,7 @@ export function validateRalphyAtlas(): string[] {
   const errors: string[] = [];
   const heldClipStates = RALPHY_CLIPS.filter((clip) => clip.holdLast).map((clip) => clip.state);
   if (heldClipStates.length !== 1 || heldClipStates[0] !== "death") errors.push("death must be the sole held clip");
+  if (RALPHY_CLIPS.find((clip) => clip.state === "death")?.loop) errors.push("death must not loop");
   for (const [name, clip] of Object.entries(clips)) {
     const durations: readonly number[] = clip.durations;
     if (durations.length === 0) errors.push(`${name} has no frames`);

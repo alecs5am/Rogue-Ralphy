@@ -74,6 +74,19 @@ test("death is the sole held nonlooping atlas clip", () => {
   expect(RALPHY_CLIPS.filter((clip) => clip.holdLast).map((clip) => clip.state)).toEqual(["death"]);
 });
 
+test("rejects a looping held death clip", () => {
+  const death = RALPHY_CLIPS.find((clip) => clip.state === "death");
+  if (!death) throw new Error("missing death clip");
+  const mutableDeath = death as { loop: boolean };
+  const loop = mutableDeath.loop;
+  try {
+    mutableDeath.loop = true;
+    expect(validateRalphyAtlas()).toContain("death must not loop");
+  } finally {
+    mutableDeath.loop = loop;
+  }
+});
+
 test("reduced motion freezes loops but retains essential states", () => {
   const base = at(0.55);
   const moving = { ...base, player: { ...base.player, vx: 1 } };
