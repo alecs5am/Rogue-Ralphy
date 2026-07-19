@@ -11,8 +11,7 @@ export type DerivedWeapon = {
   reloadDuration: number; lifetime: number; multishot: number; projectileCount: number; spread: number;
   freezeChance: number; freezeDuration: number; bounces: number; bounceRetention: number;
   activeWindow: number; activeBuff: number; activeBuffDuration: number;
-  orbitDuration: number; orbitRadius: number;
-  homingTurnRate: number; homingRadius: number; behaviors: ProjectileBehaviors;
+  behaviors: ProjectileBehaviors;
 };
 
 const immutableBehaviors = (behaviors: ProjectileBehaviors): ProjectileBehaviors => Object.freeze({
@@ -62,7 +61,6 @@ export function deriveWeapon(loadout: ArtifactLoadout, fireRateBuff: number): De
     }
   }
 
-  // Compatibility fields keep the existing orbit/homing runtime intact until its descriptor-based replacement.
   const weapon = {
     ...BASE_WEAPON,
     fireRate: BASE_WEAPON.fireRate * (1 + fireRateBuff),
@@ -78,10 +76,6 @@ export function deriveWeapon(loadout: ArtifactLoadout, fireRateBuff: number): De
     activeWindow,
     activeBuff,
     activeBuffDuration,
-    orbitDuration: behaviors.spiral ? 0.9 : 0,
-    orbitRadius: behaviors.spiral ? 30 : 0,
-    homingTurnRate: behaviors.homing ? Math.PI : 0,
-    homingRadius: behaviors.homing ? 40 : 0,
     behaviors: immutableBehaviors(behaviors),
   };
   for (const [name, value] of Object.entries(weapon)) {
@@ -94,8 +88,7 @@ export function buildShot(weapon: DerivedWeapon, aimAngle: number, rng: () => nu
   const extraChance = weapon.multishot % 1;
   const count = Math.floor(weapon.multishot) + Number(rng() < extraChance - Number.EPSILON * Math.max(1, weapon.multishot));
   const projectiles = Array.from({ length: count }, (_, index) => {
-    const orbiting = weapon.orbitDuration > 0;
-    const heading = orbiting || count === 1
+    const heading = count === 1
       ? aimAngle
       : aimAngle - weapon.spread / 2 + weapon.spread * index / (count - 1);
     return {
@@ -109,11 +102,6 @@ export function buildShot(weapon: DerivedWeapon, aimAngle: number, rng: () => nu
       freezeDuration: weapon.freezeDuration,
       bounces: weapon.bounces,
       bounceRetention: weapon.bounceRetention,
-      orbitDuration: weapon.orbitDuration,
-      orbitAngle: orbiting ? Math.PI * 2 * index / count : 0,
-      orbitRadius: weapon.orbitRadius,
-      homingTurnRate: weapon.homingTurnRate,
-      homingRadius: weapon.homingRadius,
       behaviors: immutableBehaviors(weapon.behaviors),
     };
   });

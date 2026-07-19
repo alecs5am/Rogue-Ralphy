@@ -31,10 +31,7 @@ describe("deriveWeapon", () => {
       activeWindow: 0,
       activeBuff: 0,
       activeBuffDuration: 0,
-      orbitDuration: 0,
-      orbitRadius: 0,
-      homingTurnRate: 0,
-      homingRadius: 0,
+      behaviors: {},
     });
   });
 
@@ -50,10 +47,10 @@ describe("deriveWeapon", () => {
       activeWindow: 0.12,
       activeBuff: 0.2,
       activeBuffDuration: 2.25,
-      orbitDuration: 0.9,
-      orbitRadius: 30,
-      homingTurnRate: Math.PI,
-      homingRadius: 40,
+      behaviors: {
+        spiral: { initialRadius: 24, radialSpeed: 48, angularSpeed: 3 * Math.PI, lifetime: 4 },
+        homing: { radius: 96, turnRate: 3 * Math.PI },
+      },
     });
   });
 
@@ -98,12 +95,12 @@ describe("artifact formulas", () => {
     expect(deriveWeapon({ deadeye: true }, 0)).toMatchObject({ activeWindow: 0.12, activeBuff: 0.2, activeBuffDuration: 2.25 });
   });
 
-  test("Halo Chamber applies a fixed orbit", () => {
-    expect(deriveWeapon({ haloChamber: true }, 0)).toMatchObject({ orbitDuration: 0.9, orbitRadius: 30 });
+  test("Halo Chamber applies a fixed spiral", () => {
+    expect(deriveWeapon({ haloChamber: true }, 0).behaviors.spiral).toMatchObject({ initialRadius: 24, radialSpeed: 48, angularSpeed: 3 * Math.PI, lifetime: 4 });
   });
 
   test("Ghost Sight applies fixed homing", () => {
-    expect(deriveWeapon({ ghostSight: true }, 0)).toMatchObject({ homingTurnRate: Math.PI, homingRadius: 40 });
+    expect(deriveWeapon({ ghostSight: true }, 0).behaviors.homing).toMatchObject({ radius: 96, turnRate: 3 * Math.PI });
   });
 });
 
@@ -115,13 +112,10 @@ describe("buildShot", () => {
     expect(shot.projectiles[0]!.heading).toBeLessThan(shot.projectiles[1]!.heading);
   });
 
-  test("turns owned multishot into an evenly distributed orbital ring", () => {
+  test("applies ordinary spread to Halo multishot", () => {
     const shot = buildShot(deriveWeapon({ twinChamber: true, haloChamber: true }, 0), 0, () => 0, "trigger-test");
     expect(shot.projectiles).toHaveLength(2);
-    expect(shot.projectiles.every((projectile) => projectile.orbitDuration === 0.9)).toBe(true);
-    expect(shot.projectiles.map((projectile) => projectile.orbitAngle)).toEqual([
-      0,
-      Math.PI,
-    ]);
+    expect(shot.projectiles.every((projectile) => projectile.behaviors.spiral !== undefined)).toBe(true);
+    expect(shot.projectiles[0]!.heading).toBeLessThan(shot.projectiles[1]!.heading);
   });
 });

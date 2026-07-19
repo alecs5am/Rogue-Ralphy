@@ -126,12 +126,12 @@ function drawProjectiles(
 ): void {
 	for (const projectile of state.projectiles) {
 		const size = Math.max(10, projectile.radius * 4.2);
-		if (projectile.phase === "orbit") {
+		if (projectile.behaviors.spiral) {
 			context.globalAlpha = 0.55;
 			centeredImage(context, assets, "orbitTrail", projectile, size * 1.5);
 			context.globalAlpha = 1;
 		}
-		if (projectile.homingTurnRate > 0) {
+		if (projectile.behaviors.homing) {
 			context.globalAlpha = 0.45;
 			centeredImage(context, assets, "homingMarker", projectile, size * 1.7);
 			context.globalAlpha = 1;

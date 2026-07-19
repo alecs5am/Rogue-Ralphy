@@ -1,7 +1,7 @@
 import { createMetrics, recordDamage, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, attemptActiveReload, createReloadState, fireRateBuffAt, startReload, type ReloadState } from "./reload";
 import { buildShot, deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon, type ProjectileSpec } from "./weapon";
-import { splitProjectile, type ProjectileState } from "./projectiles";
+import { advanceTrajectory, splitProjectile, type ProjectileState } from "./projectiles";
 import { ROOM, ROOM_PROPS, TILE_SIZE, segmentCircleHitTime, type Point } from "./room";
 
 export { ROOM, TILE_SIZE } from "./room";
@@ -163,79 +163,48 @@ export function clearTargets(state: GameState): GameState {
 export const resetLab = (state: GameState): GameState => createGame(state.rng);
 
 function makeProjectile(spec: ProjectileSpec, state: GameState, aimAngle: number, now: number, id: number): ProjectileState {
-  const phase = spec.orbitDuration > 0 ? "orbit" : "flight";
-  const angle = phase === "orbit" ? spec.orbitAngle : aimAngle;
-  const offset = phase === "orbit" ? spec.orbitRadius : state.player.radius + spec.radius + 2;
+  const muzzle = {
+    x: state.player.x + Math.cos(aimAngle) * (state.player.radius + spec.radius + 2),
+    y: state.player.y + Math.sin(aimAngle) * (state.player.radius + spec.radius + 2),
+  };
+  const spiral = spec.behaviors.spiral;
+  const spiralOrigin = spiral ? Object.freeze(muzzle) : undefined;
+  const spiralRadius = spiral?.initialRadius;
+  const spiralAngle = spiral ? spec.heading : undefined;
+  const x = muzzle.x + (spiral ? Math.cos(spec.heading) * spiral.initialRadius : 0);
+  const y = muzzle.y + (spiral ? Math.sin(spec.heading) * spiral.initialRadius : 0);
+  const vx = spiral
+    ? Math.cos(spec.heading) * spiral.radialSpeed - Math.sin(spec.heading) * spiral.angularSpeed * spiral.initialRadius
+    : Math.cos(spec.heading) * spec.speed;
+  const vy = spiral
+    ? Math.sin(spec.heading) * spiral.radialSpeed + Math.cos(spec.heading) * spiral.angularSpeed * spiral.initialRadius
+    : Math.sin(spec.heading) * spec.speed;
   return {
     id: `projectile-${id}`,
     triggerId: spec.triggerId,
-    x: state.player.x + Math.cos(angle) * offset,
-    y: state.player.y + Math.sin(angle) * offset,
-    vx: phase === "flight" ? Math.cos(spec.heading) * spec.speed : 0,
-    vy: phase === "flight" ? Math.sin(spec.heading) * spec.speed : 0,
-    phase,
-    orbitElapsed: 0,
-    orbitDuration: spec.orbitDuration,
-    orbitAngle: spec.orbitAngle,
-    orbitRadius: spec.orbitRadius,
+    x,
+    y,
+    vx,
+    vy,
     damage: spec.damage,
     speed: spec.speed,
     radius: spec.radius,
-    lifetime: spec.lifetime,
+    lifetime: spiral?.lifetime ?? spec.lifetime,
     bornAt: now,
     remainingBounces: spec.bounces,
     bounceRetention: spec.bounceRetention,
     freezeChance: spec.freezeChance,
     freezeDuration: spec.freezeDuration,
-    homingTurnRate: spec.homingTurnRate,
-    homingRadius: spec.homingRadius,
     behaviors: spec.behaviors,
     penetration: spec.behaviors.penetration,
     hitTargetIds: [],
     everHit: false,
     travelled: 0,
+    spiralOrigin,
+    spiralRadius,
+    spiralAngle,
+    spiralAngularSpeed: spiral?.angularSpeed,
   };
-}
-
-function turnToward(current: number, desired: number, limit: number): number {
-  const difference = Math.atan2(Math.sin(desired - current), Math.cos(desired - current));
-  return current + clamp(difference, -limit, limit);
-}
-
-function advanceProjectile(projectile: ProjectileState, state: GameState, input: InputIntent, dt: number): ProjectileState {
-  const next = { ...projectile, hitTargetIds: [...projectile.hitTargetIds] };
-  if (next.phase === "orbit") {
-    const angleDelta = Math.PI * 2 * dt;
-    const orbitDistance = Math.abs(angleDelta * next.orbitRadius);
-    const splitRemaining = (next.behaviors.split?.distance ?? Number.POSITIVE_INFINITY) - next.travelled;
-    const rangeRemaining = (next.maxTravel ?? Number.POSITIVE_INFINITY) - next.travelled;
-    const travelled = Math.max(0, Math.min(orbitDistance, splitRemaining, rangeRemaining));
-    const fraction = orbitDistance === 0 ? 1 : travelled / orbitDistance;
-    next.orbitElapsed += dt * fraction;
-    next.orbitAngle += angleDelta * fraction;
-    next.x = state.player.x + Math.cos(next.orbitAngle) * next.orbitRadius;
-    next.y = state.player.y + Math.sin(next.orbitAngle) * next.orbitRadius;
-    next.travelled += travelled;
-    if (fraction < 1 || next.orbitElapsed < next.orbitDuration) return next;
-    const heading = Math.atan2(input.aimY - state.player.y, input.aimX - state.player.x);
-    next.phase = "flight";
-    next.vx = Math.cos(heading) * next.speed;
-    next.vy = Math.sin(heading) * next.speed;
-  }
-
-  if (next.homingTurnRate > 0 && next.homingRadius > 0) {
-    const target = state.targets
-      .filter((candidate) => candidate.health > 0 && distanceSquared(next, candidate) <= next.homingRadius ** 2)
-      .sort((a, b) => distanceSquared(next, a) - distanceSquared(next, b))[0];
-    if (target) {
-      const heading = turnToward(Math.atan2(next.vy, next.vx), Math.atan2(target.y - next.y, target.x - next.x), next.homingTurnRate * dt);
-      next.vx = Math.cos(heading) * next.speed;
-      next.vy = Math.sin(heading) * next.speed;
-    }
-  }
-  next.x += next.vx * dt;
-  next.y += next.vy * dt;
-  return next;
 }
 
 function reflect(projectile: ProjectileState, nx: number, ny: number): void {
@@ -355,18 +324,12 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     if (reload.ammo === 0) reload = startReload(reload, weapon, now);
   }
 
-  const movingState = { ...state, player, targets: state.targets };
   const projectileStarts = new Map(projectiles.map((projectile) => [projectile.id, { x: projectile.x, y: projectile.y }]));
-  const projectilePhases = new Map(projectiles.map((projectile) => [projectile.id, projectile.phase]));
-  projectiles = projectiles.map((projectile) => advanceProjectile(projectile, movingState, input, dt));
-  for (const projectile of projectiles) {
-    if (projectilePhases.get(projectile.id) === "orbit" && projectile.phase === "flight") {
-      projectileStarts.set(projectile.id, {
-        x: player.x + Math.cos(projectile.orbitAngle) * projectile.orbitRadius,
-        y: player.y + Math.sin(projectile.orbitAngle) * projectile.orbitRadius,
-      });
-    }
-  }
+  const trajectoryStarts = new Map(projectiles.map((projectile) => [projectile.id, {
+    spiralRadius: projectile.spiralRadius,
+    spiralAngle: projectile.spiralAngle,
+  }]));
+  projectiles = projectiles.map((projectile) => advanceTrajectory(projectile, state.targets, dt));
   let targets = state.targets.map((target) => {
     if (target.kind !== "chaser" || now < target.frozenUntil) return { ...target };
     const dx = player.x - target.x;
@@ -398,15 +361,9 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
       continue;
     }
-    if (projectile.phase === "orbit") {
-      const tolerance = Number.EPSILON * 128 * Math.max(1, projectile.travelled);
-      if (projectile.behaviors.split && projectile.travelled >= projectile.behaviors.split.distance - tolerance) addSplitChildren(projectile);
-      else if (projectile.maxTravel !== undefined && projectile.travelled >= projectile.maxTravel - tolerance) metrics = recordProjectileOutcome(metrics, projectile.everHit);
-      else survivingProjectiles.push(projectile);
-      continue;
-    }
     const end = { x: projectile.x, y: projectile.y };
-    let from = projectileStarts.get(projectile.id)!;
+    const start = projectileStarts.get(projectile.id)!;
+    let from = start;
     projectile.x = from.x;
     projectile.y = from.y;
 
@@ -451,6 +408,18 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       projectile.x = from.x + (end.x - from.x) * event.time;
       projectile.y = from.y + (end.y - from.y) * event.time;
       projectile.travelled += segmentDistance * event.time;
+
+      if (event.kind !== "target" || !projectile.penetration?.targets) {
+        const fullDistance = Math.hypot(end.x - start.x, end.y - start.y);
+        const fraction = fullDistance === 0 ? 0 : Math.hypot(projectile.x - start.x, projectile.y - start.y) / fullDistance;
+        const trajectoryStart = trajectoryStarts.get(projectile.id)!;
+        if (trajectoryStart.spiralRadius !== undefined && projectile.spiralRadius !== undefined) {
+          projectile.spiralRadius = trajectoryStart.spiralRadius + (projectile.spiralRadius - trajectoryStart.spiralRadius) * fraction;
+        }
+        if (trajectoryStart.spiralAngle !== undefined && projectile.spiralAngle !== undefined) {
+          projectile.spiralAngle = trajectoryStart.spiralAngle + (projectile.spiralAngle - trajectoryStart.spiralAngle) * fraction;
+        }
+      }
 
       if (event.kind === "split") {
         addSplitChildren(projectile);

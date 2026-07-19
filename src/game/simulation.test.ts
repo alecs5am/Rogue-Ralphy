@@ -90,20 +90,38 @@ test("Spectral hits before the Shotgun threshold and then splits in the same swe
   expect(game.projectiles.every((projectile) => projectile.behaviors.split === undefined && projectile.penetration?.targets)).toBe(true);
 });
 
-test("Halo orbital arc counts toward the Shotgun split distance", () => {
+test("Halo path counts toward the Shotgun split distance without teleporting children", () => {
   let game = setArtifact(setArtifact(createGame(() => 0.9), "haloChamber", true), "shotgun", true);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
 
-  game = moveForTicks(game, idle, 101);
-  expect(game.projectiles).toHaveLength(1);
-  expect(game.projectiles[0]).toMatchObject({ phase: "orbit" });
-  expect(game.projectiles[0]!.travelled).toBeCloseTo(Math.PI * 2 * 30 * 101 / 120, 10);
+  let parentBeforeSplit = game.projectiles[0]!;
+  while (game.projectiles.length === 1) {
+    parentBeforeSplit = game.projectiles[0]!;
+    game = moveForTicks(game, idle, 1);
+  }
 
-  game = moveForTicks(game, idle, 1);
-  const splitAngle = 160 / 30;
+  expect(parentBeforeSplit.travelled).toBeLessThan(160);
   expect(game.projectiles).toHaveLength(8);
-  expect(game.projectiles[0]!.x).toBeCloseTo(game.player.x + Math.cos(splitAngle) * 30, 10);
-  expect(game.projectiles[0]!.y).toBeCloseTo(game.player.y + Math.sin(splitAngle) * 30, 10);
+  expect(game.projectiles.every((projectile) =>
+    projectile.x === game.projectiles[0]!.x && projectile.y === game.projectiles[0]!.y && projectile.travelled === 0
+  )).toBe(true);
+  expect(new Set(game.projectiles.map((projectile) => projectile.spiralAngularSpeed)).size).toBe(8);
+});
+
+test("moving Ralphy and changing aim cannot move a Halo origin", () => {
+  let game = setArtifact(createGame(() => 0.9), "haloChamber", true);
+  game = updateGame(game, { ...idle, aimX: 800, aimY: 300, firing: true }, 0, 1);
+  const origin = game.projectiles[0]?.spiralOrigin;
+  expect(origin).toBeDefined();
+
+  game = updateGame(
+    { ...game, player: { ...game.player, x: game.player.x + 100 } },
+    { ...idle, aimX: 100, aimY: 100 },
+    0.1,
+    1.1,
+  );
+
+  expect(game.projectiles[0]?.spiralOrigin).toEqual(origin);
 });
 
 test("physical collision wins a floating-point tie with a diagonal Shotgun split", () => {
@@ -136,18 +154,19 @@ test("uses a 13 by 7 tile field inside one-tile walls", () => {
   expect(game.player).toMatchObject({ x: 480, y: 288 });
 });
 
-test("one trigger consumes one round and orbiters release toward the current aim", () => {
+test("one trigger consumes one round and Halo projectiles keep spiraling", () => {
   let game = createGame(() => 0);
   game = setArtifact(setArtifact(game, "twinChamber", true), "haloChamber", true);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   expect(game.reload.ammo).toBe(5);
   expect(game.projectiles).toHaveLength(2);
-  expect(game.projectiles.every((projectile) => projectile.phase === "orbit")).toBe(true);
+  const origins = game.projectiles.map((projectile) => projectile.spiralOrigin);
 
-  game = updateGame(game, idle, 0.89, 1.89);
-  expect(game.projectiles.every((projectile) => projectile.phase === "orbit")).toBe(true);
-  game = updateGame(game, idle, 0.02, 1.91);
-  expect(game.projectiles.every((projectile) => projectile.phase === "flight" && projectile.vx > 0)).toBe(true);
+  game = moveForTicks(game, idle, 109);
+  expect(game.projectiles).toHaveLength(2);
+  expect(game.projectiles.every((projectile, index) =>
+    projectile.behaviors.spiral !== undefined && projectile.spiralOrigin === origins[index] && projectile.spiralRadius! > 24
+  )).toBe(true);
 });
 
 test("empties six rounds then starts automatic reload", () => {

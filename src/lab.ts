@@ -236,11 +236,11 @@ export function mountLab(
 			lifetime: `${state.weapon.lifetime}s`,
 			bounce: `${state.weapon.bounces} × ${format.percent(state.weapon.bounceRetention)}`,
 			freeze: `${format.percent(state.weapon.freezeChance)} · ${format.number(state.weapon.freezeDuration)}s`,
-			orbit: state.weapon.orbitDuration
-				? `${state.weapon.orbitDuration}s · ${state.weapon.orbitRadius}px`
+			orbit: state.weapon.behaviors.spiral
+				? `${state.weapon.behaviors.spiral.lifetime}s · ${state.weapon.behaviors.spiral.initialRadius}px`
 				: "OFF",
-			homing: state.weapon.homingTurnRate
-				? `${format.degrees(state.weapon.homingTurnRate)}/s · ${state.weapon.homingRadius}px`
+			homing: state.weapon.behaviors.homing
+				? `${format.degrees(state.weapon.behaviors.homing.turnRate)}/s · ${state.weapon.behaviors.homing.radius}px`
 				: "OFF",
 			deadeye: state.weapon.activeWindow
 				? `${format.percent(state.weapon.activeWindow)} · +${format.percent(state.weapon.activeBuff)} · ${format.number(buffRemaining)}s`
