@@ -74,25 +74,34 @@ def grid_cell(image: Image.Image, col: int, row: int, cols: int, rows: int) -> I
     )
 
 
-def normalize_body_cell(cell: Image.Image) -> Image.Image:
-    scale = min(CELL / cell.width, CELL / cell.height)
-    width = max(1, round(cell.width * scale))
-    height = max(1, round(cell.height * scale))
-    resized = cell.resize((width, height), Image.Resampling.NEAREST)
+def normalize_body_cell(cell: Image.Image, scale: float) -> Image.Image:
+    bounds = cell.getchannel("A").getbbox()
+    if bounds is None:
+        raise ValueError("cell contains no opaque pixels after chroma removal")
+    cropped = cell.crop(bounds)
+    width = max(1, round(cropped.width * scale))
+    height = max(1, round(cropped.height * scale))
+    resized = cropped.resize((width, height), Image.Resampling.NEAREST)
+    left = round(64 - width / 2)
+    top = 108 - height
+    if left < 0 or top < 0 or left + width > CELL or top + height > CELL:
+        raise ValueError("normalized frame exceeds 128 x 128 cell")
     output = Image.new("RGBA", (CELL, CELL), (0, 0, 0, 0))
-    source_anchor_x = width / 2
-    source_anchor_y = height * (74 / 128)
-    output.alpha_composite(resized, (round(64 - source_anchor_x), round(74 - source_anchor_y)))
+    output.alpha_composite(resized, (left, top))
     return output
 
 
 def require_frame(cell: Image.Image, family: str, col: int, row: int) -> None:
-    if cell.getchannel("A").getbbox() is None:
+    bounds = cell.getchannel("A").getbbox()
+    if bounds is None:
         raise ValueError(f"required frame is empty: {family} column {col}, row {row}")
+    if bounds[0] == 0 or bounds[1] == 0 or bounds[2] == cell.width or bounds[3] == cell.height:
+        raise ValueError(f"source alpha touches cell edge: {family} column {col}, row {row}")
 
 
 def build_ralphy_atlas(motion: Path, actions: Path, death: Path, output: Path) -> None:
     sheets = {"motion": load_sheet(motion), "actions": load_sheet(actions)}
+    motion_scale = min(CELL / (sheets["motion"].width / 6), CELL / (sheets["motion"].height / 3))
     atlas = Image.new("RGBA", (ATLAS_COLS * CELL, ATLAS_ROWS * CELL), (0, 0, 0, 0))
 
     for family, mapping in BODY_MAPPING:
@@ -100,13 +109,25 @@ def build_ralphy_atlas(motion: Path, actions: Path, death: Path, output: Path) -
         for source_row, source_col, target_row, target_col in mapping:
             cell = grid_cell(sheet, source_col, source_row, 6, 3)
             require_frame(cell, family, source_col, source_row)
-            atlas.alpha_composite(normalize_body_cell(cell), (target_col * CELL, target_row * CELL))
+            atlas.alpha_composite(
+                normalize_body_cell(cell, motion_scale), (target_col * CELL, target_row * CELL)
+            )
 
     death_sheet = load_sheet(death)
+    first_death = grid_cell(death_sheet, 0, 0, 4, 1)
+    require_frame(first_death, "death", 0, 0)
+    normal_height = grid_cell(atlas, 0, 0, ATLAS_COLS, ATLAS_ROWS).getchannel("A").getbbox()
+    if normal_height is None:
+        raise ValueError("normalized down-idle frame is empty")
+    death_bounds = first_death.getchannel("A").getbbox()
+    assert death_bounds is not None
+    death_scale = (normal_height[3] - normal_height[1]) / (death_bounds[3] - death_bounds[1])
     for source_col in range(4):
         cell = grid_cell(death_sheet, source_col, 0, 4, 1)
         require_frame(cell, "death", source_col, 0)
-        atlas.alpha_composite(normalize_body_cell(cell), (source_col * CELL, 5 * CELL))
+        atlas.alpha_composite(
+            normalize_body_cell(cell, death_scale), (source_col * CELL, 5 * CELL)
+        )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     atlas.save(output)
@@ -121,6 +142,7 @@ def build_effect_sprites(
     sheet = load_sheet(source)
     for col, destination in enumerate((revolver_out, projectile_out, muzzle_out)):
         cell = grid_cell(sheet, col, 0, 3, 1)
+        require_frame(cell, "weapon-effects", col, 0)
         destination.parent.mkdir(parents=True, exist_ok=True)
         fit_square(cell, CELL).save(destination)
 
