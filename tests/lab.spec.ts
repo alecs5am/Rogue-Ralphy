@@ -28,6 +28,24 @@ test("catalog telemetry", async ({ page }) => {
 	await expect(page.locator('[data-stat="penetration"]')).toContainText("COVER + TARGETS");
 });
 
+test("imagegen combat hud", async ({ page }) => {
+	await page.goto("/");
+	await expect(page.locator("#hud .heart img")).toHaveCount(5);
+	await expect(page.locator("#hud .ammo-tile img")).toHaveCount(6);
+	const hearts = await page.locator("#hud .hearts").boundingBox();
+	const ammo = await page.locator("#hud .ammo").boundingBox();
+	if (!hearts || !ammo) throw new Error("HUD rows are not visible");
+	expect(ammo.y).toBeGreaterThanOrEqual(hearts.y + hearts.height - 1);
+	await expect(page.locator('[data-resource="coins"]')).toHaveText("00");
+	await expect(page.locator('[data-resource="bombs"]')).toHaveText("00");
+	await expect(page.locator('[data-resource="keys"]')).toHaveText("00");
+	await expect(page.locator("#asset-diagnostics")).toContainText(
+		"All generated assets loaded",
+	);
+	await expect(page.locator('[data-stat="secondary-hits"]')).toHaveText("0");
+	await expect(page.locator("#hud svg, #hud [data-css-art]")).toHaveCount(0);
+});
+
 test("builds a loadout, damages a dummy, and auto-reloads", async ({
 	page,
 }) => {
@@ -133,15 +151,7 @@ for (const viewport of [
 		await page.setViewportSize(viewport);
 		await page.goto("/");
 		const diagnostics = page.locator("#asset-diagnostics");
-		await expect(diagnostics).toContainText("MISSING ASSETS:");
-		const diagnosticsText = await diagnostics.textContent();
-		expect(diagnosticsText?.startsWith("MISSING ASSETS: ")).toBe(true);
-		expect(
-			diagnosticsText
-				?.slice("MISSING ASSETS: ".length)
-				.split(", ")
-				.sort(),
-		).toEqual(["shotgun", "spectralBullets", "teslaBullets"]);
+		await expect(diagnostics).toContainText("All generated assets loaded");
 		await expect(page.locator("[data-stat=ammo]")).toHaveText("6/6");
 		for (const [name, note] of ARTIFACTS) {
 			await expect(page.getByRole("button", { name: `Take ${name}` })).toBeVisible();

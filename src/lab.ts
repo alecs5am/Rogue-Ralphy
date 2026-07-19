@@ -132,6 +132,7 @@ export function mountLab(
 		["triggers", "Triggers"],
 		["projectiles", "Projectiles"],
 		["hits", "Hits"],
+		["secondary-hits", "Secondary hits"],
 		["misses", "Misses"],
 		["accuracy", "Accuracy"],
 		["kills", "Kills"],
@@ -168,7 +169,7 @@ export function mountLab(
 	required<HTMLElement>(statsRoot, "#asset-diagnostics").textContent =
 		missing.length
 			? `MISSING ASSETS: ${missing.join(", ")}`
-			: `ASSETS ONLINE · ${Object.keys(ASSET_PATHS).length}/${Object.keys(ASSET_PATHS).length}`;
+			: `All generated assets loaded · ${Object.keys(ASSET_PATHS).length}/${Object.keys(ASSET_PATHS).length}`;
 
 	return (state) => {
 		for (const artifact of ARTIFACT_CATALOG) {
@@ -198,6 +199,7 @@ export function mountLab(
 			triggers: String(telemetry.triggers),
 			projectiles: String(telemetry.projectiles),
 			hits: String(telemetry.hits),
+			"secondary-hits": String(telemetry.secondaryHits),
 			misses: String(telemetry.misses),
 			accuracy: format.percent(telemetry.accuracy),
 			kills: String(telemetry.kills),

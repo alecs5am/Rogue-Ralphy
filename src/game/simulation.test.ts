@@ -16,6 +16,10 @@ const moveForTicks = (
   return game;
 };
 
+test("starts HUD resources at zero", () => {
+  expect(createGame().resources).toEqual({ coins: 0, bombs: 0, keys: 0 });
+});
+
 function fireThroughRock(game: ReturnType<typeof createGame>, artifacts: { spectralBullets?: true; pinball?: true }) {
   for (const id of Object.keys(artifacts) as (keyof typeof artifacts)[]) game = setArtifact(game, id, true);
   const rock = ROOM_PROPS.find((prop) => prop.id === "rock")!;

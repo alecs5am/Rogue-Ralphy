@@ -12,6 +12,9 @@ export const ASSET_PATHS = {
 	bullet: "/assets/generated/effects/bullet.png",
 	impact: "/assets/generated/effects/impact.png",
 	orbitTrail: "/assets/generated/effects/orbit-trail.png",
+	teslaArc: "/assets/generated/effects/tesla-arc.png",
+	shotgunSplit: "/assets/generated/effects/shotgun-split.png",
+	spectralTrail: "/assets/generated/effects/spectral-trail.png",
 	homingMarker: "/assets/generated/effects/homing-marker.png",
 	freezeBurst: "/assets/generated/effects/freeze-burst.png",
 	dummy: "/assets/generated/targets/dummy.png",
@@ -19,8 +22,18 @@ export const ASSET_PATHS = {
 	rock: "/assets/generated/targets/rock.png",
 	crate: "/assets/generated/targets/crate.png",
 	labMarker: "/assets/generated/targets/lab-marker.png",
-	hudPlate: "/assets/generated/ui/hud-plate.png",
-	cylinder: "/assets/generated/ui/cylinder.png",
+	heartFull: "/assets/generated/ui/heart-full.png",
+	heartHalf: "/assets/generated/ui/heart-half.png",
+	heartEmpty: "/assets/generated/ui/heart-empty.png",
+	ammoLoaded: "/assets/generated/ui/ammo-loaded.png",
+	ammoEmpty: "/assets/generated/ui/ammo-empty.png",
+	coin: "/assets/generated/ui/coin.png",
+	bomb: "/assets/generated/ui/bomb.png",
+	key: "/assets/generated/ui/key.png",
+	reloadFrame: "/assets/generated/ui/reload-frame.png",
+	reloadFill: "/assets/generated/ui/reload-fill.png",
+	reloadZone: "/assets/generated/ui/reload-zone.png",
+	reloadSuccess: "/assets/generated/ui/reload-success.png",
 	twinChamber: "/assets/generated/artifacts/twin-chamber.png",
 	bigIron: "/assets/generated/artifacts/big-iron.png",
 	hollowPoint: "/assets/generated/artifacts/hollow-point.png",
@@ -35,6 +48,7 @@ export const ASSET_PATHS = {
 } as const;
 
 export type AssetKey = keyof typeof ASSET_PATHS;
+export const REQUIRED_ASSET_KEYS = Object.keys(ASSET_PATHS) as AssetKey[];
 export type Assets = {
 	images: Partial<Record<AssetKey, HTMLImageElement>>;
 	missing: AssetKey[];

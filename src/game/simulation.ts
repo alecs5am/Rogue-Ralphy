@@ -17,6 +17,9 @@ export type PlayerState = Point & {
   radius: number; health: number; maxHealth: number; speed: number; invulnerableUntil: number;
 };
 
+export type Resources = { coins: number; bombs: number; keys: number };
+export const clampResource = (value: number): number => Math.max(0, Math.min(99, Math.trunc(value)));
+
 export type TargetState = Point & {
   id: string; kind: "dummy" | "chaser"; radius: number; health: number; maxHealth: number;
   speed: number; frozenUntil: number;
@@ -27,6 +30,7 @@ export type { ProjectileState } from "./projectiles";
 export type GameState = {
   room: { width: number; height: number; minX: number; maxX: number; minY: number; maxY: number };
   player: PlayerState; aim: Point; artifacts: ArtifactLoadout; weapon: DerivedWeapon;
+  resources: Resources;
   reload: ReloadState; projectiles: ProjectileState[]; targets: TargetState[];
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
@@ -90,6 +94,7 @@ export function createGame(rng: () => number = Math.random): GameState {
     player: { ...PLAYER },
     aim: { x: 900, y: 270 },
     artifacts,
+    resources: { coins: 0, bombs: 0, keys: 0 },
     weapon,
     reload: createReloadState(weapon),
     projectiles: [],

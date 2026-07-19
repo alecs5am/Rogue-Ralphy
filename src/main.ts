@@ -1,6 +1,7 @@
 import "./styles.css";
-import { loadAssets } from "./assets";
+import { loadAssets, REQUIRED_ASSET_KEYS } from "./assets";
 import { createGame, type GameState, updateGame } from "./game/simulation";
+import { mountHud, updateHud } from "./hud";
 import { mountLab } from "./lab";
 import { renderGame } from "./render";
 
@@ -10,14 +11,8 @@ function required<T extends Element>(root: ParentNode, selector: string): T {
 	return element;
 }
 
-function setText(element: Element, value: string): void {
-	if (element.textContent !== value) element.textContent = value;
-}
-
 const canvas = required<HTMLCanvasElement>(document, "#game");
 const hud = required<HTMLElement>(document, "#hud");
-const hudHealth = required<HTMLElement>(hud, ".hud-health");
-const hudAmmo = required<HTMLElement>(hud, ".hud-ammo");
 const reloadBar = required<HTMLElement>(document, "#reload");
 const reloadFill = required<HTMLElement>(reloadBar, ".reload-fill");
 const reloadZone = required<HTMLElement>(reloadBar, ".reload-zone");
@@ -32,7 +27,16 @@ const context = (() => {
 
 async function start(): Promise<void> {
 	const assets = await loadAssets();
+	const missingRequired = REQUIRED_ASSET_KEYS.filter((key) =>
+		assets.missing.includes(key),
+	);
+	if (missingRequired.length)
+		throw new Error(
+			`Required generated assets failed to load: ${missingRequired.join(", ")}`,
+		);
 	let state: GameState = createGame();
+	mountHud(hud);
+	updateHud(state);
 	let reloadPressed = false;
 	let firing = false;
 	const pressed = new Set<string>();
@@ -149,8 +153,7 @@ async function start(): Promise<void> {
 		const moving = !state.paused && Math.hypot(state.player.vx, state.player.vy) > 0;
 		renderGame(context, state, assets, { moving, reducedMotion });
 		updateLab(state);
-		setText(hudHealth, `HP ${state.player.health}`);
-		setText(hudAmmo, `${state.reload.ammo}/${state.reload.capacity}`);
+		updateHud(state);
 		pauseLabel.hidden = !state.paused;
 		quickdraw.hidden = state.time >= state.reload.buffUntil;
 		const activeReloadStartedAt =

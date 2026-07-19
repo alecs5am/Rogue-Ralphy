@@ -56,19 +56,55 @@ button {
 
 #hud {
 	position: absolute;
-	inset: 6.2% auto auto 4.8%;
+	inset: 3.5% auto auto 3%;
 	display: grid;
-	grid-template-columns: 1fr 0.55fr;
-	width: 17.7%;
+	grid-template-columns: auto;
+	gap: 2px 10px;
 	color: #f5f5f4;
-	font-size: clamp(11px, 1vw, 15px);
+	font-size: clamp(10px, 1vw, 14px);
 	font-weight: 800;
-	letter-spacing: 0.06em;
+	letter-spacing: 0.08em;
 	pointer-events: none;
 }
-#hud .hud-ammo {
-	color: #ffa630;
-	text-align: right;
+#hud .hearts,
+#hud .ammo,
+#hud .resources,
+#hud .resource {
+	display: flex;
+	align-items: center;
+}
+#hud .heart,
+#hud .ammo-tile {
+	display: block;
+}
+#hud .heart img,
+#hud .ammo-tile img,
+#hud .resource img {
+	display: block;
+	object-fit: contain;
+	image-rendering: pixelated;
+}
+#hud .heart img {
+	width: clamp(26px, 3.2vw, 42px);
+	height: clamp(26px, 3.2vw, 42px);
+}
+#hud .ammo-tile img {
+	width: clamp(21px, 2.4vw, 32px);
+	height: clamp(21px, 2.4vw, 32px);
+}
+#hud .resources {
+	gap: 10px;
+}
+#hud .resource {
+	gap: 2px;
+}
+#hud .resource img {
+	width: clamp(20px, 2.2vw, 30px);
+	height: clamp(20px, 2.2vw, 30px);
+}
+#hud .resource strong {
+	min-width: 2ch;
+	text-shadow: 0 2px 0 #0a0a0b, 2px 0 0 #0a0a0b;
 }
 
 #pause-label {
@@ -104,34 +140,34 @@ button {
 	right: 15%;
 	bottom: 5%;
 	left: 15%;
-	height: 28px;
-	border: 3px solid #75634f;
-	background: #0a0a0be6;
-	overflow: hidden;
+	height: 34px;
+	background: url("/assets/generated/ui/reload-frame.png") center / 100% 100% no-repeat;
+	overflow: visible;
 }
 
 #reload .reload-fill,
 #reload .reload-zone {
 	position: absolute;
-	inset-block: 0;
+	inset-block: 7px;
+	background-position: center;
+	background-repeat: no-repeat;
+	background-size: 100% 100%;
 }
 #reload .reload-fill {
-	left: 0;
+	left: 9px;
 	width: 0;
-	background: #f5f5f4;
+	max-width: calc(100% - 18px);
+	background-image: url("/assets/generated/ui/reload-fill.png");
 }
 #reload .reload-zone {
-	background: #ffa630;
-	opacity: 0.48;
+	background-image: url("/assets/generated/ui/reload-zone.png");
+	opacity: 0.72;
 }
 #reload.in-zone {
-	border-color: #ffa630;
-}
-#reload.success {
-	border-color: #ffa630;
+	filter: brightness(1.2);
 }
 #reload.success .reload-fill {
-	background: #ffa630;
+	background-image: url("/assets/generated/ui/reload-success.png");
 }
 #reload span {
 	position: absolute;

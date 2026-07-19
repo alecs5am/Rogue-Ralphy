@@ -138,7 +138,7 @@ function drawProjectiles(
 		context.rect(0, -6, round(link.distance), 12);
 		context.clip();
 		context.globalAlpha = 0.7;
-		const texture = assets.images.orbitTrail;
+		const texture = assets.images.teslaArc;
 		if (texture) {
 			const phase = reducedMotion ? 0 : (state.time * 72) % 24;
 			for (let x = -phase; x < link.distance; x += 24) context.drawImage(texture, round(x), -6, 24, 12);
@@ -152,8 +152,17 @@ function drawProjectiles(
 		}
 		context.restore();
 	}
+	const splitBursts = new Set<string>();
 	for (const projectile of state.projectiles) {
 		const size = Math.max(10, projectile.radius * 4.2);
+		if (
+			projectile.maxTravel !== undefined &&
+			projectile.travelled < 64 &&
+			!splitBursts.has(projectile.triggerId)
+		) {
+			centeredImage(context, assets, "shotgunSplit", projectile, size * 4);
+			splitBursts.add(projectile.triggerId);
+		}
 		if (projectile.behaviors.spiral) {
 			context.globalAlpha = 0.55;
 			centeredImage(context, assets, "orbitTrail", projectile, size * 1.5);
@@ -167,7 +176,17 @@ function drawProjectiles(
 		context.save();
 		context.translate(round(projectile.x), round(projectile.y));
 		context.rotate(Math.atan2(projectile.vy, projectile.vx));
-		imageAt(context, assets, "bullet", -size / 2, -size / 2, size);
+		if (projectile.penetration)
+			imageAt(
+				context,
+				assets,
+				"spectralTrail",
+				-size * 1.8,
+				-size / 2,
+				size * 2.3,
+				size,
+			);
+		else imageAt(context, assets, "bullet", -size / 2, -size / 2, size);
 		context.restore();
 	}
 }
@@ -234,14 +253,7 @@ function drawDamage(
 	context.textAlign = "start";
 }
 
-function drawCanvasHud(
-	context: CanvasRenderingContext2D,
-	state: GameState,
-	assets: Assets,
-): void {
-	imageAt(context, assets, "hudPlate", 22, 18, 142, 48);
-	imageAt(context, assets, "cylinder", 166, 13, 58, 58);
-
+function drawAim(context: CanvasRenderingContext2D, state: GameState): void {
 	context.strokeStyle = "#ffa630";
 	context.lineWidth = 2;
 	context.beginPath();
@@ -286,5 +298,5 @@ export function renderGame(
 	drawProjectiles(context, state, assets, options.reducedMotion);
 	drawPlayer(context, state, assets, options);
 	drawDamage(context, state, assets, options.reducedMotion);
-	drawCanvasHud(context, state, assets);
+	drawAim(context, state);
 }
