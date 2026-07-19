@@ -242,11 +242,13 @@ git commit -m "feat: compose signature projectile motions"
 - Modify: `src/game/combat-effects.ts`
 - Modify: `src/game/projectiles.ts`
 - Modify: `src/game/simulation.ts`
+- Modify: `src/game/metrics.ts`
+- Modify: `src/game/metrics.test.ts`
 
 **Interfaces:**
 
-- Produces: `resolveImpactRules` and `buildGenerationOneEmission` for Shotgun, Hollow Point, Bone Orchard, Grave Bloom, Soul Harvester, and Bootleg Mint.
-- Consumes: sorted direct-impact events, generation guards, pending-emission queue, and kill context.
+- Produces: `resolveImpactRules`, `buildGenerationOneEmission`, canonical target Hollow state, ordered `KillContext`, explicit creation provenance, and bounded once-history for Shotgun, Hollow Point, Bone Orchard, Grave Bloom, Soul Harvester, and Bootleg Mint.
+- Consumes: already-sorted direct-impact events, generation/eligibility guards, Task-5 pending-emission queue, numeric projectile ordinals, and captured kill context.
 
 - [ ] **Step 1: Write six failing signature tests**
 
@@ -262,6 +264,12 @@ const ROW_THREE = [
 ```
 
 Assert Hollow Point plants only on an uncharged direct target and detonates on the next direct hit; Bone/Mint fire once per lineage; Bloom fires only on natural expiry or the explicit Shotgun transformation; Harvester fires once per root and selects two distinct nearest targets.
+
+Keep three concepts separate: inherited direct/motion/status eligibility (`activatedEffectIds`), the artifact/effect that created a child (`emission` provenance), and explicit `emittedEffectIds` once-history keyed by lineage or root. Generation-one projectiles retain creation provenance but have no emission or kill-reactive eligibility; the generation guard remains the hard backstop. Never infer once-history from metrics or from `activatedEffectIds`.
+
+Task 3 introduces the minimal canonical target-effects record needed by Hollow Point; Task 4 extends the same record. A charge is `{ damage, expiresAt, rootTriggerId, lineageId?, projectileId?, originPower }`. At `expiresAt <= now` it is absent. For each already-sorted direct hit, apply ordinary direct damage, then plant `60%` of current pre-impact damage on an uncharged live target or consume/detonate an existing live charge in a `64 px` secondary area payload. The explosion resolves even if the second direct hit kills the target; secondary damage never plants or consumes a charge.
+
+Capture an immutable ordered `KillContext` at the first damage event that crosses health to dead, before removal: victim ID/position, source family, generation/reactive eligibility, full root/lineage/projectile/effect provenance, current origin power, and kill depth. Kill reactions consume these contexts directly. Soul Harvester activates only once per `effectId + rootTriggerId`, rejects generation one and depth one, and never reconstructs context from pruned metrics.
 
 - [ ] **Step 2: Write generation and special-composition tests**
 
@@ -281,6 +289,12 @@ test("generation-one children inherit no emission rules", () => {
 });
 ```
 
+Every direct event uses the projectile's current pre-impact damage (after Comet/bounce retention) as `originPower`. Generation-zero base direct hits keep base provenance unless explicitly transformed; a generation-one direct hit uses its creation effect provenance. Only direct contact changes that projectile's accuracy. Explosion/link/status/area/reactive descendants retain the originating direct `originPower` rather than replacing it with scaled damage.
+
+For damage derived from two projectiles (Tesla/Crossfire), the lower-current-damage projectile owns root/lineage/origin provenance; ties use the lower stable projectile ID. Crossfire remains secondary and generation-zero-only. Task 3 consumes Task-5's existing event order without re-sorting: tolerant time → projectile ID → stable target/collider ID → semantic kind.
+
+Every child starts with fresh empty target-hit histories; Spectral does not copy a parent's prior targets. Undertaker's Return uses Task-2's separate outbound/inbound histories, while Bone/Mint once-history remains lineage-wide so a return hit/bounce cannot emit twice.
+
 - [ ] **Step 3: Run tests and confirm failure**
 
 Run: `bun test src/game/impacts.test.ts src/game/emissions.test.ts`
@@ -292,7 +306,8 @@ Expected: FAIL because row-three impact/emission handlers do not exist.
 ```ts
 export function buildGenerationOneEmission(source: ProjectileState, rule: EmissionRule, specs: readonly ProjectileSpec[]): PendingEmission {
   if (source.generation !== 0) throw new Error("generation-one projectile cannot emit");
-  if (source.activatedEffectIds.includes(rule.effectId)) throw new Error(`${rule.effectId} already emitted for lineage`);
+  if (!source.activatedEffectIds.includes(rule.effectId)) throw new Error(`${rule.effectId} is not eligible`);
+  if (source.emittedEffectIds.includes(rule.effectId)) throw new Error(`${rule.effectId} already emitted for lineage`);
   return {
     atStep: source.step + 1,
     artifactId: rule.artifactId,
@@ -308,11 +323,19 @@ export function buildGenerationOneEmission(source: ProjectileState, rule: Emissi
 
 Implement the exact cone/radial/tangent headings and source percentages. Queue children for the next fixed step; never materialize recursively inside the impact loop.
 
+Allocate immutable child stable IDs/ordinals at queue time, not materialization time. Each pending child carries exact origin, heading/spec, source artifact/effect, root/lineage, inherited non-emission traits, and finite origin power. Sort by `atStep`, root/lineage, rule phase/effect, then numeric child ordinal. Validate exact counts and the per-root descendant bound; never truncate. Clean root/lineage once-history only when no live/scheduled/pending/status/area record can reference it.
+
+Bootleg Mint queues only after a successful wall/prop bounce, after spending one bounce and applying retention/Pinball relay. Snapshot post-bounce damage/speed/radius/remaining-bounce at the collision point, rotate the reflected heading by `+90°` for even numeric local ordinal and `−90°` for odd, then apply `0.30` damage, `0.55` radius, and `160 px` range. Mark lineage history before settling. Target ricochets do not mint; generation-one copies may retain remaining bounces but never mint again.
+
+At Shotgun split, remove and record the parent but create no live child in that call. Queue separate Shotgun `8` and Grave Bloom `6` descriptors for `step + 1`; Bloom fires here exactly once and never again as range/lifetime. Preserve one parent-owned Dustline token for Task 6's delayed afterimage. Shotgun pellets are not emitters. Bone uses the same queue seam for three `−18/0/+18°` children on the first direct hit per lineage.
+
+Soul Harvester excludes the victim, selects live targets within inclusive `240 px` by squared distance then stable target ID, and queues exactly two spirits. Targets are distinct; an unmatched spirit still spawns unbound rather than silently reducing descendant count or telemetry.
+
 - [ ] **Step 5: Run tests and commit**
 
 ```bash
-bun test src/game/impacts.test.ts src/game/emissions.test.ts src/game/projectiles.test.ts src/game/simulation.test.ts
-git add src/game/emissions.ts src/game/emissions.test.ts src/game/impacts.test.ts src/game/combat-effects.ts src/game/projectiles.ts src/game/simulation.ts
+bun test src/game/impacts.test.ts src/game/emissions.test.ts src/game/projectiles.test.ts src/game/combat-effects.test.ts src/game/metrics.test.ts src/game/simulation.test.ts
+git add src/game/emissions.ts src/game/emissions.test.ts src/game/impacts.test.ts src/game/combat-effects.ts src/game/projectiles.ts src/game/simulation.ts src/game/metrics.ts src/game/metrics.test.ts
 git commit -m "feat: resolve bounded impact emissions"
 ```
 
