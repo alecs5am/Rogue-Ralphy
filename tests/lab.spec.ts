@@ -19,7 +19,9 @@ test("catalog telemetry", async ({ page }) => {
 	await expect(page.locator("[data-artifact]")).toHaveCount(11);
 	await page.getByRole("button", { name: "Take Tesla Bullets" }).click();
 	await expect(page.locator('[data-stat="multishot"]')).toContainText("1.33×");
-	await expect(page.locator('[data-stat="tesla"]')).toContainText("96 px");
+	await expect(page.locator('[data-stat="tesla"]')).toHaveText(
+		"96 px radius · max 2 links · 25% damage · 0.15s cooldown",
+	);
 	await page.getByRole("button", { name: "Take Shotgun" }).click();
 	await expect(page.locator('[data-stat="split"]')).toContainText("8 × 128 px");
 	await page.getByRole("button", { name: "Take Spectral Bullets" }).click();
@@ -132,9 +134,14 @@ for (const viewport of [
 		await page.goto("/");
 		const diagnostics = page.locator("#asset-diagnostics");
 		await expect(diagnostics).toContainText("MISSING ASSETS:");
-		await expect(diagnostics).toContainText("teslaBullets");
-		await expect(diagnostics).toContainText("shotgun");
-		await expect(diagnostics).toContainText("spectralBullets");
+		const diagnosticsText = await diagnostics.textContent();
+		expect(diagnosticsText?.startsWith("MISSING ASSETS: ")).toBe(true);
+		expect(
+			diagnosticsText
+				?.slice("MISSING ASSETS: ".length)
+				.split(", ")
+				.sort(),
+		).toEqual(["shotgun", "spectralBullets", "teslaBullets"]);
 		await expect(page.locator("[data-stat=ammo]")).toHaveText("6/6");
 		for (const [name, note] of ARTIFACTS) {
 			await expect(page.getByRole("button", { name: `Take ${name}` })).toBeVisible();

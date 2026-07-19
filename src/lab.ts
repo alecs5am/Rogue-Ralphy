@@ -221,7 +221,7 @@ export function mountLab(
 			bounce: `${state.weapon.bounces} × ${format.percent(state.weapon.bounceRetention)}`,
 			freeze: `${format.percent(state.weapon.freezeChance)} · ${format.number(state.weapon.freezeDuration)}s`,
 			tesla: state.weapon.behaviors.tesla
-				? `${state.weapon.behaviors.tesla.radius} px · ${state.weapon.behaviors.tesla.neighbors} links`
+				? `${state.weapon.behaviors.tesla.radius} px radius · max ${state.weapon.behaviors.tesla.neighbors} links · ${format.percent(state.weapon.behaviors.tesla.damageScale)} damage · ${format.number(state.weapon.behaviors.tesla.cooldown, 2)}s cooldown`
 				: "OFF",
 			split: state.weapon.behaviors.split
 				? `${state.weapon.behaviors.split.count} × ${state.weapon.behaviors.split.childRange} px`
