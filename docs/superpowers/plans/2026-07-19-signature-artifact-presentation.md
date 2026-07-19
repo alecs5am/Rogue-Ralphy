@@ -89,20 +89,20 @@ Expected: FAIL because the packer and fixture sheets do not exist.
 Reuse only the safe crop/fit/split primitives from `scripts/split_atlas.py`. Do not reuse its broad green-dominance removal: each family declares one flat border chroma sampled/verified from the sheet edge and removed by bounded color distance; that chroma must be outside the family's intentional palette. Accept six explicit input paths, six explicit row ID arrays, declared chroma, and an explicit output root; do not discover production files through broad globs.
 
 ```py
-def build_family(sheet: Path, names: list[str], output: Path) -> list[Path]:
+def build_family(sheet: Path, names: list[str], output: Path, columns: int, rows: int) -> list[Path]:
     if len(names) != 6:
         raise ValueError("artifact family must contain exactly six names")
-    cells = split_cells(Image.open(sheet).convert("RGBA"), columns=6, rows=1)
+    cells = split_cells(Image.open(sheet).convert("RGBA"), columns=columns, rows=rows)
     if len(cells) != 6:
         raise ValueError("artifact family sheet must contain six complete cells")
     return [save_normalized(remove_chroma(cell), output / f"{name}.png") for name, cell in zip(names, cells, strict=True)]
 ```
 
-Normalize icon/VFX cells to exact `128 × 128` RGBA and HUD cells to exact `64 × 64` RGBA with a transparent padding band. Reject non-divisible sheet dimensions, empty/cropped/touching cells, chroma inside opaque content, and duplicate normalized pixels before writing accepted assets.
+Normalize icon/VFX cells to exact `128 × 128` RGBA and HUD cells to exact `64 × 64` RGBA with a transparent padding band. Reject non-divisible sheet dimensions, empty/cropped/touching cells, chroma inside opaque content, and duplicate normalized pixels before writing accepted assets. Persist the declared `columns`, `rows`, and chroma for every source sheet. Synthetic tests cover packer error paths; a second production-pack validator opens the exact committed runtime set and asserts exact filenames, decodability, dimensions/mode, alpha padding, no surviving opaque pixel within the declared chroma distance, and global normalized-pixel uniqueness.
 
 - [ ] **Step 4: Generate six coherent ImageGen sheets**
 
-Use built-in ImageGen with the accepted Ralphy noir-western chibi pixel-art anchor and one prompt per row. Each prompt requests a horizontal six-cell sprite sheet, front-facing item icons, identical scale/palette/light, flat chroma background, thick pixel silhouette, clean gutters, and no text/numbers/logos/watermarks.
+Use built-in ImageGen with the accepted Ralphy noir-western chibi pixel-art anchor and one prompt per row. Each prompt requests a `3 × 2` six-cell sprite sheet, front-facing item icons in exact row-major order, identical scale/palette/light, flat chroma background, thick pixel silhouette, clean gutters, and no text/numbers/logos/watermarks. The wider cells are intentional: do not use a fragile `6 × 1` strip.
 
 The cell subjects are exactly:
 
@@ -124,7 +124,7 @@ uv run --with Pillow==12.2.0 scripts/build_artifact_pack.py
 uv run --with Pillow==12.2.0 scripts/test_build_artifact_pack.py
 ```
 
-Expected: 36 unique accepted PNGs and all tests PASS. Inspect `tmp/imagegen/artifacts/contact-sheet.png` at original pixel detail.
+Expected: 36 unique accepted PNGs, the synthetic packer suite and committed production-pack validator both PASS. Inspect `tmp/imagegen/artifacts/contact-sheet.png` at original pixel detail.
 
 - [ ] **Step 6: Commit**
 
@@ -142,12 +142,15 @@ git commit -m "art: add ImageGen signature artifact icons"
 - Create ignored sources: `tmp/imagegen/effects/*.png`
 - Create: `public/assets/generated/effects/artifacts/*.png`
 - Create: `public/assets/generated/ui/ammo-echo.png`
+- Create: `public/assets/generated/ui/dealer-cut-1.png`
+- Create: `public/assets/generated/ui/dealer-cut-2.png`
+- Create: `public/assets/generated/ui/dealer-cut-3.png`
 - Modify: `scripts/build_artifact_pack.py`
 - Modify: `scripts/test_build_artifact_pack.py`
 
 **Interfaces:**
 
-- Produces: fixed shared VFX keys and one Deadeye slot overlay.
+- Produces: thirty-three fixed new VFX keys and four HUD overlays.
 - Consumes: the semantic `VfxCommand.kind` vocabulary frozen by the mechanics plan.
 
 - [ ] **Step 1: Lock and test the VFX output list**
@@ -166,7 +169,7 @@ Extend the packer test to require all thirty-three new VFX outputs and global no
 
 - [ ] **Step 2: Generate four coherent ImageGen VFX sheets**
 
-Generate four eight-cell sheets plus one single-cell Twin weave cue:
+Generate four `4 × 2` eight-cell sheets plus one single-cell Twin weave cue:
 
 1. Echo/burst/emission cues.
 2. Impact/status/target marks.
@@ -178,7 +181,7 @@ Use the same pixel palette and chroma requirements as Task 1. Effects must read 
 
 - [ ] **Step 3: Generate the HUD overlays**
 
-Use one four-cell ImageGen HUD sheet: a transparent golden ghost-cartridge halo compatible with `ammo-loaded.png`, followed by three numberless card-suit pip states for Dealer's Cut progress. Accessible progress text is projected by DOM. Pack all four through the same normalizer; do not draw them with CSS or SVG.
+Use one `2 × 2` four-cell ImageGen HUD sheet: a transparent golden ghost-cartridge halo compatible with `ammo-loaded.png`, followed by three numberless card-suit pip states for Dealer's Cut progress in exact row-major order. Accessible progress text is projected by DOM. Pack all four through the same normalizer; do not draw them with CSS or SVG.
 
 - [ ] **Step 4: Pack, validate, inspect, and commit**
 
@@ -199,6 +202,12 @@ Expected: tests PASS and the original-detail contact sheet shows distinct readab
 
 - Modify: `src/assets.ts`
 - Modify: `src/assets.test.ts`
+- Modify: `src/main.ts`
+- Create: `src/main.test.ts`
+- Modify: `src/lab.ts`
+- Modify: `src/render.ts`
+- Modify: `src/styles.css`
+- Modify: `index.html`
 
 **Interfaces:**
 
@@ -225,6 +234,11 @@ test("shared VFX and HUD overlays are required PNGs", () => {
   expect(ASSET_PATHS.dealerCut3).toBe("/assets/generated/ui/dealer-cut-3.png");
   for (const key of NEW_ARTIFACT_VFX) expect(REQUIRED_ASSET_KEYS).toContain(key);
   for (const key of ARTIFACT_PRESENTATION_ASSETS) expect(REQUIRED_ASSET_KEYS).toContain(key);
+  expect(NEW_ARTIFACT_VFX).toHaveLength(33);
+  expect(RETAINED_ARTIFACT_VFX).toHaveLength(5);
+  expect(ARTIFACT_PRESENTATION_ASSETS).toHaveLength(38);
+  expect(new Set([...NEW_ARTIFACT_VFX, ...RETAINED_ARTIFACT_VFX]).size).toBe(38);
+  expect(ARTIFACT_HUD_ASSETS).toHaveLength(4);
   expect(Object.values(ASSET_PATHS).every((path) => existsSync(`public${path}`))).toBe(true);
   expect(Object.values(ASSET_PATHS).every((path) => !path.endsWith(".svg"))).toBe(true);
 });
@@ -232,22 +246,22 @@ test("shared VFX and HUD overlays are required PNGs", () => {
 
 - [ ] **Step 2: Run and confirm failure**
 
-Run: `bun test src/assets.test.ts src/game/artifacts.test.ts`
+Run: `bun test src/assets.test.ts src/main.test.ts src/game/artifacts.test.ts`
 
 Expected: FAIL because new keys are not registered.
 
 - [ ] **Step 3: Add literal manifest entries**
 
-Register all thirty-six icon paths, thirty-three new VFX paths, four HUD overlays, and the five retained accepted cues `orbitTrail`, `homingMarker`, `shotgunSplit`, `spectralTrail`, and `teslaArc`. Export `NEW_ARTIFACT_VFX` for generated additions and exhaustive `ARTIFACT_PRESENTATION_ASSETS` for new plus retained cues. Keep `REQUIRED_ASSET_KEYS = Object.keys(ASSET_PATHS)` and verify every `public${path}` exists.
+Register all thirty-six icon paths, thirty-three new VFX paths, four HUD overlays, and the five retained accepted cues `orbitTrail`, `homingMarker`, `shotgunSplit`, `spectralTrail`, and `teslaArc`. Export exact tuples `NEW_ARTIFACT_VFX` (33), `RETAINED_ARTIFACT_VFX` (5), `ARTIFACT_PRESENTATION_ASSETS` (their disjoint 38-key union), and `ARTIFACT_HUD_ASSETS` (4). Keep `REQUIRED_ASSET_KEYS = Object.keys(ASSET_PATHS)` and verify every `public${path}` exists.
 
-Make preflight return `LoadedAssets = Record<AssetKey, HTMLImageElement>`. Abort before mounting the lab, starting animation, or rendering when any required asset fails. Remove the `.missing-icon` branch/argument from `mountLab` and homemade Canvas missing-image boxes. Startup may catch rejection only to show one clear fatal diagnostic. Add a focused forced-missing test proving that no grid/render loop mounts; never substitute production art.
+Make preflight return `LoadedAssets = Record<AssetKey, HTMLImageElement>`. Extract an injectable `bootstrap({ loadAssets, requestFrame })` in `main.ts`. Await preflight before mounting HUD/lab or requesting the first animation frame. On failure, mount exactly one clear `role="alert"` diagnostic in the static shell and do nothing else. Remove the `.missing-icon` branch/argument from `mountLab` and homemade Canvas missing-image boxes. Add a focused forced-missing test proving that neither HUD/lab nor `requestAnimationFrame` starts while the alert remains visible; never substitute production art.
 
 - [ ] **Step 4: Run tests/build and commit**
 
 ```bash
-bun test src/assets.test.ts src/game/artifacts.test.ts
+bun test src/assets.test.ts src/main.test.ts src/game/artifacts.test.ts
 bun run build
-git add src/assets.ts src/assets.test.ts
+git add src/assets.ts src/assets.test.ts src/main.ts src/main.test.ts src/lab.ts src/render.ts src/styles.css index.html
 git commit -m "feat: preflight signature artifact assets"
 ```
 
@@ -283,7 +297,7 @@ test("artifact grid is six by six and projects details", async ({ page }) => {
 });
 ```
 
-At both viewports assert six computed columns, six distinct row positions, no horizontal overflow, independent lab scrolling, visible focus, clamped Arrow navigation, native Enter/Space toggle, detail persistence, Take all activates 36, and Clear activates zero. Assert the grid has an accessible group name, exactly one tile has `tabIndex=0`, every icon has a nonzero natural size and unique PNG URL, the selected tile has a non-color outline, and focus navigation scrolls only the laboratory pane into view.
+At both viewports assert six computed columns, six distinct row positions, no horizontal overflow, independent lab scrolling, visible focus, clamped Arrow navigation, native Enter/Space toggle, detail persistence, Take all activates 36, and Clear activates zero. Assert the grid has an accessible group name, every tile is discoverable by its catalog name, exactly one tile has `tabIndex=0`, every icon has a nonzero natural size and unique PNG URL, the selected tile has a non-color outline, and focus navigation scrolls only the laboratory pane into view. Detail projection must show exact catalog name, description, tags, and exactly three named synergies.
 
 - [ ] **Step 2: Run focused E2E and confirm failure**
 
@@ -297,7 +311,7 @@ Build this DOM shape from catalog metadata:
 
 ```html
 <div class="artifact-grid" role="group" aria-labelledby="artifacts-title">
-  <button class="artifact-tile" data-artifact="twinChamber" data-row="1" data-column="1" aria-pressed="false">
+  <button type="button" class="artifact-tile" data-artifact="twinChamber" data-row="1" data-column="1" aria-label="Twin Chamber" aria-pressed="false">
     <img src="/assets/generated/artifacts/twin-chamber.png" alt="">
   </button>
 </div>
@@ -308,7 +322,7 @@ Build this DOM shape from catalog metadata:
 </div>
 ```
 
-Use one roving `tabIndex = 0`. ArrowLeft/ArrowRight clamp within the current row; ArrowUp/ArrowDown clamp within the current column. Each successful move updates the roving tile, calls `focus()`, then `scrollIntoView({ block: "nearest", inline: "nearest" })` inside the independently scrolling laboratory. Let native button Enter/Space dispatch one click; do not add a second keyboard toggle handler. Focus and click update `lastDetailedArtifact`; pointer enter previews through the same `projectDetail(artifact)` function and pointer leave restores `lastDetailedArtifact`. Use one batch loadout setter for Take all/Clear so the combat build compiles once. Never add a missing-icon branch: the fatal asset preflight owns that failure.
+Use one roving `tabIndex = 0`. ArrowLeft/ArrowRight clamp within the current row; ArrowUp/ArrowDown clamp within the current column. Prevent default page scrolling for handled arrows. Each successful move updates the sole roving tile, calls `focus()`, then `scrollIntoView({ block: "nearest", inline: "nearest" })` inside the independently scrolling laboratory. Focus and click both move the roving `tabIndex=0` and update `lastDetailedArtifact`. Let native button Enter/Space dispatch one click; do not add a second keyboard toggle handler. Pointer enter previews through the same `projectDetail(artifact)` function and pointer leave restores `lastDetailedArtifact`. Use one batch loadout setter for Take all/Clear so the combat build compiles once. Never add a missing-icon branch: the fatal asset preflight owns that failure.
 
 - [ ] **Step 4: Lock the six-column CSS**
 
@@ -356,6 +370,7 @@ git commit -m "feat: add six-by-six artifact laboratory"
 - Modify: `src/render.ts`
 - Modify: `src/hud.ts`
 - Modify: `src/hud.test.ts`
+- Modify: `src/styles.css`
 
 **Interfaces:**
 
@@ -368,7 +383,7 @@ git commit -m "feat: add six-by-six artifact laboratory"
 test("projects one semantic cue from every artifact row", () => {
   const draws = projectEffectDraws(stateWithRepresentativeEffects(), false);
   expect(new Set(draws.map(({ family }) => family))).toEqual(new Set(["trigger", "motion", "impact", "status", "relation", "reactive"]));
-  expect(draws.every(({ asset }) => REQUIRED_ARTIFACT_VFX.includes(asset))).toBe(true);
+  expect(draws.every(({ asset }) => ARTIFACT_PRESENTATION_ASSETS.includes(asset) || ARTIFACT_HUD_ASSETS.includes(asset))).toBe(true);
 });
 
 test("reduced motion freezes decoration without removing essential cues", () => {
@@ -385,7 +400,7 @@ test("reduced motion freezes decoration without removing essential cues", () => 
 });
 ```
 
-Add a table-driven contract with one fixture row for every catalog ID. Each row states its simulation source (`VfxCommand`, target status, projectile motion, area, link, satellite/orbital, decoy, or HUD), expected asset key, draw family/layer, essential flag, and reduced-motion policy. Assert all and only the 36 catalog IDs are covered, and use an `assertNever` default so a new `VfxCommand.kind` cannot compile without a presentation mapping. Explicitly cover shared assets without losing artifact attribution: Deadeye and Grave Echo may both use `echoFlash`, while the five retained cues stay mapped to Halo, Ghost, Shotgun, Spectral, and Tesla.
+Add a table-driven contract with one fixture row for every catalog ID. Each row states its simulation source (`VfxCommand`, target status, projectile motion, area, link, satellite/orbital, decoy, or HUD), expected asset key from `ARTIFACT_PRESENTATION_ASSETS` or `ARTIFACT_HUD_ASSETS`, draw family/layer, essential flag, and reduced-motion policy. Assert all and only the 36 catalog IDs are covered, and use an `assertNever` default so a new `VfxCommand.kind` cannot compile without a presentation mapping. Explicitly cover shared assets without losing artifact attribution: Deadeye and Grave Echo may both use `echoFlash`, while the five retained cues stay mapped to Halo, Ghost, Shotgun, Spectral, and Tesla.
 
 - [ ] **Step 2: Write failing HUD tests**
 
@@ -419,12 +434,14 @@ drawAim(context, state);
 
 Do not infer mechanics from unrelated projectile fields; project only the exhaustive presentation contract over semantic commands/state. Batch Wake segments, tile pools/trails, draw canonical link endpoints, and expire cues by their simulation timestamps. Reduced motion keeps the same collision geometry and essential state markers, freezes animatable phase at zero, and may shorten purely decorative trail persistence; it never hides a hitbox, target state, link, orbital, decoy, or earned-delivery cue.
 
+Bonanza uses a semantic `bonanza.delivery` command with world-space `from`, immutable destination cylinder slot, `bornAt`, and `arrivesAt`. Render `goldSoul` as an ImageGen `<img>` in a pointer-inert HUD VFX overlay. A pure `projectHudDelivery(command, canvasRect, ammoSlotRect, now)` converts the world start through the canvas client rect and interpolates to the current center of that exact ammo tile, so responsive layout changes preserve the same destination slot. Keep the cue through a no-op/full-cylinder arrival as required by simulation and test exact endpoints at both target viewports.
+
 - [ ] **Step 5: Run tests/build and commit**
 
 ```bash
 bun test src/render-effects.test.ts src/hud.test.ts
 bun run build
-git add src/render-effects.ts src/render-effects.test.ts src/render.ts src/hud.ts src/hud.test.ts
+git add src/render-effects.ts src/render-effects.test.ts src/render.ts src/hud.ts src/hud.test.ts src/styles.css
 git commit -m "feat: render signature artifact effects"
 ```
 
@@ -435,6 +452,8 @@ git commit -m "feat: render signature artifact effects"
 **Files:**
 
 - Modify: `tests/lab.spec.ts`
+- Modify: `playwright.config.ts`
+- Create: `src/e2e-fixtures.ts`
 - Create/Update: `docs/screenshots/ralphy-1440x900.png`
 - Create/Update: `docs/screenshots/ralphy-1024x768.png`
 - Modify production files only when a failing browser regression proves a defect.
@@ -469,7 +488,7 @@ Also assert reload progress, Deadeye echo slots, Dealer's three progress states,
 
 - [ ] **Step 3: Extend Canvas probes and reduced motion**
 
-Add an isolated deterministic presentation-fixture entry point that is compiled only for tests/development and activated only by an explicit test query flag. It accepts the same serializable semantic state as the pure projector; it must not alter production gameplay state or expose a production debug global. Use it to exercise every contract row without relying on RNG, aim, target survival, or wall-clock timing. Spy on Canvas `drawImage` and tie every semantic event to its expected loaded PNG asset. Explicitly assert Twin weave, Deadeye echo/HUD, Dealer HUD, one cue from each remaining row, and all five retained cues. In reduced motion, assert every essential cue still draws, animatable phases remain zero, and Wake geometry is unchanged even when decorative persistence is reduced.
+Add a static, serializable presentation-fixture registry behind compile-time `import.meta.env.VITE_E2E_FIXTURES === "1"` and an explicit query-selected fixture ID. Configure Playwright's web-server build with `VITE_E2E_FIXTURES=1`; no arbitrary state input or production debug global is accepted. Add a separate ordinary production-build assertion proving the registry marker and hook are absent from `dist`. Use the paused deterministic fixture to exercise every contract row without relying on RNG, aim, target survival, or wall-clock timing. Wait for all decoded images, spy on Canvas `drawImage`, and tie every semantic event to its expected loaded PNG asset. Explicitly assert Twin weave, Deadeye echo/HUD, Dealer HUD, one cue from each remaining row, and all five retained cues. In reduced motion, assert every essential cue still draws, animatable phases remain zero, and Wake geometry is unchanged even when decorative persistence is reduced.
 
 - [ ] **Step 4: Capture and inspect both screenshots**
 
@@ -482,6 +501,7 @@ bun test
 uv run --with Pillow==12.2.0 scripts/test_build_ralphy_atlas.py
 uv run --with Pillow==12.2.0 scripts/test_build_artifact_pack.py
 bun run build
+! rg "__RALPHY_E2E_FIXTURE__" dist
 bun run test:e2e
 bun run test:e2e --grep "draws right-facing fire reload" --repeat-each=3 --workers=3
 git diff --check
@@ -498,6 +518,6 @@ Review the implementation against the complete written specification. Correct Cr
 - [ ] **Step 7: Commit final integration evidence**
 
 ```bash
-git add tests/lab.spec.ts docs/screenshots/ralphy-1440x900.png docs/screenshots/ralphy-1024x768.png
+git add tests/lab.spec.ts playwright.config.ts src/e2e-fixtures.ts docs/screenshots/ralphy-1440x900.png docs/screenshots/ralphy-1024x768.png
 git commit -m "test: verify signature artifact demo"
 ```
