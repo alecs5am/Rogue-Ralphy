@@ -168,7 +168,7 @@ function drawProjectiles(
 			centeredImage(context, assets, "orbitTrail", projectile, size * 1.5);
 			context.globalAlpha = 1;
 		}
-		if (projectile.behaviors.homing) {
+		if ((projectile.homingMarkerRemaining ?? 0) > 0) {
 			context.globalAlpha = 0.45;
 			centeredImage(context, assets, "homingMarker", projectile, size * 1.7);
 			context.globalAlpha = 1;

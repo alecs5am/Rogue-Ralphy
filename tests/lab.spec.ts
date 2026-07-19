@@ -14,6 +14,15 @@ const ARTIFACTS = [
 	["Spectral Bullets", "pierce cover and targets"],
 ] as const;
 
+const SIGNATURE_ARTIFACTS = [
+	["teslaBullets", "Tesla Bullets"],
+	["shotgun", "Shotgun"],
+	["spectralBullets", "Spectral Bullets"],
+	["haloChamber", "Halo Chamber"],
+	["ghostSight", "Ghost Sight"],
+] as const;
+type RenderProbe = { teslaOffsets: number[]; impactDraws: number };
+
 test("catalog telemetry", async ({ page }) => {
 	await page.goto("/");
 	await expect(page.locator("[data-artifact]")).toHaveCount(11);
@@ -45,6 +54,95 @@ test("imagegen combat hud", async ({ page }) => {
 	await expect(page.locator('[data-stat="secondary-hits"]')).toHaveText("0");
 	await expect(page.locator("#hud svg, #hud [data-css-art]")).toHaveCount(0);
 });
+
+for (const reducedMotion of [false, true]) {
+	test(`combines all five signature effects${reducedMotion ? " with reduced motion" : ""}`, async ({ page }) => {
+		const errors: string[] = [];
+		page.on("console", (message) => {
+			if (message.type() === "error") errors.push(message.text());
+		});
+		page.on("pageerror", (error) => errors.push(error.message));
+		page.on("response", (response) => {
+			if (new URL(response.url()).pathname.startsWith("/assets/generated/") && !response.ok()) {
+				errors.push(`${response.status()} ${response.url()}`);
+			}
+		});
+		page.on("requestfailed", (request) => {
+			if (new URL(request.url()).pathname.startsWith("/assets/generated/")) {
+				errors.push(`${request.failure()?.errorText ?? "request failed"} ${request.url()}`);
+			}
+		});
+		await page.emulateMedia({ reducedMotion: reducedMotion ? "reduce" : "no-preference" });
+		await page.addInitScript(() => {
+			Math.random = () => 0;
+			const probe: RenderProbe = { teslaOffsets: [], impactDraws: 0 };
+			(window as typeof window & { __renderProbe: RenderProbe }).__renderProbe = probe;
+			const original = CanvasRenderingContext2D.prototype.drawImage;
+			CanvasRenderingContext2D.prototype.drawImage = function (
+				this: CanvasRenderingContext2D,
+				...args: Parameters<typeof original>
+			) {
+				const source = args[0];
+				if (source instanceof HTMLImageElement) {
+					const path = new URL(source.currentSrc || source.src).pathname;
+					if (path.endsWith("/tesla-arc.png") && probe.teslaOffsets.length < 2_000) {
+						probe.teslaOffsets.push(Number(args[1]));
+					}
+					if (path.endsWith("/impact.png")) probe.impactDraws += 1;
+				}
+				return Reflect.apply(original, this, args);
+			} as typeof original;
+		});
+		await page.goto("/");
+		await expect(page.locator("#asset-diagnostics")).toContainText("All generated assets loaded");
+		expect(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(reducedMotion);
+
+		for (const [id, name] of SIGNATURE_ARTIFACTS) {
+			const card = page.locator(`[data-artifact="${id}"]`);
+			await expect(card).toHaveCount(1);
+			await card.getByRole("button", { name: `Take ${name}` }).click();
+			await expect(card).toHaveClass(/active/);
+		}
+		for (let index = 0; index < 3; index += 1) {
+			await page.getByRole("button", { name: "Spawn dummy" }).click();
+		}
+		await expect(page.locator(".dummy-stats p")).toHaveCount(3);
+
+		const canvas = page.locator("#game");
+		const box = await canvas.boundingBox();
+		if (!box) throw new Error("game canvas is not visible");
+		await page.mouse.move(box.x + box.width * 736 / 960, box.y + box.height / 2);
+		await page.keyboard.down("d");
+		await page.mouse.down();
+		await expect(page.locator('[data-stat="ammo"]')).toHaveText("0/6", { timeout: 5_000 });
+		await page.mouse.up();
+		await page.keyboard.up("d");
+
+		await expect(page.locator('#hud .ammo-tile img[alt="Loaded cartridge"]')).toHaveCount(0);
+		await expect(page.locator('#hud .ammo-tile img[alt="Empty cartridge slot"]')).toHaveCount(6);
+		await expect(page.locator("#reload")).toBeVisible();
+		for (const stat of ["projectiles", "secondary-hits", "total-damage"] as const) {
+			await expect.poll(async () => Number(await page.locator(`[data-stat="${stat}"]`).textContent())).toBeGreaterThan(0);
+		}
+		await expect(page.locator('[data-stat="ammo"]')).toHaveText("6/6", { timeout: 3_000 });
+		await expect(page.locator('#hud .ammo-tile img[alt="Loaded cartridge"]')).toHaveCount(6);
+		await expect(page.locator("#reload")).toBeHidden();
+
+		await expect(page.locator("[data-artifact].active")).toHaveCount(5);
+		expect(await page.locator("[data-artifact].active").evaluateAll((cards) =>
+			cards.map((card) => card.getAttribute("data-artifact")).sort()
+		)).toEqual(SIGNATURE_ARTIFACTS.map(([id]) => id).sort());
+		if (reducedMotion) {
+			const probe = await page.evaluate(() =>
+				(window as typeof window & { __renderProbe: RenderProbe }).__renderProbe
+			);
+			expect(probe.teslaOffsets.length).toBeGreaterThan(0);
+			expect(probe.teslaOffsets.every((offset) => offset % 24 === 0)).toBe(true);
+			expect(probe.impactDraws).toBe(0);
+		}
+		expect(errors).toEqual([]);
+	});
+}
 
 test("builds a loadout, damages a dummy, and auto-reloads", async ({
 	page,
@@ -195,7 +293,11 @@ for (const viewport of [
 		await page.keyboard.press("r");
 		const reload = page.locator("#reload");
 		await expect(reload).toBeVisible();
-		await page.waitForTimeout(700);
+		await page.waitForFunction(
+			() => document.querySelector("#reload")?.classList.contains("in-zone"),
+			undefined,
+			{ polling: "raf", timeout: 2_000 },
+		);
 		await expect(reload).toHaveClass(/in-zone/);
 		await page.screenshot({
 			path: `test-results/screenshots/ralphy-${viewport.width}x${viewport.height}.png`,

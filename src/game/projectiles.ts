@@ -27,7 +27,7 @@ export type ProjectileState = {
   travelled: number; maxTravel?: number;
   spiralOrigin?: Readonly<{ x: number; y: number }>;
   spiralRadius?: number; spiralAngle?: number; spiralAngularSpeed?: number;
-  homingTargetId?: string;
+  homingTargetId?: string; homingMarkerRemaining?: number;
 };
 
 export type TrajectoryTarget = Readonly<{ id: string; x: number; y: number; health: number }>;
@@ -58,6 +58,7 @@ export function buildTeslaLinks(projectiles: readonly ProjectileState[]): TeslaL
 }
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+const HOMING_MARKER_DURATION = 0.18;
 
 function turnToward(current: number, desired: number, limit: number): number {
   const difference = Math.atan2(Math.sin(desired - current), Math.cos(desired - current));
@@ -94,6 +95,7 @@ export function synchronizeSpiralState(projectile: ProjectileState, referenceAng
 
 export function advanceTrajectory(projectile: ProjectileState, targets: readonly TrajectoryTarget[], dt: number): ProjectileState {
   const next = { ...projectile, hitTargetIds: [...projectile.hitTargetIds] };
+  next.homingMarkerRemaining = Math.max(0, (next.homingMarkerRemaining ?? 0) - dt);
   const spiral = next.behaviors.spiral;
   let intendedSpiralAngle: number | undefined;
   if (dt > 0 && spiral && next.spiralOrigin && next.spiralRadius !== undefined && next.spiralAngle !== undefined) {
@@ -116,9 +118,10 @@ export function advanceTrajectory(projectile: ProjectileState, targets: readonly
         .filter((candidate) => candidate.health > 0)
         .map((candidate) => ({ candidate, distance: distanceToSegmentSquared(candidate, next, proposedEnd) }))
         .filter(({ distance }) => distance <= homing.radius ** 2)
-        .sort((a, b) => a.distance - b.distance);
+        .sort((a, b) => a.distance - b.distance || a.candidate.id.localeCompare(b.candidate.id));
       target = candidates[0]?.candidate;
       next.homingTargetId = target?.id;
+      if (target) next.homingMarkerRemaining = HOMING_MARKER_DURATION;
     }
     if (target) {
       const heading = turnToward(
@@ -164,6 +167,7 @@ export function splitProjectile(parent: ProjectileState, nextIds: Iterable<strin
       maxTravel: split.childRange,
       spiralAngularSpeed: angularSpeed,
       homingTargetId: undefined,
+      homingMarkerRemaining: 0,
     };
   });
 }

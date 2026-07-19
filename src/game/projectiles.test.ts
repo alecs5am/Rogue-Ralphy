@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createGame, setArtifact, spawnDummy, updateGame } from "./simulation";
-import { buildTeslaLinks, splitProjectile, type ProjectileState } from "./projectiles";
+import { advanceTrajectory, buildTeslaLinks, splitProjectile, type ProjectileState } from "./projectiles";
 import { segmentCircleHitTime } from "./room";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
@@ -94,6 +94,33 @@ test("Ghost Sight acquires across the swept segment and retains the lock", () =>
   game = { ...game, targets: game.targets.map((target) => ({ ...target, x: 700, y: 400 })) };
   game = updateGame(game, idle, 0.01, 1.21);
   expect(game.projectiles[0]?.homingTargetId).toBe("dummy-1");
+});
+
+test("Ghost Sight breaks equal-distance acquisition ties by stable target ID", () => {
+  let game = setArtifact(createGame(() => 0.9), "ghostSight", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  const projectile = { ...game.projectiles[0]!, x: 200, y: 300, vx: 620, vy: 0 };
+
+  const acquired = advanceTrajectory(projectile, [
+    { id: "dummy-z", x: 300, y: 350, health: 1 },
+    { id: "dummy-a", x: 300, y: 250, health: 1 },
+  ], 0.2);
+
+  expect(acquired.homingTargetId).toBe("dummy-a");
+});
+
+test("Ghost Sight shows a brief acquisition marker without dropping its lock", () => {
+  let game = setArtifact(createGame(() => 0.9), "ghostSight", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  const target = { id: "dummy-1", x: 300, y: 250, health: 1 };
+  const projectile = { ...game.projectiles[0]!, x: 200, y: 300, vx: 620, vy: 0 };
+
+  const acquired = advanceTrajectory(projectile, [target], 0.1);
+  const settled = advanceTrajectory(acquired, [target], 0.2);
+
+  expect(acquired.homingMarkerRemaining).toBeGreaterThan(0);
+  expect(settled.homingMarkerRemaining).toBe(0);
+  expect(settled.homingTargetId).toBe(target.id);
 });
 
 test("Halo Shotgun children start together and vary their spiral angular speeds", () => {

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ARTIFACT_CATALOG } from "./artifacts";
-import { clearTargets, createGame, resetLab, setArtifact, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
+import { clampResource, clearTargets, createGame, resetLab, setArtifact, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
 import { ROOM_PROPS } from "./room";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
@@ -18,6 +18,35 @@ const moveForTicks = (
 
 test("starts HUD resources at zero", () => {
   expect(createGame().resources).toEqual({ coins: 0, bombs: 0, keys: 0 });
+});
+
+test("clamps HUD resources to integer values from zero through 99", () => {
+  expect([-1, 0, 12.9, 99, 100].map(clampResource)).toEqual([0, 0, 12, 99, 99]);
+});
+
+test("Tesla Shotgun Spectral Halo and Ghost compose in one deterministic trigger", () => {
+  const cover = ROOM_PROPS.find(({ id }) => id === "labMarker")!;
+  let game = spawnDummy(createGame(() => 0.32), { x: cover.x, y: cover.y + 104 });
+  const dummyNearCover = game.targets[0]!;
+  for (const id of ["teslaBullets", "shotgun", "spectralBullets", "haloChamber", "ghostSight"] as const) {
+    game = setArtifact(game, id, true);
+  }
+  const aim = { ...idle, aimX: dummyNearCover.x, aimY: dummyNearCover.y };
+
+  const afterTrigger = updateGame(game, { ...aim, firing: true }, 0, 1);
+  let afterBloom = afterTrigger;
+  for (let tick = 0; tick < 0.5 / STEP; tick += 1) afterBloom = updateGame(afterBloom, aim, STEP, afterBloom.time + STEP);
+
+  expect(afterTrigger.projectiles).toHaveLength(2);
+  expect(afterTrigger.reload.ammo).toBe(5);
+  expect(afterBloom.projectiles.length).toBeGreaterThanOrEqual(8);
+  expect(afterBloom.projectiles.every(({ behaviors, penetration }) =>
+    behaviors.split === undefined && behaviors.tesla !== undefined && behaviors.homing !== undefined &&
+    penetration?.obstacles === true && penetration.targets === true
+  )).toBe(true);
+  expect(afterBloom.projectiles.some(({ homingTargetId }) => homingTargetId === dummyNearCover.id)).toBe(true);
+  expect(afterBloom.teslaLinks.length).toBeGreaterThan(0);
+  expect(afterBloom.telemetry.totalDamage).toBeGreaterThan(0);
 });
 
 function fireThroughRock(game: ReturnType<typeof createGame>, artifacts: { spectralBullets?: true; pinball?: true }) {

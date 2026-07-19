@@ -5,6 +5,12 @@ let hearts: HTMLImageElement[] = [];
 let ammo: HTMLImageElement[] = [];
 let resources: Record<keyof GameState["resources"], HTMLElement> | undefined;
 
+export const heartStateAt = (health: number, index: number): "full" | "half" | "empty" => {
+	const remaining = health - index * 20;
+	return remaining >= 20 ? "full" : remaining >= 10 ? "half" : "empty";
+};
+export const formatResource = (value: number): string => String(clampResource(value)).padStart(2, "0");
+
 const image = (src: string, alt: string): HTMLImageElement => {
 	const element = document.createElement("img");
 	element.src = src;
@@ -56,10 +62,10 @@ export function mountHud(root: HTMLElement): void {
 
 export function updateHud(state: GameState): void {
 	for (const [index, icon] of hearts.entries()) {
-		const remaining = state.player.health - index * 20;
-		const [src, alt] = remaining >= 20
+		const heart = heartStateAt(state.player.health, index);
+		const [src, alt] = heart === "full"
 			? [ASSET_PATHS.heartFull, "Full heart"]
-			: remaining >= 10
+			: heart === "half"
 				? [ASSET_PATHS.heartHalf, "Half heart"]
 				: [ASSET_PATHS.heartEmpty, "Empty heart"];
 		icon.src = src;
@@ -72,5 +78,5 @@ export function updateHud(state: GameState): void {
 	}
 	if (!resources) return;
 	for (const key of ["coins", "bombs", "keys"] as const)
-		resources[key].textContent = String(clampResource(state.resources[key])).padStart(2, "0");
+		resources[key].textContent = formatResource(state.resources[key]);
 }
