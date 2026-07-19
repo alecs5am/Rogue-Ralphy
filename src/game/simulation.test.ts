@@ -33,6 +33,63 @@ test("normal projectile dies on the rock while spectral and Pinball continue", (
   expect(pinball.projectiles[0]?.vx).toBeGreaterThan(0);
 });
 
+test("Spectral projectile damages two swept targets once each and keeps flying", () => {
+  let game = spawnDummy(createGame(() => 0.9), { x: 600, y: 270 });
+  game = spawnDummy(game, { x: 700, y: 270 });
+  game = setArtifact(game, "spectralBullets", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+
+  game = updateGame(game, idle, 0.5, 1.5);
+
+  expect(game.metrics.hits).toBe(2);
+  expect(game.projectiles).toHaveLength(1);
+  expect(game.projectiles[0]?.hitTargetIds).toEqual(["dummy-1", "dummy-2"]);
+  game = updateGame(game, idle, 0, 1.5);
+  expect(game.metrics.hits).toBe(2);
+});
+
+test("Shotgun splits at the exact travelled distance without consuming another cartridge", () => {
+  let game = setArtifact(createGame(() => 0.9), "shotgun", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  const start = { x: game.projectiles[0]!.x, y: game.projectiles[0]!.y };
+
+  game = updateGame(game, idle, 161 / game.weapon.speed, 1 + 161 / game.weapon.speed);
+
+  expect(game.projectiles).toHaveLength(8);
+  expect(game.projectiles.every((projectile) => projectile.x === game.projectiles[0]!.x && projectile.y === game.projectiles[0]!.y)).toBe(true);
+  expect(Math.hypot(game.projectiles[0]!.x - start.x, game.projectiles[0]!.y - start.y)).toBeCloseTo(160, 10);
+  expect(game.projectiles.every((projectile) => projectile.maxTravel === 128 && projectile.behaviors.split === undefined)).toBe(true);
+  expect(game.reload.ammo).toBe(5);
+  expect(game.metrics).toMatchObject({ triggers: 1, projectiles: 9 });
+
+  game = updateGame(game, idle, 129 / game.weapon.speed, game.time + 129 / game.weapon.speed);
+  expect(game.projectiles).toHaveLength(0);
+  expect(game.metrics.misses).toBe(8);
+});
+
+test("a swept target before the Shotgun threshold is hit before splitting", () => {
+  let game = spawnDummy(createGame(() => 0.9), { x: 600, y: 270 });
+  game = setArtifact(game, "shotgun", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+
+  game = updateGame(game, idle, 0.3, 1.3);
+
+  expect(game.metrics.hits).toBe(1);
+  expect(game.projectiles).toHaveLength(0);
+});
+
+test("Spectral hits before the Shotgun threshold and then splits in the same swept segment", () => {
+  let game = spawnDummy(createGame(() => 0.9), { x: 600, y: 270 });
+  game = setArtifact(setArtifact(game, "spectralBullets", true), "shotgun", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+
+  game = updateGame(game, idle, 0.3, 1.3);
+
+  expect(game.metrics.hits).toBe(1);
+  expect(game.projectiles).toHaveLength(8);
+  expect(game.projectiles.every((projectile) => projectile.behaviors.split === undefined && projectile.penetration?.targets)).toBe(true);
+});
+
 test("uses a 13 by 7 tile field inside one-tile walls", () => {
   const game = createGame(() => 0);
   expect(game.room).toEqual({ width: 960, height: 576, minX: 64, maxX: 896, minY: 64, maxY: 512 });

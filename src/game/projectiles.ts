@@ -26,4 +26,28 @@ export type ProjectileState = {
   remainingBounces: number; bounceRetention: number;
   freezeChance: number; freezeDuration: number;
   homingTurnRate: number; homingRadius: number; behaviors: ProjectileBehaviors; penetration?: PenetrationBehavior; hitTargetIds: string[]; everHit: boolean;
+  travelled: number; maxTravel?: number;
 };
+
+export function splitProjectile(parent: ProjectileState, nextIds: Iterable<string>): ProjectileState[] {
+  const split = parent.behaviors.split;
+  if (!split) return [];
+  const { split: _, ...inheritedBehaviors } = parent.behaviors;
+  const heading = Math.atan2(parent.vy, parent.vx);
+  return Array.from(nextIds).slice(0, split.count).map((id, index) => {
+    const childHeading = heading + Math.PI * 2 * index / split.count;
+    return {
+      ...parent,
+      id,
+      vx: Math.cos(childHeading) * parent.speed,
+      vy: Math.sin(childHeading) * parent.speed,
+      phase: "flight",
+      damage: parent.damage * split.damageScale,
+      behaviors: Object.freeze(inheritedBehaviors),
+      hitTargetIds: [],
+      everHit: false,
+      travelled: 0,
+      maxTravel: split.childRange,
+    };
+  });
+}

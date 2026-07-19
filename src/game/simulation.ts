@@ -1,7 +1,7 @@
 import { createMetrics, recordDamage, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, attemptActiveReload, createReloadState, fireRateBuffAt, startReload, type ReloadState } from "./reload";
 import { buildShot, deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon, type ProjectileSpec } from "./weapon";
-import type { ProjectileState } from "./projectiles";
+import { splitProjectile, type ProjectileState } from "./projectiles";
 import { ROOM, ROOM_PROPS, TILE_SIZE, segmentCircleHitTime, type Point } from "./room";
 
 export { ROOM, TILE_SIZE } from "./room";
@@ -193,6 +193,7 @@ function makeProjectile(spec: ProjectileSpec, state: GameState, aimAngle: number
     penetration: spec.behaviors.penetration,
     hitTargetIds: [],
     everHit: false,
+    travelled: 0,
   };
 }
 
@@ -236,20 +237,27 @@ function reflect(projectile: ProjectileState, nx: number, ny: number): void {
   projectile.vy -= 2 * dot * ny;
   projectile.remainingBounces -= 1;
   projectile.damage *= projectile.bounceRetention;
-  projectile.hitTargetIds = [];
 }
 
-function bounceOffWalls(projectile: ProjectileState, room: GameState["room"]): boolean {
-  let nx = 0;
-  let ny = 0;
-  if (projectile.x - projectile.radius < room.minX) { projectile.x = room.minX + projectile.radius; nx = 1; }
-  else if (projectile.x + projectile.radius > room.maxX) { projectile.x = room.maxX - projectile.radius; nx = -1; }
-  if (projectile.y - projectile.radius < room.minY) { projectile.y = room.minY + projectile.radius; ny = 1; }
-  else if (projectile.y + projectile.radius > room.maxY) { projectile.y = room.maxY - projectile.radius; ny = -1; }
-  if (nx === 0 && ny === 0) return false;
+type WallHit = { time: number; nx: number; ny: number };
+
+function firstWallHit(from: Point, to: Point, radius: number, room: GameState["room"]): WallHit | undefined {
+  const hits: WallHit[] = [];
+  if (to.x < room.minX + radius) hits.push({ time: (room.minX + radius - from.x) / (to.x - from.x), nx: 1, ny: 0 });
+  else if (to.x > room.maxX - radius) hits.push({ time: (room.maxX - radius - from.x) / (to.x - from.x), nx: -1, ny: 0 });
+  if (to.y < room.minY + radius) hits.push({ time: (room.minY + radius - from.y) / (to.y - from.y), nx: 0, ny: 1 });
+  else if (to.y > room.maxY - radius) hits.push({ time: (room.maxY - radius - from.y) / (to.y - from.y), nx: 0, ny: -1 });
+  hits.sort((a, b) => a.time - b.time);
+  const first = hits[0];
+  if (!first) return undefined;
+  const simultaneous = hits.filter((hit) => Math.abs(hit.time - first.time) < 1e-12);
+  return { time: first.time, nx: simultaneous.reduce((total, hit) => total + hit.nx, 0), ny: simultaneous.reduce((total, hit) => total + hit.ny, 0) };
+}
+
+function bounceOffWall(projectile: ProjectileState, hit: WallHit): boolean {
   if (projectile.remainingBounces <= 0) return true;
-  const length = Math.hypot(nx, ny);
-  reflect(projectile, nx / length, ny / length);
+  const length = Math.hypot(hit.nx, hit.ny);
+  reflect(projectile, hit.nx / length, hit.ny / length);
   return false;
 }
 
@@ -270,9 +278,7 @@ function bounceOffTarget(projectile: ProjectileState, target: TargetState): void
   reflect(projectile, nx, ny);
 }
 
-function bounceOffProp(projectile: ProjectileState, prop: (typeof ROOM_PROPS)[number], from: Point, time: number): boolean {
-  projectile.x = from.x + (projectile.x - from.x) * time;
-  projectile.y = from.y + (projectile.y - from.y) * time;
+function bounceOffProp(projectile: ProjectileState, prop: (typeof ROOM_PROPS)[number]): boolean {
   if (projectile.remainingBounces <= 0) return true;
   let nx = projectile.x - prop.x;
   let ny = projectile.y - prop.y;
@@ -371,24 +377,73 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       continue;
     }
     if (projectile.phase === "orbit") { survivingProjectiles.push(projectile); continue; }
-    const from = projectileStarts.get(projectile.id)!;
-    const propHit = projectile.penetration?.obstacles ? undefined : ROOM_PROPS
-      .map((prop) => ({ prop, time: segmentCircleHitTime(from, projectile, prop, prop.collisionRadius + projectile.radius) }))
-      .filter((hit): hit is { prop: (typeof ROOM_PROPS)[number]; time: number } => hit.time !== null)
-      .sort((a, b) => a.time - b.time)[0];
-    if (propHit) {
-      if (bounceOffProp(projectile, propHit.prop, from, propHit.time)) metrics = recordProjectileOutcome(metrics, projectile.everHit);
-      else survivingProjectiles.push(projectile);
-      continue;
-    }
-    if (bounceOffWalls(projectile, state.room)) {
-      metrics = recordProjectileOutcome(metrics, projectile.everHit);
-      continue;
-    }
+    const end = { x: projectile.x, y: projectile.y };
+    let from = projectileStarts.get(projectile.id)!;
+    projectile.x = from.x;
+    projectile.y = from.y;
 
-    let consumed = false;
-    for (const target of targets) {
-      if (target.health <= 0 || projectile.hitTargetIds.includes(target.id) || !overlaps(projectile, target)) continue;
+    while (true) {
+      const segmentDistance = Math.hypot(end.x - from.x, end.y - from.y);
+      const propHit = projectile.penetration?.obstacles ? undefined : ROOM_PROPS
+        .map((prop) => ({ kind: "prop" as const, prop, time: segmentCircleHitTime(from, end, prop, prop.collisionRadius + projectile.radius) }))
+        .filter((hit): hit is { kind: "prop"; prop: (typeof ROOM_PROPS)[number]; time: number } => hit.time !== null)
+        .sort((a, b) => a.time - b.time)[0];
+      const wall = firstWallHit(from, end, projectile.radius, state.room);
+      const wallHit = wall && { kind: "wall" as const, ...wall };
+      const targetHit = targets
+        .filter((target) => target.health > 0 && !projectile.hitTargetIds.includes(target.id))
+        .map((target) => ({ kind: "target" as const, target, time: segmentCircleHitTime(from, end, target, target.radius + projectile.radius) }))
+        .filter((hit): hit is { kind: "target"; target: TargetState; time: number } => hit.time !== null)
+        .sort((a, b) => a.time - b.time)[0];
+      const splitRemaining = (projectile.behaviors.split?.distance ?? Number.POSITIVE_INFINITY) - projectile.travelled;
+      const splitHit = splitRemaining <= segmentDistance
+        ? { kind: "split" as const, time: segmentDistance === 0 ? 0 : Math.max(0, splitRemaining / segmentDistance) }
+        : undefined;
+      const rangeRemaining = (projectile.maxTravel ?? Number.POSITIVE_INFINITY) - projectile.travelled;
+      const rangeHit = rangeRemaining <= segmentDistance
+        ? { kind: "range" as const, time: segmentDistance === 0 ? 0 : Math.max(0, rangeRemaining / segmentDistance) }
+        : undefined;
+      const priorities = { prop: 0, wall: 1, target: 2, split: 3, range: 4 } as const;
+      const event = [propHit, wallHit, targetHit, splitHit, rangeHit]
+        .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined)
+        .sort((a, b) => a.time - b.time || priorities[a.kind] - priorities[b.kind])[0];
+
+      if (!event) {
+        projectile.x = end.x;
+        projectile.y = end.y;
+        projectile.travelled += segmentDistance;
+        survivingProjectiles.push(projectile);
+        break;
+      }
+
+      projectile.x = from.x + (end.x - from.x) * event.time;
+      projectile.y = from.y + (end.y - from.y) * event.time;
+      projectile.travelled += segmentDistance * event.time;
+
+      if (event.kind === "split") {
+        const split = projectile.behaviors.split!;
+        const ids = Array.from({ length: split.count }, () => `projectile-${nextId++}`);
+        const children = splitProjectile(projectile, ids);
+        survivingProjectiles.push(...children);
+        for (const _ of children) metrics = recordProjectile(metrics);
+        break;
+      }
+      if (event.kind === "range") {
+        metrics = recordProjectileOutcome(metrics, projectile.everHit);
+        break;
+      }
+      if (event.kind === "prop") {
+        if (bounceOffProp(projectile, event.prop)) metrics = recordProjectileOutcome(metrics, projectile.everHit);
+        else survivingProjectiles.push(projectile);
+        break;
+      }
+      if (event.kind === "wall") {
+        if (bounceOffWall(projectile, event)) metrics = recordProjectileOutcome(metrics, projectile.everHit);
+        else survivingProjectiles.push(projectile);
+        break;
+      }
+
+      const target = event.target;
       const wasAlive = target.kind === "dummy" || target.health > 0;
       target.health -= projectile.damage;
       if (projectile.freezeChance > 0 && state.rng() < projectile.freezeChance) {
@@ -403,12 +458,18 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       });
       if (wasAlive && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
       projectile.hitTargetIds.push(target.id);
-      if (projectile.remainingBounces > 0) bounceOffTarget(projectile, target);
-      else consumed = true;
+      if (projectile.penetration?.targets) {
+        from = { x: projectile.x, y: projectile.y };
+        continue;
+      }
+      if (projectile.remainingBounces > 0) {
+        bounceOffTarget(projectile, target);
+        survivingProjectiles.push(projectile);
+      } else {
+        metrics = recordProjectileOutcome(metrics, projectile.everHit);
+      }
       break;
     }
-    if (consumed) metrics = recordProjectileOutcome(metrics, projectile.everHit);
-    else survivingProjectiles.push(projectile);
   }
 
   targets = targets.filter((target) => target.kind === "dummy" || target.health > 0);
