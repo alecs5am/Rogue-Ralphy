@@ -17,10 +17,10 @@ test("formats bounded HUD resources with two digits", () => {
 
 test("projects ordered cylinder slots instead of a numeric ammo prefix", () => {
 	const slots = [
-		{ loaded: false, echo: false },
-		{ loaded: true, echo: false },
-		{ loaded: false, echo: false },
-		{ loaded: true, echo: true },
+		{ loaded: false, echo: null },
+		{ loaded: true, echo: null },
+		{ loaded: false, echo: null },
+		{ loaded: true, echo: { delay: 0.12, damageScale: 0.35 } },
 	] as const;
 	expect(slots.map(ammoStateAt)).toEqual([
 		{ src: ASSET_PATHS.ammoEmpty, alt: "Empty cartridge slot" },

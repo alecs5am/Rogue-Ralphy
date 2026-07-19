@@ -150,6 +150,8 @@ test("trigger phase drains fixed-step emissions separately from future wall-cloc
       at: 3,
       generation: 0,
       rootTriggerId: "trigger-future",
+      rootIndex: 2,
+      localOrdinal: 0,
       lineageId: "trigger-future:0",
       effectIds: ["baseRevolver.direct"],
       spec: scheduledSpec,
@@ -182,6 +184,59 @@ test("trigger phase drains fixed-step emissions separately from future wall-cloc
   expect(triggered.projectiles[0]!.activatedEffectIds).toEqual([
     "baseRevolver.direct", "ghostSight.homing", "spectralBullets.penetration", "coldcaster.chill",
   ]);
+});
+
+test("scheduled copies materialize explicit emission provenance", () => {
+  const spec = {
+    heading: 0, damage: 8, speed: 100, radius: 5, lifetime: 2,
+    freezeChance: 0, freezeDuration: 0, bounces: 0, bounceRetention: 1, behaviors: {},
+  } as const;
+  const triggered = resolveTriggerPhase(runtime({
+    now: 2,
+    scheduledProjectiles: [{
+      at: 2,
+      generation: 1,
+      rootTriggerId: "trigger-4",
+      rootIndex: 4,
+      localOrdinal: 9,
+      lineageId: "trigger-4:2",
+      effectIds: ["baseRevolver.direct", "graveEcho.copy"],
+      emission: { artifactId: "graveEcho", effectId: "graveEcho.copy" },
+      spec,
+    }],
+  }), context());
+
+  expect(triggered.projectiles[0]).toMatchObject({
+    generation: 1,
+    rootTriggerId: "trigger-4",
+    lineageId: "trigger-4:2",
+    emission: { artifactId: "graveEcho", effectId: "graveEcho.copy" },
+  });
+});
+
+test("Last Bell initializes live pulse state from materialized bornAt", () => {
+  const triggered = resolveTriggerPhase(runtime({
+    now: 2,
+    scheduledProjectiles: [{
+      at: 1,
+      generation: 0,
+      rootTriggerId: "trigger-bell",
+      rootIndex: 1,
+      localOrdinal: 0,
+      lineageId: "trigger-bell:0",
+      effectIds: ["baseRevolver.direct", "lastBell.round", "lastBell.rings"],
+      spec: {
+        heading: 0, damage: 30, speed: 279, radius: 8, lifetime: 8,
+        freezeChance: 0, freezeDuration: 0, bounces: 0, bounceRetention: 1, behaviors: {},
+        bell: { interval: 0.25, count: 3, radius: 44, damageScale: 0.25 },
+      },
+    }],
+  }), context());
+
+  expect(triggered.projectiles[0]).toMatchObject({
+    bornAt: 2,
+    bellPulse: { nextAt: 2.25, remaining: 3, interval: 0.25, radius: 44, damageScale: 0.25 },
+  });
 });
 
 test("motion and collision preserve a merged corner normal and swept path", () => {
@@ -267,6 +322,49 @@ test("every combat phase is observationally immutable", () => {
   const emitted = unchanged(impacted, (value) => resolveEmissionPhase(value, context()));
   const area = unchanged(emitted, (value) => resolveAreaPhase(value, context()));
   unchanged(area, (value) => resolveKillAndCleanupPhase(value, context()));
+});
+
+test("a live Last Bell pulse deals secondary area damage from its then-current damage", () => {
+  const target = {
+    id: "dummy-bell", kind: "dummy" as const, immortal: true,
+    x: 220, y: 300, radius: 22, health: 1, maxHealth: 1, speed: 0, frozenUntil: 0,
+  };
+  const resolved = resolveAreaPhase(runtime({
+    now: 1.25,
+    projectiles: [projectile({
+      id: "bell", damage: 40, bornAt: 1,
+      bellPulse: { nextAt: 1.25, remaining: 3, interval: 0.25, radius: 44, damageScale: 0.25 },
+    })],
+    targets: [target],
+  }), context());
+
+  expect(resolved.metrics.hitEvents[0]).toMatchObject({
+    source: "area", damage: 10, artifactId: "lastBell", effectId: "lastBell.rings",
+    targetId: "dummy-bell", projectileId: "bell",
+  });
+  expect(resolved.projectiles[0]?.bellPulse).toEqual({
+    nextAt: 1.5, remaining: 2, interval: 0.25, radius: 44, damageScale: 0.25,
+  });
+  expect(resolved.vfxCommands[0]).toMatchObject({ kind: "lastBell.ring", artifactId: "lastBell", x: 200, y: 300 });
+});
+
+test("exact-time physical removal wins before a Last Bell area pulse", () => {
+  const target = {
+    id: "dummy-bell", kind: "dummy" as const, immortal: true,
+    x: 220, y: 300, radius: 22, health: 1, maxHealth: 1, speed: 0, frozenUntil: 0,
+  };
+  const resolved = resolveCombatPhases(runtime({
+    now: 1.25,
+    projectiles: [projectile({
+      id: "bell", bornAt: 1, lifetime: 0.25,
+      bellPulse: { nextAt: 1.25, remaining: 3, interval: 0.25, radius: 44, damageScale: 0.25 },
+    })],
+    targets: [target],
+  }), context({ dt: 0 }));
+
+  expect(resolved.projectiles).toEqual([]);
+  expect(resolved.metrics.hitEvents).toEqual([]);
+  expect(resolved.vfxCommands).toEqual([]);
 });
 
 test("combat runtime rejects nonfinite values unsafe areas duplicate instances and deep kill reactions", () => {

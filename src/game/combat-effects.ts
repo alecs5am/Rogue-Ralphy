@@ -159,6 +159,7 @@ export function sortCombatEvents(events: readonly CombatEvent[]): CombatEvent[] 
 
 const cloneProjectile = (projectile: ProjectileState): ProjectileState => ({
   ...projectile,
+  emission: projectile.emission && { ...projectile.emission },
   activatedEffectIds: [...projectile.activatedEffectIds],
   behaviors: Object.freeze(Object.fromEntries(Object.entries(projectile.behaviors).map(([key, value]) => [
     key,
@@ -168,6 +169,7 @@ const cloneProjectile = (projectile: ProjectileState): ProjectileState => ({
   hitTargetIds: [...projectile.hitTargetIds],
   splitOrigin: projectile.splitOrigin,
   spiralOrigin: projectile.spiralOrigin,
+  bellPulse: projectile.bellPulse && { ...projectile.bellPulse },
 });
 
 const cloneTarget = (target: CombatTargetState): CombatTargetState => ({ ...target });
@@ -201,6 +203,10 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
   }
   for (const scheduled of runtime.scheduledProjectiles) {
     if (scheduled.generation !== 0 && scheduled.generation !== 1) throw new Error("scheduled projectile generation exceeds one");
+    if (!Number.isInteger(scheduled.rootIndex) || scheduled.rootIndex < 0 ||
+        !Number.isInteger(scheduled.localOrdinal) || scheduled.localOrdinal < 0) {
+      throw new Error("scheduled projectile ordering must use nonnegative integers");
+    }
   }
   for (const pending of runtime.pendingEmissions) {
     if (pending.generation !== 1) throw new Error("pending emission generation must be one");
@@ -259,7 +265,11 @@ export function queueEmission(
   const ids = options.nextIds.length > 0
     ? options.nextIds
     : Array.from({ length: rule.count }, (_, index) => `${projectile.id}:emission-${index}`);
-  const templates = splitProjectile(cloneProjectile(projectile), ids).map((child) => Object.freeze(cloneProjectile(child)));
+  const emission = Object.freeze({ artifactId: rule.artifactId, effectId: rule.effectId });
+  const templates = splitProjectile(cloneProjectile(projectile), ids).map((child) => Object.freeze(cloneProjectile({
+    ...child,
+    emission,
+  })));
   return Object.freeze({
     atStep: options.step + 1,
     effectId: rule.effectId,
@@ -288,9 +298,10 @@ function materializeScheduled(
     y: origin.y + Math.sin(aimAngle) * (context.player.radius + spec.radius + 2),
   };
   const spiral = spec.behaviors.spiral;
+  const motionPhase = spec.motionPhase ?? spec.heading;
   const spiralOrigin = spiral ? Object.freeze({ ...muzzle }) : undefined;
   const spiralRadius = spiral?.initialRadius;
-  const spiralAngle = spiral ? spec.heading : undefined;
+  const spiralAngle = spiral ? motionPhase : undefined;
   return {
     id,
     triggerId: scheduled.rootTriggerId,
@@ -298,14 +309,15 @@ function materializeScheduled(
     rootTriggerId: scheduled.rootTriggerId,
     lineageId: scheduled.lineageId,
     activatedEffectIds: [...scheduled.effectIds],
+    emission: scheduled.emission && { ...scheduled.emission },
     originPower: spec.damage,
-    x: muzzle.x + (spiral ? Math.cos(spec.heading) * spiral.initialRadius : 0),
-    y: muzzle.y + (spiral ? Math.sin(spec.heading) * spiral.initialRadius : 0),
+    x: muzzle.x + (spiral ? Math.cos(motionPhase) * spiral.initialRadius : 0),
+    y: muzzle.y + (spiral ? Math.sin(motionPhase) * spiral.initialRadius : 0),
     vx: spiral
-      ? Math.cos(spec.heading) * spiral.radialSpeed - Math.sin(spec.heading) * spiral.angularSpeed * spiral.initialRadius
+      ? Math.cos(motionPhase) * spiral.radialSpeed - Math.sin(motionPhase) * spiral.angularSpeed * spiral.initialRadius
       : Math.cos(spec.heading) * spec.speed,
     vy: spiral
-      ? Math.sin(spec.heading) * spiral.radialSpeed + Math.cos(spec.heading) * spiral.angularSpeed * spiral.initialRadius
+      ? Math.sin(motionPhase) * spiral.radialSpeed + Math.cos(motionPhase) * spiral.angularSpeed * spiral.initialRadius
       : Math.sin(spec.heading) * spec.speed,
     damage: spec.damage,
     speed: spec.speed,
@@ -325,6 +337,14 @@ function materializeScheduled(
     spiralRadius,
     spiralAngle,
     spiralAngularSpeed: spiral?.angularSpeed,
+    launchHeading: spec.heading,
+    bellPulse: spec.bell && {
+      interval: spec.bell.interval,
+      radius: spec.bell.radius,
+      damageScale: spec.bell.damageScale,
+      nextAt: now + spec.bell.interval,
+      remaining: spec.bell.count,
+    },
   };
 }
 
@@ -346,8 +366,11 @@ function materializePending(
         at: now,
         generation: 1,
         rootTriggerId: pending.rootTriggerId,
+        rootIndex: Number.MAX_SAFE_INTEGER,
+        localOrdinal: id,
         lineageId: pending.lineageId,
         effectIds: pending.activatedEffectIds ?? ["baseRevolver.direct", pending.effectId],
+        emission: { artifactId: pending.artifactId, effectId: pending.effectId },
         spec: scheduledSpec,
         aim: spec.heading,
         origin: context.player,
@@ -691,10 +714,51 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
   const current = phaseState(runtime, context);
   const projectiles = current.projectiles.map(cloneProjectile);
   let targets = current.targets.map(cloneTarget);
+  const vfxCommands = [...current.vfxCommands];
+  let nextId = current.nextId;
+  let metrics = current.metrics;
+  for (const projectile of projectiles) {
+    let pulse = projectile.bellPulse;
+    while (pulse && pulse.remaining > 0 && pulse.nextAt <= current.now) {
+      const pulseAt = pulse.nextAt;
+      targets = targets.map((target) => {
+        if ((!target.immortal && target.health <= 0) || Math.hypot(target.x - projectile.x, target.y - projectile.y) > pulse!.radius + target.radius) return target;
+        const damage = projectile.damage * pulse!.damageScale;
+        const damaged = target.immortal ? target : { ...target, health: target.health - damage };
+        metrics = recordDamage(metrics, {
+          source: "area",
+          damage,
+          time: pulseAt,
+          targetId: target.id,
+          artifactId: "lastBell",
+          effectId: "lastBell.rings",
+          rootTriggerId: projectile.rootTriggerId,
+          lineageId: projectile.lineageId,
+          projectileId: projectile.id,
+          killReactionDepth: 0,
+          originPower: projectile.originPower,
+          x: target.x,
+          y: target.y,
+        });
+        if (!damaged.immortal && damaged.kind === "chaser" && damaged.health <= 0) metrics = recordKill(metrics, damaged.id);
+        return damaged;
+      });
+      vfxCommands.push({
+        id: `vfx-${nextId++}`,
+        kind: "lastBell.ring",
+        artifactId: "lastBell",
+        bornAt: current.now,
+        expiresAt: current.now + 0.2,
+        x: projectile.x,
+        y: projectile.y,
+      });
+      pulse = { ...pulse, nextAt: pulse.nextAt + pulse.interval, remaining: pulse.remaining - 1 };
+    }
+    projectile.bellPulse = pulse?.remaining ? pulse : undefined;
+  }
   const links = buildTeslaLinks(projectiles);
   const projectileById = new Map(projectiles.map((projectile) => [projectile.id, projectile]));
   let cooldowns = { ...current.teslaCooldowns };
-  let metrics = current.metrics;
   for (const link of links) {
     const a = projectileById.get(link.a)!;
     const b = projectileById.get(link.b)!;
@@ -734,7 +798,9 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
     projectiles,
     targets,
     areas: current.areas.filter(({ expiresAt }) => expiresAt > current.now),
+    vfxCommands,
     metrics,
+    nextId,
     teslaLinks: links,
     teslaCooldowns: cooldowns,
   };

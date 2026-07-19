@@ -4,7 +4,7 @@ import { compileCombatBuild, type CombatBuild } from "./combat-build";
 import { deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon } from "./weapon";
 import { type ProjectileState, type TeslaLink } from "./projectiles";
 import { ROOM, ROOM_PROPS, TILE_SIZE, type Point } from "./room";
-import { expandTrigger, type ScheduledProjectile } from "./trigger";
+import { expandTrigger, type LocketState, type ScheduledProjectile } from "./trigger";
 import {
   resolveCombatPhases,
   type AreaState,
@@ -42,6 +42,7 @@ export type GameState = {
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; step: number; nextShotAt: number; nextId: number; rootSequence: number; paused: boolean; rng: () => number;
+  dealerCounter: number; locketState: LocketState;
   lastShotAt: number | null; lastHurtAt: number | null; diedAt: number | null;
 };
 
@@ -122,6 +123,8 @@ export function createGame(rng: () => number = Math.random): GameState {
     nextShotAt: 0,
     nextId: 1,
     rootSequence: 0,
+    dealerCounter: 0,
+    locketState: { armed: false, cadence: 0 },
     paused: false,
     lastShotAt: null,
     lastHurtAt: null,
@@ -248,6 +251,8 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   let metrics = state.metrics;
   let scheduledProjectiles = [...state.scheduledProjectiles];
   let rootSequence = state.rootSequence;
+  let dealerCounter = state.dealerCounter;
+  let locketState: LocketState = player.health > 40 ? { armed: false, cadence: 0 } : state.locketState;
   let nextShotAt = state.nextShotAt;
 
   if (canAct && input.firing && !cylinder.reloading && ammoCount(cylinder) > 0 && now >= nextShotAt) {
@@ -259,16 +264,21 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       rootIndex: rootSequence,
       round: consumed.round!,
       aim: aimAngle,
+      aimDistance: Math.hypot(input.aimX - player.x, input.aimY - player.y),
       origin: player,
       now,
       stationaryCharged: false,
       lowHealth: player.health <= 40,
+      dealerCounter,
+      locketState,
       build: state.build,
       weapon,
       rng: state.rng,
     });
     if (trigger.projectiles.length > 0) lastShotAt = now;
     scheduledProjectiles.push(...trigger.projectiles);
+    dealerCounter = trigger.dealerCounter;
+    locketState = trigger.locketState;
     cylinder = consumed.state;
     metrics = recordTrigger(metrics);
     nextShotAt = now + 1 / weapon.fireRate;
@@ -349,6 +359,8 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     nextShotAt,
     nextId: combat.nextId,
     rootSequence,
+    dealerCounter,
+    locketState,
     paused: false,
     lastShotAt,
     lastHurtAt,

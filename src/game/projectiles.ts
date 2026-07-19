@@ -12,8 +12,13 @@ export type SplitBehavior = Readonly<{
   radiusScale: number;
 }>;
 export type PenetrationBehavior = Readonly<{ obstacles: boolean; targets: boolean }>;
+export type ConvergeBehavior = Readonly<{ distance: number; lateralOffset: number }>;
+export type BellDescriptor = Readonly<{ interval: number; count: number; radius: number; damageScale: number }>;
+export type BellPulseState = Readonly<Omit<BellDescriptor, "count"> & { nextAt: number; remaining: number }>;
+export type EmissionProvenance = Readonly<{ artifactId: string; effectId: string }>;
 
 export type ProjectileBehaviors = Readonly<{
+  converge?: ConvergeBehavior;
   spiral?: SpiralBehavior;
   homing?: HomingBehavior;
   tesla?: TeslaBehavior;
@@ -25,12 +30,15 @@ export type ProjectileSpec = {
   triggerId: string; heading: number; damage: number; speed: number; radius: number; lifetime: number;
   freezeChance: number; freezeDuration: number; bounces: number; bounceRetention: number;
   behaviors: ProjectileBehaviors;
+  motionPhase?: number;
+  bell?: BellDescriptor;
 };
 
 export type ProjectileState = {
   x: number; y: number; id: string; triggerId: string; vx: number; vy: number;
   generation: 0 | 1; rootTriggerId: string; lineageId: string;
   activatedEffectIds: readonly string[]; originPower: number;
+  emission?: EmissionProvenance;
   damage: number; speed: number; radius: number; lifetime: number; bornAt: number;
   remainingBounces: number; bounceRetention: number;
   freezeChance: number; freezeDuration: number;
@@ -41,6 +49,8 @@ export type ProjectileState = {
   spiralRadius?: number; spiralAngle?: number; spiralAngularSpeed?: number;
   spiralLaunchPending?: boolean;
   homingTargetId?: string; homingMarkerRemaining?: number;
+  launchHeading?: number;
+  bellPulse?: BellPulseState;
 };
 
 export type TrajectoryTarget = Readonly<{ id: string; x: number; y: number; health: number }>;
@@ -194,6 +204,20 @@ export function advanceTrajectory(projectile: ProjectileState, targets: readonly
   else if (launchSpiral) {
     synchronizeSpiralState(next);
     next.spiralLaunchPending = false;
+  }
+  const converge = next.behaviors.converge;
+  if (dt > 0 && converge) {
+    const progress = (distance: number) => Math.min(1, Math.max(0, distance / converge.distance));
+    const offset = (distance: number) => {
+      const amount = progress(distance);
+      return amount === 0 || amount === 1 ? 0 : converge.lateralOffset * Math.sin(Math.PI * amount);
+    };
+    const before = offset(projectile.travelled);
+    const after = offset(projectile.travelled + next.speed * dt);
+    const heading = next.launchHeading ?? Math.atan2(projectile.vy, projectile.vx);
+    const change = spiral && intendedSpiralAngle !== undefined ? after : after - before;
+    next.x -= Math.sin(heading) * change;
+    next.y += Math.cos(heading) * change;
   }
   return next;
 }

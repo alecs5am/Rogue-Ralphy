@@ -207,35 +207,67 @@ test("root sequence remains monotonic across a metrics reset and resets with the
   expect(resetLab(game).rootSequence).toBe(0);
 });
 
-test("phase two drains due projectiles in stable order and keeps future entries sorted", () => {
+test("Dealer cadence counts only owned accepted roots across dormant time and reloads", () => {
+  let game = setArtifact(createGame(() => 0.9), "dealersCut", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  expect(game.dealerCounter).toBe(1);
+
+  game = setArtifact(game, "dealersCut", false);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1.34);
+  expect(game.dealerCounter).toBe(1);
+
+  game = setArtifact(game, "dealersCut", true);
+  game = updateGame(game, { ...idle, reloadPressed: true }, 0, 1.5);
+  game = updateGame(game, idle, 0, game.cylinder.completesAt);
+  expect(game.dealerCounter).toBe(1);
+
+  game = updateGame(game, { ...idle, firing: true }, 0, game.time + 0.34);
+  expect(game.dealerCounter).toBe(2);
+  game = updateGame(game, { ...idle, firing: true }, 0, game.time + 0.34);
+  expect(game.dealerCounter).toBe(0);
+  expect(game.projectiles.filter(({ rootTriggerId }) => rootTriggerId === `trigger-${game.rootSequence}`)).toHaveLength(3);
+  expect(resetLab(game)).toMatchObject({ dealerCounter: 0, locketState: { armed: false, cadence: 0 } });
+});
+
+test("health above forty clears an armed Locket even while no shot is fired", () => {
+  const game = updateGame({
+    ...setArtifact(createGame(() => 0.9), "lastGaspLocket", true),
+    locketState: { armed: true, cadence: 2 },
+  }, idle, 0, 1);
+  expect(game.locketState).toEqual({ armed: false, cadence: 0 });
+});
+
+test("phase two drains schedules by numeric root and local ordinal instead of lineage strings", () => {
   const game = createGame(() => 0.9);
   const { triggerId: _, ...spec } = buildShot(game.weapon, 0, () => 0.9, "legacy").projectiles[0]!;
-  const scheduled = (at: number, lineageId: string, effectId: string): ScheduledProjectile => ({
+  const scheduled = (at: number, rootIndex: number, localOrdinal: number, lineageId: string): ScheduledProjectile => ({
     at,
     generation: 0,
     rootTriggerId: "trigger-scheduled",
+    rootIndex,
+    localOrdinal,
     lineageId,
-    effectIds: Object.freeze([effectId]),
+    effectIds: Object.freeze([`effect-${rootIndex}-${localOrdinal}`]),
     spec,
   });
   const queued = {
     ...game,
     scheduledProjectiles: [
-      scheduled(3, "z", "future"),
-      scheduled(2, "b", "baseRevolver.direct"),
-      scheduled(2, "a", "later"),
-      scheduled(2, "a", "earlier"),
+      scheduled(3, 1, 0, "future"),
+      scheduled(2, 10, 0, "lineage-a"),
+      scheduled(2, 2, 1, "lineage-z"),
+      scheduled(2, 2, 0, "lineage-z"),
     ],
   };
 
   const drained = updateGame(queued, idle, 0, 2);
 
   expect(drained.projectiles.map(({ lineageId, activatedEffectIds }) => [lineageId, activatedEffectIds[0]])).toEqual([
-    ["a", "earlier"],
-    ["a", "later"],
-    ["b", "baseRevolver.direct"],
+    ["lineage-z", "effect-2-0"],
+    ["lineage-z", "effect-2-1"],
+    ["lineage-a", "effect-10-0"],
   ]);
-  expect(drained.scheduledProjectiles.map(({ at, lineageId }) => [at, lineageId])).toEqual([[3, "z"]]);
+  expect(drained.scheduledProjectiles.map(({ at, lineageId }) => [at, lineageId])).toEqual([[3, "future"]]);
   expect(drained.metrics.projectiles).toBe(3);
 });
 
@@ -250,7 +282,7 @@ test("Tesla Shotgun Spectral Halo and Ghost compose in one deterministic trigger
 
   const afterTrigger = updateGame(game, { ...aim, firing: true }, 0, 1);
   let afterBloom = afterTrigger;
-  for (let tick = 0; tick < 0.5 / STEP; tick += 1) afterBloom = updateGame(afterBloom, aim, STEP, afterBloom.time + STEP);
+  for (let tick = 0; tick < 0.7 / STEP; tick += 1) afterBloom = updateGame(afterBloom, aim, STEP, afterBloom.time + STEP);
 
   expect(afterTrigger.projectiles).toHaveLength(2);
   expect(ammoCount(afterTrigger.cylinder)).toBe(5);
@@ -596,6 +628,26 @@ test("reload intent inside the Deadeye window refills ammo and applies its fire-
   expect(game.weapon.fireRate).toBeCloseTo(baseFireRate * 1.2);
 });
 
+test("a charged Deadeye cartridge schedules its echo after ownership is removed", () => {
+  let game = setArtifact(createGame(() => 0.9), "deadeye", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  game = updateGame(game, { ...idle, reloadPressed: true }, 0, 1.1);
+  const activeAt = (game.cylinder.sweetStart + game.cylinder.sweetEnd) / 2;
+  game = updateGame(game, { ...idle, reloadPressed: true }, 0, activeAt);
+  game = setArtifact(game, "deadeye", false);
+
+  game = updateGame(game, { ...idle, firing: true }, 0, activeAt + 0.01);
+  const root = `trigger-${game.rootSequence}`;
+  expect(game.scheduledProjectiles.filter(({ rootTriggerId, emission }) =>
+    rootTriggerId === root && emission?.artifactId === "deadeye"
+  )).toHaveLength(1);
+
+  game = updateGame(game, idle, 0, activeAt + 0.13);
+  expect(game.projectiles.filter(({ rootTriggerId, generation, emission }) =>
+    rootTriggerId === root && generation === 1 && emission?.artifactId === "deadeye"
+  )).toHaveLength(1);
+});
+
 test("reload intent outside the Deadeye window leaves normal reload intact", () => {
   let game = setArtifact(createGame(() => 0), "deadeye", true);
   const baseFireRate = game.weapon.fireRate;
@@ -910,7 +962,7 @@ test("the catalog composes every artifact effect on a projectile", () => {
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   expect(game.projectiles).toHaveLength(2);
   expect(game.projectiles.every((projectile) =>
-    projectile.damage === 27 && projectile.remainingBounces === 1 &&
+    projectile.damage === 27 * 0.7 * 0.45 * 1.2 && projectile.remainingBounces === 1 &&
     projectile.behaviors.tesla !== undefined && projectile.behaviors.split !== undefined &&
     projectile.penetration?.obstacles === true && projectile.penetration.targets === true,
   )).toBe(true);

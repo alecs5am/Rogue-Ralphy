@@ -25,7 +25,7 @@ test("creates six ordered loaded slots", () => {
   const cylinder = createCylinder(6);
   expect(ammoCount(cylinder)).toBe(6);
   expect(cylinder).toMatchObject({ nextSlot: 0, emptied: [], reloading: false, reloadKind: null });
-  expect([...cylinder.slots]).toEqual(Array.from({ length: 6 }, () => ({ loaded: true, echo: false })));
+  expect([...cylinder.slots]).toEqual(Array.from({ length: 6 }, () => ({ loaded: true, echo: null })));
 });
 
 test("consumes slots circularly and reports ammo before each trigger", () => {
@@ -36,7 +36,7 @@ test("consumes slots circularly and reports ammo before each trigger", () => {
     rounds.push(consumed.round);
     cylinder = consumed.state;
   }
-  expect(rounds).toEqual(Array.from({ length: 6 }, (_, slot) => ({ slot, echo: false, ammoBefore: 6 - slot })));
+  expect(rounds).toEqual(Array.from({ length: 6 }, (_, slot) => ({ slot, echo: null, ammoBefore: 6 - slot })));
   expect(cylinder).toMatchObject({ nextSlot: 0, emptied: [0, 1, 2, 3, 4, 5] });
   expect(consumeRound(cylinder)).toEqual({ state: cylinder, round: null });
 });
@@ -47,7 +47,7 @@ test("completes full and partial reloads with six ordinary rounds", () => {
   expect(empty).toMatchObject({ reloading: true, reloadKind: "automatic", completesAt: 11.5 });
   expect(ammoCount(advanceReload(empty, 11.49))).toBe(0);
   expect(advanceReload(empty, 11.5)).toMatchObject({
-    slots: Array.from({ length: 6 }, () => ({ loaded: true, echo: false })),
+    slots: Array.from({ length: 6 }, () => ({ loaded: true, echo: null })),
     nextSlot: 0,
     emptied: [],
     reloading: false,
@@ -62,7 +62,10 @@ test("successful Deadeye reload fills all slots with echo rounds and preserves b
   const derived = weapon(true);
   const loading = startReload(emptyCylinder(), derived, 10, "automatic");
   const result = attemptActiveReload(loading, derived, 10.75);
-  expect([...result.slots]).toEqual(Array.from({ length: 6 }, () => ({ loaded: true, echo: true })));
+  expect([...result.slots]).toEqual(Array.from({ length: 6 }, () => ({
+    loaded: true,
+    echo: { delay: 0.12, damageScale: 0.35 },
+  })));
   expect(result).toMatchObject({ nextSlot: 0, emptied: [], reloading: false, reloadKind: null, fireRateBuff: 0.2 });
   expect(result.buffUntil).toBeCloseTo(13);
   expect(weapon(true, fireRateBuffAt(result, result.buffUntil - 0.001)).fireRate)
@@ -85,9 +88,16 @@ test("consumes ordered slots and ordinary refunds never restore echo", () => {
   const loading = startReload(emptyCylinder(), derived, 0, "manual");
   const echoed = attemptActiveReload(loading, derived, 0.75);
   const first = consumeRound(echoed);
-  expect(first.round).toMatchObject({ slot: 0, echo: true, ammoBefore: 6 });
+  expect(first.round).toEqual({ slot: 0, echo: { delay: 0.12, damageScale: 0.35 }, ammoBefore: 6 });
   const refunded = refundRound(first.state, "bonanzaClip", 1);
-  expect(refunded.slots[0]).toEqual({ loaded: true, echo: false });
+  expect(refunded.slots[0]).toEqual({ loaded: true, echo: null });
+});
+
+test("consumed echo cartridges keep their charged snapshot after Deadeye ownership changes", () => {
+  const charged = attemptActiveReload(startReload(emptyCylinder(), weapon(true), 0, "manual"), weapon(true), 0.75);
+  const consumed = consumeRound(charged);
+  expect(weapon(false).echo).toBeNull();
+  expect(consumed.round?.echo).toEqual({ delay: 0.12, damageScale: 0.35 });
 });
 
 test("refund preserves circular order and Last Bell follows ammo before trigger", () => {

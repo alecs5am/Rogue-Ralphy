@@ -7,15 +7,21 @@ export type { ProjectileBehaviors, ProjectileSpec } from "./projectiles";
 
 export const BASE_WEAPON = { capacity: 6, damage: 20, fireRate: 3, speed: 620, radius: 5, reloadDuration: 1.5, lifetime: 8 } as const;
 
+export type EchoCartridge = Readonly<{ delay: number; damageScale: number }>;
+export type ProjectileBase = Readonly<Omit<ProjectileSpec, "triggerId" | "heading" | "motionPhase" | "bell">>;
+
 export type DerivedWeapon = {
   capacity: number; damage: number; fireRate: number; speed: number; radius: number;
   reloadDuration: number; lifetime: number; multishot: number; projectileCount: number; spread: number;
   freezeChance: number; freezeDuration: number; bounces: number; bounceRetention: number;
   activeWindow: number; activeBuff: number; activeBuffDuration: number;
+  echo: EchoCartridge | null;
   behaviors: ProjectileBehaviors;
+  projectileBase: ProjectileBase;
 };
 
 const immutableBehaviors = (behaviors: ProjectileBehaviors): ProjectileBehaviors => Object.freeze({
+  ...(behaviors.converge && { converge: Object.freeze({ ...behaviors.converge }) }),
   ...(behaviors.spiral && { spiral: Object.freeze({ ...behaviors.spiral }) }),
   ...(behaviors.homing && { homing: Object.freeze({ ...behaviors.homing }) }),
   ...(behaviors.tesla && { tesla: Object.freeze({ ...behaviors.tesla }) }),
@@ -37,25 +43,16 @@ export function deriveWeapon(build: CombatBuild, fireRateBuff: number): DerivedW
   let activeWindow = 0;
   let activeBuff = 0;
   let activeBuffDuration = 0;
+  let echo: EchoCartridge | null = null;
   let behaviors: ProjectileBehaviors = {};
 
   for (const rule of build.triggers) {
     switch (rule.kind) {
-      case "twin":
-        multishot += 1;
-        spread += 8 * Math.PI / 180;
-        break;
       case "activeReload":
         activeWindow = rule.window;
         activeBuff = rule.buff;
         activeBuffDuration = rule.duration;
-        break;
-      case "fractionalMultishot":
-        multishot += rule.chance;
-        spread += rule.spread;
-        break;
-      case "heavyMainAndMoonlet":
-        radius *= rule.radiusScale;
+        echo = Object.freeze({ delay: rule.echoDelay, damageScale: rule.echoDamageScale });
         break;
       default:
         break;
@@ -113,6 +110,17 @@ export function deriveWeapon(build: CombatBuild, fireRateBuff: number): DerivedW
     } };
   }
 
+  const projectileBase: ProjectileBase = Object.freeze({
+    damage,
+    speed: BASE_WEAPON.speed,
+    radius,
+    lifetime: BASE_WEAPON.lifetime,
+    freezeChance,
+    freezeDuration,
+    bounces,
+    bounceRetention,
+    behaviors: immutableBehaviors(behaviors),
+  });
   const weapon = {
     ...BASE_WEAPON,
     fireRate: BASE_WEAPON.fireRate * (1 + fireRateBuff),
@@ -128,7 +136,9 @@ export function deriveWeapon(build: CombatBuild, fireRateBuff: number): DerivedW
     activeWindow,
     activeBuff,
     activeBuffDuration,
-    behaviors: immutableBehaviors(behaviors),
+    echo,
+    behaviors: projectileBase.behaviors,
+    projectileBase,
   };
   for (const [name, value] of Object.entries(weapon)) {
     if (typeof value === "number" && !Number.isFinite(value)) throw new Error(`derived ${name} must be finite`);
@@ -137,27 +147,6 @@ export function deriveWeapon(build: CombatBuild, fireRateBuff: number): DerivedW
 }
 
 export function buildShot(weapon: DerivedWeapon, aimAngle: number, rng: () => number, triggerId: string): { roundsConsumed: 1; projectiles: ProjectileSpec[] } {
-  const extraChance = weapon.multishot % 1;
-  const count = Math.floor(weapon.multishot) + Number(rng() < extraChance - Number.EPSILON * Math.max(1, weapon.multishot));
-  const projectiles = Array.from({ length: count }, (_, index) => {
-    const heading = weapon.behaviors.spiral
-      ? aimAngle + Math.PI * 2 * index / count
-      : count === 1
-      ? aimAngle
-      : aimAngle - weapon.spread / 2 + weapon.spread * index / (count - 1);
-    return {
-      triggerId,
-      heading,
-      damage: weapon.damage,
-      speed: weapon.speed,
-      radius: weapon.radius,
-      lifetime: weapon.lifetime,
-      freezeChance: weapon.freezeChance,
-      freezeDuration: weapon.freezeDuration,
-      bounces: weapon.bounces,
-      bounceRetention: weapon.bounceRetention,
-      behaviors: immutableBehaviors(weapon.behaviors),
-    };
-  });
-  return { roundsConsumed: 1, projectiles };
+  void rng;
+  return { roundsConsumed: 1, projectiles: [{ triggerId, heading: aimAngle, ...weapon.projectileBase }] };
 }

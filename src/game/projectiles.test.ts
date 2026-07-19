@@ -88,6 +88,23 @@ test("swept projectile candidates retain stable collider point and normal contex
   )).toBeNull();
 });
 
+test("Twin convergence follows plus-or-minus 18 times sine of trajectory progress", () => {
+  const twin = (lateralOffset: number) => teslaProjectile(`twin-${lateralOffset}`, 0, 0, 20, "trigger-twin", {
+    radius: 96, neighbors: 2, damageScale: 0.25, cooldown: 0.15,
+  });
+  const pair = [-18, 18].map((lateralOffset) => ({
+    ...twin(lateralOffset),
+    vx: 100,
+    speed: 100,
+    behaviors: { converge: { distance: 100, lateralOffset } },
+  }));
+
+  const halfway = pair.map((projectile) => advanceTrajectory(projectile, [], 0.5));
+  expect(halfway.map(({ x, y }) => [x, y])).toEqual([[50, -18], [50, 18]]);
+  const converged = halfway.map((projectile) => advanceTrajectory({ ...projectile, travelled: 50 }, [], 0.5));
+  expect(converged.map(({ x, y }) => [x, y])).toEqual([[100, 0], [100, 0]]);
+});
+
 test("Shotgun splits into eight smaller pellets across a 48 degree forward cone", () => {
   let game = setArtifact(createGame(() => 0.9), "shotgun", true);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
@@ -116,7 +133,7 @@ const pelletFor = (ids: readonly ("shotgun" | "bigIron" | "hollowPoint")[]) => {
 
 test.each([
   [["shotgun"], 2.75, 5],
-  [["shotgun", "bigIron"], 3.4375, 5],
+  [["shotgun", "bigIron"], 3.4375, 6],
   [["shotgun", "hollowPoint"], 2.75, 6.75],
 ] as const)("Shotgun scales the current parent for %o", (ids, radius, damage) => {
   const pellet = pelletFor(ids);

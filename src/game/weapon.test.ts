@@ -40,9 +40,9 @@ describe("deriveWeapon", () => {
 
   test("derives the eight unique artifact effects", () => {
     expect(weapon(all)).toMatchObject({
-      projectileCount: 2,
-      spread: 8 * Math.PI / 180,
-      radius: 6.25,
+      projectileCount: 1,
+      spread: 0,
+      radius: 5,
       damage: 27,
       freezeChance: 0.25,
       freezeDuration: 1.05,
@@ -74,12 +74,12 @@ describe("deriveWeapon", () => {
 });
 
 describe("artifact formulas", () => {
-  test("Twin Chamber adds a fixed second projectile", () => {
-    expect(weapon({ twinChamber: true })).toMatchObject({ projectileCount: 2, spread: 8 * Math.PI / 180 });
+  test("Twin Chamber remains neutral until trigger arrangement", () => {
+    expect(weapon({ twinChamber: true })).toMatchObject({ projectileCount: 1, multishot: 1, spread: 0, damage: 20 });
   });
 
-  test("Big Iron sets projectile radius", () => {
-    expect(weapon({ bigIron: true }).radius).toBeCloseTo(6.25);
+  test("Big Iron remains neutral until trigger arrangement", () => {
+    expect(weapon({ bigIron: true })).toMatchObject({ radius: 5, damage: 20, speed: 620 });
   });
 
   test("Hollow Point sets damage", () => {
@@ -95,7 +95,12 @@ describe("artifact formulas", () => {
   });
 
   test("Deadeye applies its fixed active reload effect", () => {
-    expect(weapon({ deadeye: true })).toMatchObject({ activeWindow: 0.12, activeBuff: 0.2, activeBuffDuration: 2.25 });
+    expect(weapon({ deadeye: true })).toMatchObject({
+      activeWindow: 0.12,
+      activeBuff: 0.2,
+      activeBuffDuration: 2.25,
+      echo: { delay: 0.12, damageScale: 0.35 },
+    });
   });
 
   test("Halo Chamber applies a fixed spiral", () => {
@@ -119,17 +124,30 @@ describe("artifact formulas", () => {
 });
 
 describe("buildShot", () => {
-  test("consumes one round while building a spread", () => {
-    const shot = buildShot(weapon({ twinChamber: true }), 0, () => 0, "trigger-test");
+  test("returns one neutral projectile and leaves arrangement to the trigger reducer", () => {
+    let calls = 0;
+    const shot = buildShot(weapon({ twinChamber: true, teslaBullets: true, bigIron: true }), 0, () => { calls += 1; return 0; }, "trigger-test");
     expect(shot.roundsConsumed).toBe(1);
-    expect(shot.projectiles).toHaveLength(2);
-    expect(shot.projectiles[0]!.heading).toBeLessThan(shot.projectiles[1]!.heading);
+    expect(calls).toBe(0);
+    expect(shot.projectiles).toEqual([{
+      triggerId: "trigger-test",
+      heading: 0,
+      damage: 20,
+      speed: 620,
+      radius: 5,
+      lifetime: 8,
+      freezeChance: 0,
+      freezeDuration: 0,
+      bounces: 0,
+      bounceRetention: 0.9,
+      behaviors: { tesla: { radius: 96, neighbors: 2, damageScale: 0.25, cooldown: 0.15 } },
+    }]);
   });
 
-  test("spaces Halo multishot phases evenly around a full revolution", () => {
+  test("keeps Halo heading neutral before trigger phases are assigned", () => {
     const shot = buildShot(weapon({ twinChamber: true, haloChamber: true, teslaBullets: true }), 0, () => 0, "trigger-test");
-    expect(shot.projectiles).toHaveLength(3);
+    expect(shot.projectiles).toHaveLength(1);
     expect(shot.projectiles.every((projectile) => projectile.behaviors.spiral !== undefined)).toBe(true);
-    expect(shot.projectiles.map((projectile) => projectile.heading)).toEqual([0, Math.PI * 2 / 3, Math.PI * 4 / 3]);
+    expect(shot.projectiles.map((projectile) => projectile.heading)).toEqual([0]);
   });
 });

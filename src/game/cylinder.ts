@@ -1,6 +1,6 @@
-import type { DerivedWeapon } from "./weapon";
+import type { DerivedWeapon, EchoCartridge } from "./weapon";
 
-export type CylinderSlot = Readonly<{ loaded: boolean; echo: boolean }>;
+export type CylinderSlot = Readonly<{ loaded: boolean; echo: EchoCartridge | null }>;
 export type CylinderState = Readonly<{
   slots: readonly [CylinderSlot, CylinderSlot, CylinderSlot, CylinderSlot, CylinderSlot, CylinderSlot];
   nextSlot: number;
@@ -15,8 +15,8 @@ export type CylinderState = Readonly<{
   buffUntil: number;
 }>;
 
-const makeSlots = (loaded: number, echo = false): CylinderState["slots"] =>
-  Array.from({ length: 6 }, (_, index) => ({ loaded: index < loaded, echo: index < loaded && echo })) as unknown as CylinderState["slots"];
+const makeSlots = (loaded: number, echo: EchoCartridge | null = null): CylinderState["slots"] =>
+  Array.from({ length: 6 }, (_, index) => ({ loaded: index < loaded, echo: index < loaded ? echo : null })) as unknown as CylinderState["slots"];
 
 export function createCylinder(ammo = 6): CylinderState {
   return {
@@ -62,10 +62,10 @@ export function advanceReload(state: CylinderState, now: number): CylinderState 
 }
 
 export function attemptActiveReload(state: CylinderState, weapon: DerivedWeapon, now: number): CylinderState {
-  if (!state.reloading || weapon.activeWindow <= 0 || now < state.sweetStart || now > state.sweetEnd) return state;
+  if (!state.reloading || weapon.activeWindow <= 0 || !weapon.echo || now < state.sweetStart || now > state.sweetEnd) return state;
   return {
     ...state,
-    slots: makeSlots(6, true),
+    slots: makeSlots(6, weapon.echo),
     nextSlot: 0,
     emptied: [],
     reloading: false,
@@ -75,7 +75,7 @@ export function attemptActiveReload(state: CylinderState, weapon: DerivedWeapon,
   };
 }
 
-export type ConsumedRound = Readonly<{ slot: number; echo: boolean; ammoBefore: number }>;
+export type ConsumedRound = Readonly<{ slot: number; echo: EchoCartridge | null; ammoBefore: number }>;
 
 export function consumeRound(state: CylinderState): Readonly<{ state: CylinderState; round: ConsumedRound | null }> {
   const offset = Array.from({ length: 6 }, (_, index) => index)
@@ -84,7 +84,7 @@ export function consumeRound(state: CylinderState): Readonly<{ state: CylinderSt
   const slot = (state.nextSlot + offset) % 6;
   const consumed = state.slots[slot]!;
   const slots = state.slots.slice() as CylinderSlot[];
-  slots[slot] = { loaded: false, echo: false };
+  slots[slot] = { loaded: false, echo: null };
   return {
     state: {
       ...state,
@@ -108,7 +108,7 @@ export function refundRound(
   if (slot === undefined) return state;
   const wasEmpty = ammoCount(state) === 0;
   const slots = state.slots.slice() as CylinderSlot[];
-  slots[slot] = { loaded: true, echo: false };
+  slots[slot] = { loaded: true, echo: null };
   return {
     ...state,
     slots: slots as unknown as CylinderState["slots"],

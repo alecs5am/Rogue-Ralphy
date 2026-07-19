@@ -8,7 +8,6 @@ import {
 import { compileCombatBuild } from "./combat-build";
 import { buildShot, deriveWeapon } from "./weapon";
 
-const degrees = Math.PI / 180;
 const IDS = [
   "twinChamber", "deadeye", "lastBell", "graveEcho", "fanThePhantom", "dealersCut",
   "haloChamber", "ghostSight", "pinball", "wailingLead", "undertakersReturn", "cometSpur",
@@ -83,38 +82,20 @@ describe("artifact catalog", () => {
   });
 });
 
-describe("probabilistic multishot", () => {
+describe("trigger-owned multishot", () => {
   const weapon = (loadout: Parameters<typeof compileCombatBuild>[0]) => deriveWeapon(compileCombatBuild(loadout), 0);
 
-  test("Tesla uses a fresh 33 percent roll and fans a successful pair across eight degrees", () => {
+  test("Tesla remains neutral until the trigger reducer owns its single roll", () => {
     const tesla = weapon({ teslaBullets: true });
-    expect(tesla.multishot).toBeCloseTo(1.33);
-    expect(tesla.spread).toBeCloseTo(8 * degrees);
-
-    const proc = buildShot(tesla, 0, () => 0.329, "trigger-a").projectiles;
-    expect(proc).toHaveLength(2);
-    expect(proc[0]!.heading).toBeCloseTo(-4 * degrees);
-    expect(proc[1]!.heading).toBeCloseTo(4 * degrees);
-
-    const miss = buildShot(tesla, 0, () => 0.33, "trigger-b").projectiles;
-    expect(miss).toHaveLength(1);
-    expect(miss[0]!.heading).toBe(0);
-    expect(buildShot(tesla, 0, () => 0.99, "trigger-c").projectiles).toHaveLength(1);
+    expect(tesla.multishot).toBe(1);
+    expect(tesla.spread).toBe(0);
+    expect(buildShot(tesla, 0, () => 0.329, "trigger-a").projectiles).toHaveLength(1);
   });
 
-  test("Twin Chamber and Tesla preserve current additive multishot and spread", () => {
+  test("Twin Chamber and Tesla cannot arrange the legacy buildShot path", () => {
     const combined = weapon({ twinChamber: true, teslaBullets: true });
-    expect(combined.multishot).toBeCloseTo(2.33);
-    expect(combined.spread).toBeCloseTo(16 * degrees);
-
-    const proc = buildShot(combined, 0, () => 0.2, "trigger-a").projectiles;
-    expect(proc.map(({ heading }) => heading)).toHaveLength(3);
-    expect(proc[0]!.heading).toBeCloseTo(-8 * degrees);
-    expect(proc[1]!.heading).toBeCloseTo(0);
-    expect(proc[2]!.heading).toBeCloseTo(8 * degrees);
-
-    const miss = buildShot(combined, 0, () => 0.8, "trigger-b").projectiles;
-    expect(miss[0]!.heading).toBeCloseTo(-8 * degrees);
-    expect(miss[1]!.heading).toBeCloseTo(8 * degrees);
+    expect(combined.multishot).toBe(1);
+    expect(combined.spread).toBe(0);
+    expect(buildShot(combined, 0, () => 0.2, "trigger-a").projectiles.map(({ heading }) => heading)).toEqual([0]);
   });
 });
