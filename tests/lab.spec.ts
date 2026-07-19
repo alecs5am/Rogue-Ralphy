@@ -21,13 +21,62 @@ const SIGNATURE_ARTIFACTS = [
 	["haloChamber", "Halo Chamber"],
 	["ghostSight", "Ghost Sight"],
 ] as const;
-type RenderProbe = { teslaOffsets: number[]; impactDraws: number };
+type RenderProbe = {
+	teslaOffsets: number[];
+	impactDraws: number;
+	atlasCells: { col: number; row: number }[];
+	soulDraws: number;
+};
+type AnimationDraw = {
+	path: string;
+	col?: number;
+	row?: number;
+	a: number;
+	b: number;
+	c: number;
+	d: number;
+};
+type AnimationProbe = { draws: AnimationDraw[] };
+
+async function installAnimationProbe(
+	page: import("@playwright/test").Page,
+): Promise<void> {
+	await page.addInitScript(() => {
+		const probe: AnimationProbe = { draws: [] };
+		(window as typeof window & { __animationProbe: AnimationProbe }).__animationProbe = probe;
+		const original = CanvasRenderingContext2D.prototype.drawImage;
+		CanvasRenderingContext2D.prototype.drawImage = function (
+			this: CanvasRenderingContext2D,
+			...args: Parameters<typeof original>
+		) {
+			const source = args[0];
+			if (source instanceof HTMLImageElement && probe.draws.length < 20_000) {
+				const path = new URL(source.currentSrc || source.src).pathname;
+				const transform = this.getTransform();
+				const draw: AnimationDraw = {
+					path,
+					a: transform.a,
+					b: transform.b,
+					c: transform.c,
+					d: transform.d,
+				};
+				if (path.endsWith("/ralphy/ralphy-atlas.png") && args.length === 9) {
+					draw.col = Number(args[1]) / 128;
+					draw.row = Number(args[2]) / 128;
+				}
+				probe.draws.push(draw);
+			}
+			return Reflect.apply(original, this, args);
+		} as typeof original;
+	});
+}
 
 test("catalog telemetry", async ({ page }) => {
 	await page.goto("/");
 	await expect(page.locator("[data-artifact]")).toHaveCount(11);
 	await page.getByRole("button", { name: "Take Tesla Bullets" }).click();
 	await expect(page.locator('[data-stat="multishot"]')).toContainText("1.33×");
+	await expect(page.locator('[data-stat="spread"]')).toHaveText("8°");
 	await expect(page.locator('[data-stat="tesla"]')).toHaveText(
 		"96 px radius · max 2 links · 25% damage · 0.15s cooldown",
 	);
@@ -70,6 +119,102 @@ test("imagegen combat hud", async ({ page }) => {
 	})).toBe(0);
 });
 
+test("loads only the animated Ralphy combat pack", async ({ page }) => {
+	const requests: string[] = [];
+	page.on("request", (request) => {
+		const path = new URL(request.url()).pathname;
+		if (path.startsWith("/assets/generated/")) requests.push(path);
+	});
+
+	await page.goto("/");
+	await expect(page.locator("#asset-diagnostics")).toContainText("All generated assets loaded");
+	expect(requests).toEqual(expect.arrayContaining([
+		"/assets/generated/ralphy/ralphy-atlas.png",
+		"/assets/generated/ralphy/ghost-revolver.png",
+		"/assets/generated/effects/soul-projectile.png",
+		"/assets/generated/effects/muzzle-flash.png",
+	]));
+	expect(requests.some((path) =>
+		/\/ralphy\/(down|up|left|right)-(idle|move)\.png$/.test(path)
+			|| path.endsWith("/revolver.png")
+			|| path.endsWith("/effects/bullet.png"))).toBe(false);
+});
+
+test("draws right-facing fire reload and round soul frames", async ({ page }) => {
+	await installAnimationProbe(page);
+	await page.goto("/");
+	const canvas = page.locator("#game");
+	const box = await canvas.boundingBox();
+	if (!box) throw new Error("game canvas is not visible");
+
+	await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.5);
+	await page.mouse.down();
+	await page.waitForTimeout(100);
+	await page.mouse.up();
+
+	await expect.poll(async () => page.evaluate(() => {
+		const probe = (window as typeof window & { __animationProbe: AnimationProbe }).__animationProbe;
+		return probe.draws.some(({ row }) => row === 2);
+	})).toBe(true);
+
+	await page.keyboard.press("r");
+	await page.waitForTimeout(1_150);
+	const draws = await page.evaluate(() =>
+		(window as typeof window & { __animationProbe: AnimationProbe }).__animationProbe.draws);
+	const atlas = draws.filter(({ path }) => path.endsWith("/ralphy/ralphy-atlas.png"));
+	expect(atlas.some(({ row, col, a }) => row === 2 && (col === 8 || col === 9) && a < 0)).toBe(true);
+	expect(new Set(atlas.filter(({ row }) => row === 3).map(({ col }) => col))).toEqual(new Set([8, 9, 10]));
+	expect(draws.some(({ path }) => path.endsWith("/muzzle-flash.png"))).toBe(true);
+	expect(draws.some(({ path }) => path.endsWith("/soul-projectile.png"))).toBe(true);
+	expect(draws.filter(({ path }) => path.endsWith("/soul-projectile.png"))
+		.every(({ b, c }) => Math.abs(b) < 1e-10 && Math.abs(c) < 1e-10)).toBe(true);
+});
+
+test("shows hurt then holds death until the laboratory resets", async ({ page }) => {
+	await page.addInitScript(() => { Math.random = () => 0; });
+	await installAnimationProbe(page);
+	await page.goto("/");
+	await page.getByRole("button", { name: "Spawn chaser" }).click();
+
+	await page.keyboard.down("w");
+	await page.keyboard.down("a");
+	await expect(page.locator('[data-stat="health"]')).not.toHaveText("100/100", { timeout: 10_000 });
+	await page.keyboard.up("w");
+	await page.keyboard.up("a");
+	await expect(page.locator('[data-stat="health"]')).toHaveText("0/100", { timeout: 10_000 });
+
+	await page.waitForTimeout(500);
+	let atlas = await page.evaluate(() =>
+		(window as typeof window & { __animationProbe: AnimationProbe }).__animationProbe.draws
+			.filter(({ path }) => path.endsWith("/ralphy/ralphy-atlas.png")));
+	expect(atlas.some(({ row }) => row === 4)).toBe(true);
+	expect(new Set(atlas.filter(({ row }) => row === 5).map(({ col }) => col))).toEqual(new Set([0, 1, 2, 3]));
+	expect(atlas.at(-1)).toMatchObject({ row: 5, col: 3 });
+
+	const ammo = await page.locator('[data-stat="ammo"]').textContent();
+	await page.keyboard.down("d");
+	await page.mouse.down();
+	await page.keyboard.press("r");
+	await page.waitForTimeout(300);
+	await page.mouse.up();
+	await page.keyboard.up("d");
+	await expect(page.locator('[data-stat="health"]')).toHaveText("0/100");
+	await expect(page.locator('[data-stat="ammo"]')).toHaveText(ammo ?? "6/6");
+
+	atlas = await page.evaluate(() =>
+		(window as typeof window & { __animationProbe: AnimationProbe }).__animationProbe.draws
+			.filter(({ path }) => path.endsWith("/ralphy/ralphy-atlas.png")));
+	expect(atlas.at(-1)).toMatchObject({ row: 5, col: 3 });
+
+	await page.getByRole("button", { name: "Reset lab" }).click();
+	await expect(page.locator('[data-stat="health"]')).toHaveText("100/100");
+	await expect.poll(async () => page.evaluate(() => {
+		const atlasDraws = (window as typeof window & { __animationProbe: AnimationProbe }).__animationProbe.draws
+			.filter(({ path }) => path.endsWith("/ralphy/ralphy-atlas.png"));
+		return atlasDraws.at(-1)?.row;
+	})).toBe(0);
+});
+
 for (const reducedMotion of [false, true]) {
 	test(`combines all five signature effects${reducedMotion ? " with reduced motion" : ""}`, async ({ page }) => {
 		const errors: string[] = [];
@@ -90,7 +235,12 @@ for (const reducedMotion of [false, true]) {
 		await page.emulateMedia({ reducedMotion: reducedMotion ? "reduce" : "no-preference" });
 		await page.addInitScript(() => {
 			Math.random = () => 0;
-			const probe: RenderProbe = { teslaOffsets: [], impactDraws: 0 };
+			const probe: RenderProbe = {
+				teslaOffsets: [],
+				impactDraws: 0,
+				atlasCells: [],
+				soulDraws: 0,
+			};
 			(window as typeof window & { __renderProbe: RenderProbe }).__renderProbe = probe;
 			const original = CanvasRenderingContext2D.prototype.drawImage;
 			CanvasRenderingContext2D.prototype.drawImage = function (
@@ -104,6 +254,10 @@ for (const reducedMotion of [false, true]) {
 						probe.teslaOffsets.push(Number(args[1]));
 					}
 					if (path.endsWith("/impact.png")) probe.impactDraws += 1;
+					if (path.endsWith("/ralphy/ralphy-atlas.png") && args.length === 9) {
+						probe.atlasCells.push({ col: Number(args[1]) / 128, row: Number(args[2]) / 128 });
+					}
+					if (path.endsWith("/soul-projectile.png")) probe.soulDraws += 1;
 				}
 				return Reflect.apply(original, this, args);
 			} as typeof original;
@@ -154,6 +308,10 @@ for (const reducedMotion of [false, true]) {
 			expect(probe.teslaOffsets.length).toBeGreaterThan(0);
 			expect(probe.teslaOffsets.every((offset) => offset % 24 === 0)).toBe(true);
 			expect(probe.impactDraws).toBe(0);
+			expect(probe.atlasCells.filter(({ row }) => row === 0 || row === 1)
+				.every(({ col }) => col % 4 === 0)).toBe(true);
+			expect(probe.atlasCells.some(({ row }) => row === 2)).toBe(true);
+			expect(probe.soulDraws).toBeGreaterThan(0);
 		}
 		expect(errors).toEqual([]);
 	});
