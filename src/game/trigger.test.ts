@@ -2,8 +2,16 @@ import { expect, test } from "bun:test";
 import type { ArtifactLoadout } from "./artifacts";
 import { compileCombatBuild } from "./combat-build";
 import { createCylinder, consumeRound } from "./cylinder";
-import { expandTrigger, type TriggerContext } from "./trigger";
+import type { ProjectileSpec } from "./projectiles";
+import { expandTrigger, type ScheduledProjectile, type TriggerContext } from "./trigger";
 import { deriveWeapon } from "./weapon";
+
+function scheduledSpecRejectsLegacyIdentity(legacySpec: ProjectileSpec) {
+  // @ts-expect-error triggerId belongs to the root schedule, never its projectile spec
+  const scheduledSpec: ScheduledProjectile["spec"] = legacySpec;
+  return scheduledSpec;
+}
+void scheduledSpecRejectsLegacyIdentity;
 
 type ContextOptions = Partial<TriggerContext> & { loadout?: ArtifactLoadout };
 

@@ -24,7 +24,7 @@ export type ScheduledProjectile = Readonly<{
   rootTriggerId: string;
   lineageId: string;
   effectIds: readonly string[];
-  spec: Readonly<Omit<ProjectileSpec, "triggerId">>;
+  spec: Readonly<Omit<ProjectileSpec, "triggerId"> & { triggerId?: never }>;
   origin?: Point;
   aim?: number;
 }>;
