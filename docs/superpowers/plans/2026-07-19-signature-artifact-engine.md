@@ -348,6 +348,8 @@ git commit -m "feat: compile stable artifact combat rules"
 - Modify: `src/game/simulation.ts`
 - Modify: `src/game/simulation.test.ts`
 - Modify: `src/game/presentation.ts`
+- Modify: `src/main.ts`
+- Modify: `src/lab.ts`
 - Modify: `src/hud.ts`
 - Modify: `src/hud.test.ts`
 - Delete: `src/game/reload.ts`
@@ -355,7 +357,7 @@ git commit -m "feat: compile stable artifact combat rules"
 
 **Interfaces:**
 
-- Produces: `CylinderState`, `createCylinder`, `startReload`, `advanceReload`, `attemptActiveReload`, `consumeRound`, `refundRound`, `ammoCount`, and `fireRateBuffAt`.
+- Produces: `CylinderState`, `createCylinder`, `startReload`, `advanceReload`, `attemptActiveReload`, `consumeRound`, `refundRound`, `ammoCount`, `fireRateBuffAt`, and `GameState.cylinder`.
 - Consumes: `DerivedWeapon.capacity/reloadDuration/activeWindow/activeBuff/activeBuffDuration`.
 
 - [ ] **Step 1: Write failing cylinder tests**
@@ -418,7 +420,7 @@ Full reload writes six ordinary slots, resets `nextSlot = 0`, and applies six ec
 
 - [ ] **Step 4: Migrate simulation, presentation, and HUD**
 
-Replace all `reload.ammo` reads with `ammoCount(state.cylinder)`, derive ammo tiles from ordered `slots`, and add a generated-asset key hook for the later echo overlay without creating temporary SVG/CSS art.
+Rename `GameState.reload` to `GameState.cylinder` and migrate its direct projections in `simulation.ts`, `presentation.ts`, `main.ts`, `lab.ts`, and `hud.ts`. Replace all numeric ammo reads with `ammoCount(state.cylinder)`, derive ammo tiles from ordered `slots`, and add a generated-asset key hook for the later echo overlay without creating temporary SVG/CSS art. DOM identifiers such as `#reload` remain unchanged.
 
 - [ ] **Step 5: Run tests and remove the old module**
 
@@ -426,7 +428,7 @@ Run:
 
 ```bash
 bun test src/game/cylinder.test.ts src/game/simulation.test.ts src/game/presentation.test.ts src/hud.test.ts
-rg 'from "./reload"|reload\.ammo' src
+rg 'from "./reload"|state\.reload|reload\.ammo' src
 ```
 
 Expected: tests PASS and `rg` returns no matches. Then delete `reload.ts` and `reload.test.ts`.
@@ -434,7 +436,7 @@ Expected: tests PASS and `rg` returns no matches. Then delete `reload.ts` and `r
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/game/cylinder.ts src/game/cylinder.test.ts src/game/simulation.ts src/game/simulation.test.ts src/game/presentation.ts src/hud.ts src/hud.test.ts src/game/reload.ts src/game/reload.test.ts
+git add src/game/cylinder.ts src/game/cylinder.test.ts src/game/simulation.ts src/game/simulation.test.ts src/game/presentation.ts src/main.ts src/lab.ts src/hud.ts src/hud.test.ts src/game/reload.ts src/game/reload.test.ts
 git commit -m "feat: model ordered revolver cylinder"
 ```
 
