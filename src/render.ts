@@ -2,10 +2,11 @@ import type { AssetKey, Assets } from "./assets";
 import type { GameState, Point } from "./game/simulation";
 
 type RenderOptions = { moving: boolean; reducedMotion: boolean };
+const RALPHY_SIZE = 80;
 const props: { key: AssetKey; x: number; y: number; size: number }[] = [
-	{ key: "rock", x: 170, y: 130, size: 64 },
-	{ key: "crate", x: 790, y: 392, size: 58 },
-	{ key: "labMarker", x: 478, y: 105, size: 52 },
+	{ key: "rock", x: 160, y: 160, size: 64 },
+	{ key: "crate", x: 800, y: 416, size: 58 },
+	{ key: "labMarker", x: 480, y: 96, size: 52 },
 ];
 
 const round = (value: number) => Math.round(value);
@@ -162,9 +163,9 @@ function drawPlayer(
 		context,
 		assets,
 		ralphyKey(state, options.moving),
-		state.player.x - 48,
-		state.player.y - 55 + bob,
-		96,
+		state.player.x - RALPHY_SIZE / 2,
+		state.player.y - 46 + bob,
+		RALPHY_SIZE,
 	);
 	const aim = Math.atan2(
 		state.aim.y - state.player.y,

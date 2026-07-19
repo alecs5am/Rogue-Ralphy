@@ -43,7 +43,7 @@ button {
 	display: block;
 	width: 100%;
 	height: auto;
-	aspect-ratio: 16 / 9;
+	aspect-ratio: 5 / 3;
 	image-rendering: pixelated;
 	cursor: crosshair;
 	touch-action: none;

@@ -132,7 +132,9 @@ for (const viewport of [
 		const canvas = page.locator("#game");
 		const box = await canvas.boundingBox();
 		if (!box) throw new Error("game canvas is not visible");
-		expect(box.width / box.height).toBeCloseTo(16 / 9, 2);
+		expect(box.width / box.height).toBeCloseTo(5 / 3, 2);
+		await expect(canvas).toHaveAttribute("width", "960");
+		await expect(canvas).toHaveAttribute("height", "576");
 		expect(
 			await canvas.evaluate((element) => getComputedStyle(element).imageRendering),
 		).toBe("pixelated");
