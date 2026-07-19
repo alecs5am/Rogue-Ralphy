@@ -205,11 +205,18 @@ function turnToward(current: number, desired: number, limit: number): number {
 function advanceProjectile(projectile: ProjectileState, state: GameState, input: InputIntent, dt: number): ProjectileState {
   const next = { ...projectile, hitTargetIds: [...projectile.hitTargetIds] };
   if (next.phase === "orbit") {
-    next.orbitElapsed += dt;
-    next.orbitAngle += Math.PI * 2 * dt;
+    const angleDelta = Math.PI * 2 * dt;
+    const orbitDistance = Math.abs(angleDelta * next.orbitRadius);
+    const splitRemaining = (next.behaviors.split?.distance ?? Number.POSITIVE_INFINITY) - next.travelled;
+    const rangeRemaining = (next.maxTravel ?? Number.POSITIVE_INFINITY) - next.travelled;
+    const travelled = Math.max(0, Math.min(orbitDistance, splitRemaining, rangeRemaining));
+    const fraction = orbitDistance === 0 ? 1 : travelled / orbitDistance;
+    next.orbitElapsed += dt * fraction;
+    next.orbitAngle += angleDelta * fraction;
     next.x = state.player.x + Math.cos(next.orbitAngle) * next.orbitRadius;
     next.y = state.player.y + Math.sin(next.orbitAngle) * next.orbitRadius;
-    if (next.orbitElapsed < next.orbitDuration) return next;
+    next.travelled += travelled;
+    if (fraction < 1 || next.orbitElapsed < next.orbitDuration) return next;
     const heading = Math.atan2(input.aimY - state.player.y, input.aimX - state.player.x);
     next.phase = "flight";
     next.vx = Math.cos(heading) * next.speed;
@@ -350,7 +357,16 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
 
   const movingState = { ...state, player, targets: state.targets };
   const projectileStarts = new Map(projectiles.map((projectile) => [projectile.id, { x: projectile.x, y: projectile.y }]));
+  const projectilePhases = new Map(projectiles.map((projectile) => [projectile.id, projectile.phase]));
   projectiles = projectiles.map((projectile) => advanceProjectile(projectile, movingState, input, dt));
+  for (const projectile of projectiles) {
+    if (projectilePhases.get(projectile.id) === "orbit" && projectile.phase === "flight") {
+      projectileStarts.set(projectile.id, {
+        x: player.x + Math.cos(projectile.orbitAngle) * projectile.orbitRadius,
+        y: player.y + Math.sin(projectile.orbitAngle) * projectile.orbitRadius,
+      });
+    }
+  }
   let targets = state.targets.map((target) => {
     if (target.kind !== "chaser" || now < target.frozenUntil) return { ...target };
     const dx = player.x - target.x;
@@ -371,12 +387,24 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   }
 
   const survivingProjectiles: ProjectileState[] = [];
+  const addSplitChildren = (projectile: ProjectileState) => {
+    const split = projectile.behaviors.split!;
+    const children = splitProjectile(projectile, Array.from({ length: split.count }, () => `projectile-${nextId++}`));
+    survivingProjectiles.push(...children);
+    for (const _ of children) metrics = recordProjectile(metrics);
+  };
   for (const projectile of projectiles) {
     if (now - projectile.bornAt >= projectile.lifetime) {
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
       continue;
     }
-    if (projectile.phase === "orbit") { survivingProjectiles.push(projectile); continue; }
+    if (projectile.phase === "orbit") {
+      const tolerance = Number.EPSILON * 128 * Math.max(1, projectile.travelled);
+      if (projectile.behaviors.split && projectile.travelled >= projectile.behaviors.split.distance - tolerance) addSplitChildren(projectile);
+      else if (projectile.maxTravel !== undefined && projectile.travelled >= projectile.maxTravel - tolerance) metrics = recordProjectileOutcome(metrics, projectile.everHit);
+      else survivingProjectiles.push(projectile);
+      continue;
+    }
     const end = { x: projectile.x, y: projectile.y };
     let from = projectileStarts.get(projectile.id)!;
     projectile.x = from.x;
@@ -406,7 +434,11 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       const priorities = { prop: 0, wall: 1, target: 2, split: 3, range: 4 } as const;
       const event = [propHit, wallHit, targetHit, splitHit, rangeHit]
         .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined)
-        .sort((a, b) => a.time - b.time || priorities[a.kind] - priorities[b.kind])[0];
+        .sort((a, b) => {
+          const difference = a.time - b.time;
+          const tolerance = Number.EPSILON * 128 * Math.max(1, Math.abs(a.time), Math.abs(b.time));
+          return Math.abs(difference) <= tolerance ? priorities[a.kind] - priorities[b.kind] : difference;
+        })[0];
 
       if (!event) {
         projectile.x = end.x;
@@ -421,11 +453,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       projectile.travelled += segmentDistance * event.time;
 
       if (event.kind === "split") {
-        const split = projectile.behaviors.split!;
-        const ids = Array.from({ length: split.count }, () => `projectile-${nextId++}`);
-        const children = splitProjectile(projectile, ids);
-        survivingProjectiles.push(...children);
-        for (const _ of children) metrics = recordProjectile(metrics);
+        addSplitChildren(projectile);
         break;
       }
       if (event.kind === "range") {

@@ -90,6 +90,44 @@ test("Spectral hits before the Shotgun threshold and then splits in the same swe
   expect(game.projectiles.every((projectile) => projectile.behaviors.split === undefined && projectile.penetration?.targets)).toBe(true);
 });
 
+test("Halo orbital arc counts toward the Shotgun split distance", () => {
+  let game = setArtifact(setArtifact(createGame(() => 0.9), "haloChamber", true), "shotgun", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+
+  game = moveForTicks(game, idle, 101);
+  expect(game.projectiles).toHaveLength(1);
+  expect(game.projectiles[0]).toMatchObject({ phase: "orbit" });
+  expect(game.projectiles[0]!.travelled).toBeCloseTo(Math.PI * 2 * 30 * 101 / 120, 10);
+
+  game = moveForTicks(game, idle, 1);
+  const splitAngle = 160 / 30;
+  expect(game.projectiles).toHaveLength(8);
+  expect(game.projectiles[0]!.x).toBeCloseTo(game.player.x + Math.cos(splitAngle) * 30, 10);
+  expect(game.projectiles[0]!.y).toBeCloseTo(game.player.y + Math.sin(splitAngle) * 30, 10);
+});
+
+test("physical collision wins a floating-point tie with a diagonal Shotgun split", () => {
+  const angle = Math.PI / 3;
+  const direction = { x: Math.cos(angle), y: Math.sin(angle) };
+  let game = createGame(() => 0.9);
+  game = spawnDummy(game, {
+    x: game.player.x + direction.x * 212,
+    y: game.player.y + direction.y * 212,
+  });
+  game = setArtifact(game, "shotgun", true);
+  const aim = {
+    ...idle,
+    aimX: game.player.x + direction.x * 100,
+    aimY: game.player.y + direction.y * 100,
+  };
+  game = updateGame(game, { ...aim, firing: true }, 0, 1);
+
+  game = updateGame(game, aim, 161 / game.weapon.speed, 1 + 161 / game.weapon.speed);
+
+  expect(game.metrics.hits).toBe(1);
+  expect(game.projectiles).toHaveLength(0);
+});
+
 test("uses a 13 by 7 tile field inside one-tile walls", () => {
   const game = createGame(() => 0);
   expect(game.room).toEqual({ width: 960, height: 576, minX: 64, maxX: 896, minY: 64, maxY: 512 });
