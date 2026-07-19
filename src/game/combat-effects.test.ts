@@ -125,6 +125,51 @@ test("generation-one cannot queue another emission", () => {
     .toThrow("generation-one projectile cannot emit");
 });
 
+test("materialized Shotgun children reset live convergence before their first cone step", () => {
+  const composed = compileCombatBuild({ shotgun: true, twinChamber: true });
+  const split = composed.emissions.find(({ effectId }) => effectId === "shotgun.split")!;
+  if (split.kind !== "splitCone") throw new Error("expected Shotgun split rule");
+  const parent = projectile({
+    x: 300,
+    y: 300,
+    vx: 100,
+    speed: 100,
+    travelled: 160,
+    activatedEffectIds: ["baseRevolver.direct", "twinChamber.converge", "shotgun.split"],
+    behaviors: {
+      split: {
+        distance: split.distance, count: split.count, childRange: split.range,
+        damageScale: split.damageScale, fanAngle: split.angle, radiusScale: split.radiusScale,
+      },
+      converge: { distance: 240, lateralOffset: 18 },
+    },
+    motionRules: composed.motions,
+    converge: { side: 1, distance: 240 },
+    convergeOffset: 16.8,
+    convergeDone: false,
+  });
+  const pending = queueEmission(parent, split, {
+    step: 0,
+    nextIds: Array.from({ length: 8 }, (_, index) => `pellet-${index}`),
+  });
+  const materialized = resolveTriggerPhase(runtime({
+    now: 1,
+    step: 1,
+    pendingEmissions: [pending],
+  }), context({ dt: 0, build: composed, props: [] }));
+
+  expect(materialized.projectiles).toHaveLength(8);
+  expect(materialized.projectiles.every((child) => child.convergeOffset === 0 && child.convergeDone === false)).toBe(true);
+  expect(materialized.projectiles.every((child) => child.converge?.side === 1 && child.converge.distance === 240)).toBe(true);
+
+  const starts = new Map(materialized.projectiles.map((child) => [child.id, { x: child.x, y: child.y }]));
+  const moved = resolveMotionPhase(materialized, context({ dt: 1 / 120, build: composed, props: [] }));
+  for (const child of moved.projectiles) {
+    const start = starts.get(child.id)!;
+    expect(Math.hypot(child.x - start.x, child.y - start.y)).toBeCloseTo(100 / 120, 1);
+  }
+});
+
 test("trigger phase drains fixed-step emissions separately from future wall-clock schedules", () => {
   const spec: ProjectileSpec = {
     triggerId: "trigger-pending",
@@ -540,6 +585,27 @@ test("Wailing Lead collision follows the canonical sine polyline instead of its 
     eventTime: 0.5,
     point: { x: 236, y: 322 },
   });
+});
+
+test("partial-lifetime paths keep event times normalized to the original fixed step", () => {
+  const target = {
+    id: "partial-life-target", kind: "dummy" as const, x: 20, y: 0, radius: 0,
+    health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0,
+  };
+  const fixedStep = context({
+    dt: 0.5,
+    props: [],
+    room: { minX: -1_000, maxX: 1_000, minY: -1_000, maxY: 1_000 },
+  });
+  const moved = resolveMotionPhase(runtime({
+    now: 0.5,
+    projectiles: [projectile({ x: 0, y: 0, radius: 0, lifetime: 0.25, bornAt: 0 })],
+    targets: [target],
+  }), fixedStep);
+  const events = collectCombatEvents(moved, fixedStep).events;
+
+  expect(events.find(({ kind }) => kind === "target")?.eventTime).toBeCloseTo(0.4, 12);
+  expect(events.find(({ kind }) => kind === "lifetime")?.eventTime).toBeCloseTo(0.5, 12);
 });
 
 test("Spectral Undertaker hits once on each exact outbound and return leg", () => {

@@ -281,7 +281,11 @@ function projectileSpec(projectile: ProjectileState): ProjectileSpec {
 export function queueEmission(
   projectile: ProjectileState,
   rule: EmissionRule,
-  options: Readonly<{ step: number; nextIds: readonly string[] }> = { step: 0, nextIds: [] },
+  options: Readonly<{
+    step: number;
+    nextIds: readonly string[];
+    emissionEffectIds?: readonly string[];
+  }> = { step: 0, nextIds: [] },
 ): PendingEmission {
   if (projectile.generation === 1) throw new Error("generation-one projectile cannot emit");
   if (rule.kind !== "splitCone" || !projectile.behaviors.split) throw new Error("projectile has no compatible emission");
@@ -289,10 +293,13 @@ export function queueEmission(
     ? options.nextIds
     : Array.from({ length: rule.count }, (_, index) => `${projectile.id}:emission-${index}`);
   const emission = Object.freeze({ artifactId: rule.artifactId, effectId: rule.effectId });
+  const creationEffectIds = new Set(options.emissionEffectIds ?? [rule.effectId]);
+  const activatedEffectIds = Object.freeze(projectile.activatedEffectIds.filter((effectId) => !creationEffectIds.has(effectId)));
   const templates = splitProjectile(cloneProjectile(projectile), ids).map((child) => Object.freeze(cloneProjectile({
     ...child,
     emission,
-    activatedEffectIds: child.activatedEffectIds.filter((effectId) => effectId !== rule.effectId),
+    activatedEffectIds,
+    bellPulse: undefined,
   })));
   return Object.freeze({
     atStep: options.step + 1,
@@ -303,7 +310,7 @@ export function queueEmission(
     generation: 1,
     originPower: projectile.originPower,
     specs: Object.freeze(templates.map(projectileSpec)),
-    activatedEffectIds: Object.freeze(projectile.activatedEffectIds.filter((effectId) => effectId !== rule.effectId)),
+    activatedEffectIds,
     templates: Object.freeze(templates),
   });
 }
@@ -413,6 +420,8 @@ function materializePending(
       outboundHitTargetIds: [],
       returnHitTargetIds: [],
       everHit: false,
+      convergeOffset: template.converge || template.behaviors.converge ? 0 : undefined,
+      convergeDone: false,
       homingTargetId: undefined,
       homingMarkerRemaining: 0,
       relayTargetId: undefined,
@@ -497,14 +506,15 @@ export function resolveMotionPhase(runtime: CombatRuntime | CombatPhaseState, co
     ));
     const motionNow = current.now - context.dt + liveDuration;
     const result = applyMotionRules(projectile, context.trajectoryTargets ?? current.targets, liveDuration, motionNow);
+    const timeScale = context.dt === 0 ? 1 : liveDuration / context.dt;
     result.path.forEach((path, index) => segments.push({
       projectileId: projectile.id,
       index,
       from: path.from,
       to: path.to,
       distance: path.endDistance - path.startDistance,
-      startTime: path.startTime,
-      endTime: path.endTime,
+      startTime: path.startTime * timeScale,
+      endTime: path.endTime * timeScale,
       liveDuration,
       expiresAfterMove: index === result.path.length - 1
         && (current.now - projectile.bornAt >= projectile.lifetime || result.expired),
@@ -766,7 +776,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     projectile.travelled = segment.startTravelled + segment.distance * localTime;
     projectile.radius = event.radius ?? segment.startRadius + (segment.endRadius - segment.startRadius) * localTime;
     projectile.damage = event.damage ?? segment.startDamage + (segment.endDamage - segment.startDamage) * localTime;
-    const segmentDuration = (segment.endTime - segment.startTime) * segment.liveDuration;
+    const segmentDuration = (segment.endTime - segment.startTime) * context.dt;
     if (segmentDuration > 0) {
       projectile.vx = (segment.to.x - segment.from.x) / segmentDuration;
       projectile.vy = (segment.to.y - segment.from.y) / segmentDuration;
@@ -932,7 +942,11 @@ export function resolveEmissionPhase(runtime: CombatRuntime | CombatPhaseState, 
   for (const request of current.emissionRequests) {
     const count = request.rule.kind === "splitCone" ? request.rule.count : 0;
     const nextIds = Array.from({ length: count }, () => `projectile-${nextId++}`);
-    pending.push(queueEmission(request.projectile, request.rule, { step: current.step, nextIds }));
+    pending.push(queueEmission(request.projectile, request.rule, {
+      step: current.step,
+      nextIds,
+      emissionEffectIds: context.build.emissions.map(({ effectId }) => effectId),
+    }));
   }
   return { ...current, pendingEmissions: pending, nextId, emissionRequests: [] };
 }

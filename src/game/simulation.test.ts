@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ammoCount } from "./cylinder";
+import { ammoCount, createCylinder } from "./cylinder";
 import { ARTIFACT_CATALOG } from "./artifacts";
 import { clampResource, clearTargets, createGame, resetLab, setArtifact, setArtifactLoadout, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
 import { ROOM_PROPS } from "./room";
@@ -1063,4 +1063,35 @@ test("materialized Shotgun children reset motion state and use fresh Comet basel
   const grown = applyMotionRules(child, [], 0.5, child.bornAt + 0.5).projectile;
   expect(grown.damage).toBeCloseTo(child.damage * 1.175, 10);
   expect(grown.radius).toBeCloseTo(child.radius * 1.25, 10);
+});
+
+test("last-round Shotgun children strip creation state without multiplying Bell rings", () => {
+  let game = createGame(() => 0.9);
+  for (const id of ["shotgun", "lastBell", "ghostSight", "coldcaster", "spectralBullets"] as const) {
+    game = setArtifact(game, id, true);
+  }
+  game = { ...game, cylinder: createCylinder(1) };
+  game = updateGame(game, { ...idle, firing: true }, 0, 0);
+  for (let tick = 0; tick < 240 && game.pendingEmissions.length === 0; tick += 1) {
+    game = updateGame(game, idle, STEP, game.time + STEP);
+  }
+  expect(game.pendingEmissions).toHaveLength(1);
+
+  game = updateGame(game, idle, 0, game.time);
+
+  const emissionIds = new Set(game.build.emissions.map(({ effectId }) => effectId));
+  expect(game.projectiles).toHaveLength(8);
+  for (const child of game.projectiles) {
+    expect(child.bellPulse).toBeUndefined();
+    expect(child.activatedEffectIds.some((effectId) => emissionIds.has(effectId))).toBe(false);
+    expect(child.activatedEffectIds).toEqual(expect.arrayContaining([
+      "baseRevolver.direct",
+      "ghostSight.homing",
+      "coldcaster.chill",
+      "spectralBullets.penetration",
+    ]));
+  }
+
+  game = updateGame(game, idle, 0.75 - game.time, 0.75);
+  expect(game.vfxCommands.filter(({ kind }) => kind === "lastBell.ring")).toEqual([]);
 });

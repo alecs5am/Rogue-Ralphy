@@ -312,7 +312,10 @@ export function applyMotionRules(
     : duration;
   const startSpeedFactor = current.cometSpeedFactor ?? (comet ? factorAt(startAge, comet.duration, comet.speedScale) : 1);
   const estimatedDistance = current.speed / startSpeedFactor * baseIntegral;
-  const waveSlices = wave ? Math.ceil(Math.abs(estimatedDistance * 2 * Math.PI / wave.wavelength) / (Math.PI / 8)) : 1;
+  const waveDistanceBound = comet
+    ? current.speed / startSpeedFactor * Math.max(startSpeedFactor, factorAt(startAge + duration, comet.duration, comet.speedScale)) * duration
+    : estimatedDistance;
+  const waveSlices = wave ? Math.ceil(Math.abs(waveDistanceBound * 2 * Math.PI / wave.wavelength) / (Math.PI / 8)) : 1;
   const spiralSlices = spiral && !launchSpiral
     ? Math.ceil(Math.abs((current.spiralAngularSpeed ?? spiral.angularSpeed) * duration) / (Math.PI / 8))
     : 1;

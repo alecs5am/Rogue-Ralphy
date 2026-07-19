@@ -80,6 +80,20 @@ test("Wailing Lead uses stable sibling phase and bounded deterministic tessellat
   expect(root.path.every((segment) => segment.endWavePhase! - segment.startWavePhase! <= Math.PI / 8 + 1e-12)).toBe(true);
 });
 
+test("Wailing Lead bounds every accelerated Comet slice by actual wave-phase advance", () => {
+  const result = applyMotionRules(projectile({
+    vx: 620,
+    speed: 620,
+    motionRules: [ROW_TWO[3], ROW_TWO[5]],
+    wavePhase: 0,
+  }), [], 1, 1);
+
+  expect(result.path.length).toBeGreaterThan(1);
+  for (const segment of result.path) {
+    expect(segment.endWavePhase! - segment.startWavePhase!).toBeLessThanOrEqual(Math.PI / 8 + 1e-12);
+  }
+});
+
 test("Comet Spur integrates speed and applies spawn-baseline factors without compounding", () => {
   const comet = ROW_TWO[5];
   const half = applyMotionRules(projectile({ motionRules: [comet] }), [], 0.5, 0.5).projectile;
