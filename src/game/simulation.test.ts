@@ -165,6 +165,34 @@ test("wave uses one RNG sample and creates five non-overlapping chasers", () => 
       expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(a.radius + b.radius);
     }
   }
+  for (const target of game.targets) {
+    expect(target.x - target.radius).toBeGreaterThanOrEqual(game.room.minX);
+    expect(target.x + target.radius).toBeLessThanOrEqual(game.room.maxX);
+    expect(target.y - target.radius).toBeGreaterThanOrEqual(game.room.minY);
+    expect(target.y + target.radius).toBeLessThanOrEqual(game.room.maxY);
+  }
+});
+
+test("artifact setter rejects legacy numeric values without changing valid ownership behavior", () => {
+  const game = createGame(() => 0);
+  expect(() => setArtifact(game, "twinChamber", 2 as unknown as boolean)).toThrow("artifact enabled must be boolean");
+  expect(setArtifact(game, "twinChamber", true).artifacts).toEqual({ twinChamber: true });
+  expect(setArtifact(setArtifact(game, "twinChamber", true), "twinChamber", false).artifacts).toEqual({});
+});
+
+test("player movement clamps its circle within every room boundary", () => {
+  const game = createGame(() => 0);
+  const cases = [
+    { input: { moveX: -1, moveY: 0 }, axis: "x", bound: game.room.minX + game.player.radius },
+    { input: { moveX: 1, moveY: 0 }, axis: "x", bound: game.room.maxX - game.player.radius },
+    { input: { moveX: 0, moveY: -1 }, axis: "y", bound: game.room.minY + game.player.radius },
+    { input: { moveX: 0, moveY: 1 }, axis: "y", bound: game.room.maxY - game.player.radius },
+  ] as const;
+
+  for (const { input, axis, bound } of cases) {
+    const moved = updateGame(game, { ...idle, ...input }, 10, 10);
+    expect(moved.player[axis]).toBe(bound);
+  }
 });
 
 test("all artifacts compose on every projectile", () => {

@@ -16,7 +16,26 @@ const all: ArtifactLoadout = {
 describe("deriveWeapon", () => {
   test("starts with a six-round unmodified revolver", () => {
     const weapon = deriveWeapon(none, 0);
-    expect(weapon).toMatchObject({ capacity: 6, damage: 20, fireRate: 3, projectileCount: 1, reloadDuration: 1.5 });
+    expect(weapon).toMatchObject({
+      capacity: 6,
+      damage: 20,
+      fireRate: 3,
+      projectileCount: 1,
+      reloadDuration: 1.5,
+      spread: 0,
+      radius: 5,
+      freezeChance: 0,
+      freezeDuration: 0,
+      bounces: 0,
+      bounceRetention: 0.9,
+      activeWindow: 0,
+      activeBuff: 0,
+      activeBuffDuration: 0,
+      orbitDuration: 0,
+      orbitRadius: 0,
+      homingTurnRate: 0,
+      homingRadius: 0,
+    });
   });
 
   test("derives the eight unique artifact effects", () => {

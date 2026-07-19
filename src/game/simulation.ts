@@ -99,6 +99,7 @@ export function createGame(rng: () => number = Math.random): GameState {
 }
 
 export function setArtifact(state: GameState, id: ArtifactId, enabled: boolean): GameState {
+  if (typeof enabled !== "boolean") throw new Error("artifact enabled must be boolean");
   const artifacts = { ...state.artifacts };
   if (enabled) artifacts[id] = true;
   else delete artifacts[id];
