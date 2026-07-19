@@ -1,7 +1,7 @@
 import { createMetrics, recordDamage, recordKill, recordProjectile, recordProjectileOutcome, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, attemptActiveReload, createReloadState, fireRateBuffAt, startReload, type ReloadState } from "./reload";
 import { buildShot, deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon, type ProjectileSpec } from "./weapon";
-import { advanceTrajectory, splitProjectile, synchronizeSpiralState, type ProjectileState } from "./projectiles";
+import { advanceTrajectory, buildTeslaLinks, splitProjectile, synchronizeSpiralState, type ProjectileState, type TeslaLink } from "./projectiles";
 import { ROOM, ROOM_PROPS, TILE_SIZE, segmentCircleHitTime, type Point } from "./room";
 
 export { ROOM, TILE_SIZE } from "./room";
@@ -28,6 +28,7 @@ export type GameState = {
   room: { width: number; height: number; minX: number; maxX: number; minY: number; maxY: number };
   player: PlayerState; aim: Point; artifacts: ArtifactLoadout; weapon: DerivedWeapon;
   reload: ReloadState; projectiles: ProjectileState[]; targets: TargetState[];
+  teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; nextShotAt: number; nextId: number; paused: boolean; rng: () => number;
 };
@@ -93,6 +94,8 @@ export function createGame(rng: () => number = Math.random): GameState {
     reload: createReloadState(weapon),
     projectiles: [],
     targets: [],
+    teslaLinks: [],
+    teslaCooldowns: {},
     metrics,
     telemetry: summarizeMetrics(metrics, 0),
     time: 0,
@@ -486,10 +489,35 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   }
 
   targets = targets.filter((target) => target.kind === "dummy" || target.health > 0);
+  const teslaLinks = buildTeslaLinks(survivingProjectiles);
+  const projectileById = new Map(survivingProjectiles.map((projectile) => [projectile.id, projectile]));
+  let teslaCooldowns = { ...state.teslaCooldowns };
+  for (const link of teslaLinks) {
+    const a = projectileById.get(link.a)!;
+    const b = projectileById.get(link.b)!;
+    for (const target of targets) {
+      if (target.health <= 0 || segmentCircleHitTime(a, b, target, target.radius) === null) continue;
+      const cooldownKey = `${link.id}:${target.id}`;
+      if (now < (teslaCooldowns[cooldownKey] ?? 0)) continue;
+      const damage = Math.min(a.damage, b.damage) * 0.25;
+      const wasAlive = target.kind === "dummy" || target.health > 0;
+      target.health -= damage;
+      metrics = recordDamage(metrics, {
+        source: "tesla", damage, time: now, targetId: target.id, artifactId: "teslaBullets",
+        x: target.x, y: target.y,
+      });
+      if (wasAlive && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
+      teslaCooldowns[cooldownKey] = now + 0.15;
+    }
+  }
+  targets = targets.filter((target) => target.kind === "dummy" || target.health > 0);
+  const activeCooldownKeys = new Set(teslaLinks.flatMap((link) => targets.map((target) => `${link.id}:${target.id}`)));
+  teslaCooldowns = Object.fromEntries(Object.entries(teslaCooldowns)
+    .filter(([key, nextAllowedAt]) => nextAllowedAt > now || activeCooldownKeys.has(key)));
   metrics = retainTargetMetrics(metrics, targets.map((target) => target.id));
   const telemetry = summarizeMetrics(metrics, now);
   return {
-    ...state, player, aim, weapon, reload, projectiles: survivingProjectiles, targets, metrics, telemetry,
+    ...state, player, aim, weapon, reload, projectiles: survivingProjectiles, targets, teslaLinks, teslaCooldowns, metrics, telemetry,
     time: now, nextShotAt, nextId, paused: false,
   };
 }

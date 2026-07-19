@@ -23,6 +23,18 @@ function fireThroughRock(game: ReturnType<typeof createGame>, artifacts: { spect
   return updateGame(game, { ...idle, aimX: rock.x, aimY: rock.y }, 0.6, 1.6);
 }
 
+function teslaArcAcrossDummy(endpointDamage: readonly [number, number] = [20, 20]) {
+  let game = spawnDummy(createGame(() => 0.9), { x: 600, y: 270 });
+  game = setArtifact(setArtifact(game, "twinChamber", true), "teslaBullets", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  return {
+    ...game,
+    projectiles: game.projectiles.map((projectile, index) => ({
+      ...projectile, x: index === 0 ? 560 : 640, y: 270, vx: 0, vy: 0, damage: endpointDamage[index]!,
+    })),
+  };
+}
+
 test("normal projectile dies on the rock while spectral and Pinball continue", () => {
   const normal = fireThroughRock(createGame(() => 0.9), {});
   const spectral = fireThroughRock(createGame(() => 0.9), { spectralBullets: true });
@@ -46,6 +58,31 @@ test("Spectral projectile damages two swept targets once each and keeps flying",
   expect(game.projectiles[0]?.hitTargetIds).toEqual(["dummy-1", "dummy-2"]);
   game = updateGame(game, idle, 0, 1.5);
   expect(game.metrics.hits).toBe(2);
+});
+
+test("Tesla deals 25 percent of the lower endpoint damage on a 150ms cooldown", () => {
+  const game = teslaArcAcrossDummy([20, 8]);
+
+  const first = updateGame(game, idle, 0, 1);
+  const blocked = updateGame(first, idle, 0, 1.1);
+  const ready = updateGame(blocked, idle, 0, 1.16);
+
+  expect(first.telemetry.totalDamage).toBe(2);
+  expect(blocked.telemetry.totalDamage).toBe(2);
+  expect(ready.telemetry.totalDamage).toBe(4);
+  expect(ready.telemetry).toMatchObject({ hits: 0, secondaryHits: 2, successfulProjectiles: 0 });
+});
+
+test("Tesla stores current links and prunes expired cooldowns after an endpoint disappears", () => {
+  const game = teslaArcAcrossDummy();
+
+  const linked = updateGame(game, idle, 0, 1);
+  expect(linked.teslaLinks).toHaveLength(1);
+  expect(Object.keys(linked.teslaCooldowns)).toHaveLength(1);
+
+  const disconnected = updateGame({ ...linked, projectiles: [] }, idle, 0, 1.16);
+  expect(disconnected.teslaLinks).toEqual([]);
+  expect(disconnected.teslaCooldowns).toEqual({});
 });
 
 test("Shotgun splits at the exact travelled distance without consuming another cartridge", () => {

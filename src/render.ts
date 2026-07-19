@@ -123,7 +123,35 @@ function drawProjectiles(
 	context: CanvasRenderingContext2D,
 	state: GameState,
 	assets: Assets,
+	reducedMotion: boolean,
 ): void {
+	const projectiles = new Map(state.projectiles.map((projectile) => [projectile.id, projectile]));
+	for (const link of state.teslaLinks) {
+		const a = projectiles.get(link.a);
+		const b = projectiles.get(link.b);
+		if (!a || !b) continue;
+		const angle = Math.atan2(b.y - a.y, b.x - a.x);
+		context.save();
+		context.translate(round(a.x), round(a.y));
+		context.rotate(angle);
+		context.beginPath();
+		context.rect(0, -6, round(link.distance), 12);
+		context.clip();
+		context.globalAlpha = 0.7;
+		const texture = assets.images.orbitTrail;
+		if (texture) {
+			const phase = reducedMotion ? 0 : (state.time * 72) % 24;
+			for (let x = -phase; x < link.distance; x += 24) context.drawImage(texture, round(x), -6, 24, 12);
+		} else {
+			context.strokeStyle = "#8fe9ff";
+			context.lineWidth = 4;
+			context.beginPath();
+			context.moveTo(0, 0);
+			context.lineTo(round(link.distance), 0);
+			context.stroke();
+		}
+		context.restore();
+	}
 	for (const projectile of state.projectiles) {
 		const size = Math.max(10, projectile.radius * 4.2);
 		if (projectile.behaviors.spiral) {
@@ -198,7 +226,7 @@ function drawDamage(
 			18 -
 			(reducedMotion ? 0 : age * 28);
 		context.globalAlpha = Math.max(0, 1 - age / 0.7);
-		centeredImage(context, assets, "impact", point, 34);
+		if (!reducedMotion) centeredImage(context, assets, "impact", point, 34);
 		context.fillStyle = "#f5f5f4";
 		context.fillText(`${Math.round(event.damage)}`, round(point.x), round(y));
 	}
@@ -255,7 +283,7 @@ export function renderGame(
 			prop.size,
 		);
 	drawTargets(context, state, assets);
-	drawProjectiles(context, state, assets);
+	drawProjectiles(context, state, assets, options.reducedMotion);
 	drawPlayer(context, state, assets, options);
 	drawDamage(context, state, assets, options.reducedMotion);
 	drawCanvasHud(context, state, assets);

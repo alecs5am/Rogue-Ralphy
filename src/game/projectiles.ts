@@ -31,6 +31,31 @@ export type ProjectileState = {
 };
 
 export type TrajectoryTarget = Readonly<{ id: string; x: number; y: number; health: number }>;
+export type TeslaLink = Readonly<{ id: string; a: string; b: string; distance: number }>;
+
+export function buildTeslaLinks(projectiles: readonly ProjectileState[]): TeslaLink[] {
+  const teslaProjectiles = projectiles
+    .filter((projectile) => projectile.behaviors.tesla)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const candidates: TeslaLink[] = [];
+  for (let first = 0; first < teslaProjectiles.length; first += 1) {
+    for (let second = first + 1; second < teslaProjectiles.length; second += 1) {
+      const a = teslaProjectiles[first]!;
+      const b = teslaProjectiles[second]!;
+      const distance = Math.hypot(a.x - b.x, a.y - b.y);
+      if (distance <= 96) candidates.push({ id: `${a.id}:${b.id}`, a: a.id, b: b.id, distance });
+    }
+  }
+  candidates.sort((a, b) => a.distance - b.distance || a.id.localeCompare(b.id));
+
+  const degrees = new Map<string, number>();
+  return candidates.filter(({ a, b }) => {
+    if ((degrees.get(a) ?? 0) >= 2 || (degrees.get(b) ?? 0) >= 2) return false;
+    degrees.set(a, (degrees.get(a) ?? 0) + 1);
+    degrees.set(b, (degrees.get(b) ?? 0) + 1);
+    return true;
+  });
+}
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 

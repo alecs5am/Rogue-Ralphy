@@ -1,9 +1,36 @@
 import { expect, test } from "bun:test";
 import { createGame, setArtifact, spawnDummy, updateGame } from "./simulation";
-import { splitProjectile } from "./projectiles";
+import { buildTeslaLinks, splitProjectile, type ProjectileState } from "./projectiles";
 import { segmentCircleHitTime } from "./room";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
+
+const teslaProjectile = (id: string, x: number, y: number, damage: number, triggerId = id): ProjectileState => ({
+  id, triggerId, x, y, damage, vx: 0, vy: 0, speed: 0, radius: 6, lifetime: 8, bornAt: 0,
+  remainingBounces: 0, bounceRetention: 1, freezeChance: 0, freezeDuration: 0,
+  behaviors: { tesla: { radius: 96, neighbors: 2, damageScale: 0.25, cooldown: 0.15 } },
+  hitTargetIds: [], everHit: false, travelled: 0,
+});
+
+test("Tesla links each projectile to at most two nearest neighbors within 96 pixels", () => {
+  const links = buildTeslaLinks([
+    teslaProjectile("a", 0, 0, 20, "first"),
+    teslaProjectile("b", 30, 0, 20, "second"),
+    teslaProjectile("c", 60, 0, 10, "third"),
+    teslaProjectile("d", 200, 0, 20, "fourth"),
+  ]);
+  const degrees = new Map<string, number>();
+  for (const { a, b } of links) {
+    degrees.set(a, (degrees.get(a) ?? 0) + 1);
+    degrees.set(b, (degrees.get(b) ?? 0) + 1);
+  }
+
+  expect(links.every(({ distance }) => distance <= 96)).toBe(true);
+  expect(new Set(links.map(({ id }) => id)).size).toBe(links.length);
+  expect([...degrees.values()].every((degree) => degree <= 2)).toBe(true);
+  expect(links.some(({ a, b }) => a === "d" || b === "d")).toBe(false);
+  expect(links.map(({ id }) => id)).toEqual(["a:b", "b:c", "a:c"]);
+});
 
 test("segmentCircleHitTime finds a swept hit and rejects a miss", () => {
   expect(segmentCircleHitTime({ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 10, y: 2 }, 3)).toBeCloseTo(0.3882, 3);
