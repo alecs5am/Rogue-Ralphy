@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { ARTIFACT_CATALOG } from "./artifacts";
 import { clearTargets, createGame, resetLab, setArtifact, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
 import { ROOM_PROPS } from "./room";
 
@@ -526,14 +527,18 @@ test("pause preserves velocity and reset clears it", () => {
   expect(resetLab(moving).player).toMatchObject({ vx: 0, vy: 0 });
 });
 
-test("all artifacts compose on every projectile", () => {
+test("the catalog composes every artifact effect on a projectile", () => {
   let game = createGame(() => 0.5);
-  for (const id of ["twinChamber", "bigIron", "hollowPoint", "coldcaster", "pinball", "deadeye", "haloChamber", "ghostSight"] as const) {
+  for (const { id } of ARTIFACT_CATALOG) {
     game = setArtifact(game, id, true);
   }
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
   expect(game.projectiles).toHaveLength(2);
-  expect(game.projectiles.every((projectile) => projectile.damage === 27 && projectile.remainingBounces === 1)).toBe(true);
+  expect(game.projectiles.every((projectile) =>
+    projectile.damage === 27 && projectile.remainingBounces === 1 &&
+    projectile.behaviors.tesla !== undefined && projectile.behaviors.split !== undefined &&
+    projectile.penetration?.obstacles === true && projectile.penetration.targets === true,
+  )).toBe(true);
 });
 
 test("taking an owned artifact again cannot strengthen it", () => {

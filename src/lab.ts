@@ -1,4 +1,5 @@
 import { ASSET_PATHS, type AssetKey } from "./assets";
+import { ARTIFACT_CATALOG } from "./game/artifacts";
 import { resetMetrics, summarizeMetrics } from "./game/metrics";
 import {
 	clearTargets,
@@ -12,31 +13,6 @@ import {
 import type { ArtifactId } from "./game/weapon";
 
 type StateAccess = { get: () => GameState; set: (state: GameState) => void };
-type Artifact = { id: Extract<ArtifactId, AssetKey>; name: string; note: string };
-
-export const ARTIFACTS: Artifact[] = [
-	{
-		id: "twinChamber",
-		name: "Twin Chamber",
-		note: "2 projectiles · 8° spread",
-	},
-	{ id: "bigIron", name: "Big Iron", note: "+25% radius" },
-	{ id: "hollowPoint", name: "Hollow Point", note: "+35% damage" },
-	{ id: "coldcaster", name: "Coldcaster", note: "25% freeze · 1.05s" },
-	{ id: "pinball", name: "Pinball", note: "1 bounce · 90% damage" },
-	{ id: "deadeye", name: "Deadeye", note: "12% window · +20% rate · 2.25s" },
-	{
-		id: "haloChamber",
-		name: "Halo Chamber",
-		note: "0.9s orbit · radius 30 · launch at aim",
-	},
-	{
-		id: "ghostSight",
-		name: "Ghost Sight",
-		note: "homing turn 180°/s · acquire radius 40",
-	},
-];
-
 const format = {
 	number: (value: number, digits = 1) =>
 		Number.isFinite(value) ? value.toFixed(digits) : "∞",
@@ -77,13 +53,14 @@ export function mountLab(
 		ArtifactId,
 		{ card: HTMLElement; button: HTMLButtonElement }
 	>();
-	for (const artifact of ARTIFACTS) {
+	for (const artifact of ARTIFACT_CATALOG) {
 		const card = document.createElement("article");
 		card.className = "artifact-card";
 		card.dataset.artifact = artifact.id;
-		const icon = missing.includes(artifact.id)
+		const iconKey = artifact.icon as AssetKey;
+		const icon = missing.includes(iconKey)
 			? '<span class="missing-icon" aria-hidden="true"></span>'
-			: `<img src="${ASSET_PATHS[artifact.id]}" alt="">`;
+			: `<img src="${ASSET_PATHS[iconKey]}" alt="">`;
 		card.innerHTML = `${icon}<div class="artifact-copy"><h3>${artifact.name}</h3><p>${artifact.note}</p></div>`;
 		const artifactButton = button("Take", "artifact-toggle");
 		artifactButton.setAttribute("aria-label", `Take ${artifact.name}`);
@@ -103,13 +80,15 @@ export function mountLab(
 	const takeAll = button("Take all");
 	takeAll.addEventListener("click", () => {
 		let next = access.get();
-		for (const artifact of ARTIFACTS) next = setArtifact(next, artifact.id, true);
+		for (const artifact of ARTIFACT_CATALOG)
+			next = setArtifact(next, artifact.id, true);
 		access.set(next);
 	});
 	const clearArtifacts = button("Clear artifacts");
 	clearArtifacts.addEventListener("click", () => {
 		let next = access.get();
-		for (const artifact of ARTIFACTS) next = setArtifact(next, artifact.id, false);
+		for (const artifact of ARTIFACT_CATALOG)
+			next = setArtifact(next, artifact.id, false);
 		access.set(next);
 	});
 	artifactActions.append(takeAll, clearArtifacts);
@@ -164,12 +143,16 @@ export function mountLab(
 		["damage", "Damage"],
 		["rate", "Fire rate"],
 		["count", "Shot count"],
+		["multishot", "Multishot"],
 		["spread", "Spread"],
 		["size", "Shot radius"],
 		["speed", "Shot speed"],
 		["lifetime", "Lifetime"],
 		["bounce", "Bounce"],
 		["freeze", "Freeze"],
+		["tesla", "Tesla"],
+		["split", "Split"],
+		["penetration", "Penetration"],
 		["orbit", "Orbit"],
 		["homing", "Homing"],
 		["deadeye", "Deadeye"],
@@ -188,7 +171,7 @@ export function mountLab(
 			: `ASSETS ONLINE · ${Object.keys(ASSET_PATHS).length}/${Object.keys(ASSET_PATHS).length}`;
 
 	return (state) => {
-		for (const artifact of ARTIFACTS) {
+		for (const artifact of ARTIFACT_CATALOG) {
 			const control = artifactControls.get(artifact.id);
 			if (!control) continue;
 			const owned = state.artifacts[artifact.id] === true;
@@ -230,12 +213,22 @@ export function mountLab(
 			damage: format.number(state.weapon.damage),
 			rate: `${format.number(state.weapon.fireRate, 2)}/s`,
 			count: String(state.weapon.projectileCount),
+			multishot: `${state.weapon.multishot.toFixed(2)}× · ${Math.round((state.weapon.multishot % 1) * 100)}% extra`,
 			spread: format.degrees(state.weapon.spread),
 			size: `${format.number(state.weapon.radius)} px`,
 			speed: `${state.weapon.speed} px/s`,
 			lifetime: `${state.weapon.lifetime}s`,
 			bounce: `${state.weapon.bounces} × ${format.percent(state.weapon.bounceRetention)}`,
 			freeze: `${format.percent(state.weapon.freezeChance)} · ${format.number(state.weapon.freezeDuration)}s`,
+			tesla: state.weapon.behaviors.tesla
+				? `${state.weapon.behaviors.tesla.radius} px · ${state.weapon.behaviors.tesla.neighbors} links`
+				: "OFF",
+			split: state.weapon.behaviors.split
+				? `${state.weapon.behaviors.split.count} × ${state.weapon.behaviors.split.childRange} px`
+				: "OFF",
+			penetration: state.weapon.behaviors.penetration
+				? `${state.weapon.behaviors.penetration.obstacles ? "COVER" : ""}${state.weapon.behaviors.penetration.obstacles && state.weapon.behaviors.penetration.targets ? " + " : ""}${state.weapon.behaviors.penetration.targets ? "TARGETS" : ""}`
+				: "OFF",
 			orbit: state.weapon.behaviors.spiral
 				? `${state.weapon.behaviors.spiral.lifetime}s · ${state.weapon.behaviors.spiral.initialRadius}px`
 				: "OFF",

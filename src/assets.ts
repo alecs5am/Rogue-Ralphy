@@ -29,6 +29,9 @@ export const ASSET_PATHS = {
 	deadeye: "/assets/generated/artifacts/deadeye.png",
 	haloChamber: "/assets/generated/artifacts/halo-chamber.png",
 	ghostSight: "/assets/generated/artifacts/ghost-sight.png",
+	teslaBullets: "/assets/generated/artifacts/tesla-bullets.png",
+	shotgun: "/assets/generated/artifacts/shotgun.png",
+	spectralBullets: "/assets/generated/artifacts/spectral-bullets.png",
 } as const;
 
 export type AssetKey = keyof typeof ASSET_PATHS;

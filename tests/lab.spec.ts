@@ -7,9 +7,24 @@ const ARTIFACTS = [
 	["Coldcaster", "25% freeze · 1.05s"],
 	["Pinball", "1 bounce · 90% damage"],
 	["Deadeye", "12% window · +20% rate · 2.25s"],
-	["Halo Chamber", "0.9s orbit · radius 30 · launch at aim"],
-	["Ghost Sight", "homing turn 180°/s · acquire radius 40"],
+	["Halo Chamber", "outward spiral · 4s"],
+	["Ghost Sight", "540°/s turn · acquire radius 96"],
+	["Tesla Bullets", "+0.33 multishot · chain arcs"],
+	["Shotgun", "split after 160 px"],
+	["Spectral Bullets", "pierce cover and targets"],
 ] as const;
+
+test("catalog telemetry", async ({ page }) => {
+	await page.goto("/");
+	await expect(page.locator("[data-artifact]")).toHaveCount(11);
+	await page.getByRole("button", { name: "Take Tesla Bullets" }).click();
+	await expect(page.locator('[data-stat="multishot"]')).toContainText("1.33×");
+	await expect(page.locator('[data-stat="tesla"]')).toContainText("96 px");
+	await page.getByRole("button", { name: "Take Shotgun" }).click();
+	await expect(page.locator('[data-stat="split"]')).toContainText("8 × 128 px");
+	await page.getByRole("button", { name: "Take Spectral Bullets" }).click();
+	await expect(page.locator('[data-stat="penetration"]')).toContainText("COVER + TARGETS");
+});
 
 test("builds a loadout, damages a dummy, and auto-reloads", async ({
 	page,
@@ -115,16 +130,18 @@ for (const viewport of [
 		page.on("pageerror", (error) => errors.push(error.message));
 		await page.setViewportSize(viewport);
 		await page.goto("/");
-		await expect(page.locator("#asset-diagnostics")).toHaveText(
-			/ASSETS ONLINE/,
-		);
+		const diagnostics = page.locator("#asset-diagnostics");
+		await expect(diagnostics).toContainText("MISSING ASSETS:");
+		await expect(diagnostics).toContainText("teslaBullets");
+		await expect(diagnostics).toContainText("shotgun");
+		await expect(diagnostics).toContainText("spectralBullets");
 		await expect(page.locator("[data-stat=ammo]")).toHaveText("6/6");
 		for (const [name, note] of ARTIFACTS) {
 			await expect(page.getByRole("button", { name: `Take ${name}` })).toBeVisible();
 			await expect(page.getByText(note, { exact: true })).toBeVisible();
 		}
 		await page.getByRole("button", { name: "Take all" }).click();
-		await expect(page.locator(".artifact-card.active")).toHaveCount(8);
+		await expect(page.locator(".artifact-card.active")).toHaveCount(11);
 		for (const [name] of ARTIFACTS)
 			await expect(page.getByRole("button", { name: `Remove ${name}` })).toBeVisible();
 		await page.getByRole("button", { name: "Spawn dummy" }).click();
@@ -144,7 +161,6 @@ for (const viewport of [
 			),
 		).toBe(true);
 
-		const diagnostics = page.locator("#asset-diagnostics");
 		await diagnostics.scrollIntoViewIfNeeded();
 		await expect(diagnostics).toBeVisible();
 		await page.locator("#lab").evaluate((element) => {
