@@ -35,6 +35,7 @@ export type GameState = {
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; nextShotAt: number; nextId: number; paused: boolean; rng: () => number;
+  lastShotAt: number | null; lastHurtAt: number | null; diedAt: number | null;
 };
 
 const tileCenter = (column: number, row: number): Point => ({
@@ -107,6 +108,9 @@ export function createGame(rng: () => number = Math.random): GameState {
     nextShotAt: 0,
     nextId: 1,
     paused: false,
+    lastShotAt: null,
+    lastHurtAt: null,
+    diedAt: null,
     rng,
   };
 }
@@ -293,10 +297,14 @@ function bounceOffProp(projectile: ProjectileState, prop: (typeof ROOM_PROPS)[nu
 export function updateGame(state: GameState, input: InputIntent, dt: number, now: number): GameState {
   if (input.paused) return state.paused ? state : { ...state, paused: true };
 
+  let lastShotAt = state.lastShotAt;
+  let lastHurtAt = state.lastHurtAt;
+  let diedAt = state.diedAt;
+  const canAct = diedAt === null && state.player.health > 0;
   let reload = advanceReload(state.reload, now);
   if (now >= reload.buffUntil && reload.fireRateBuff !== 0) reload = { ...reload, fireRateBuff: 0, buffUntil: 0 };
   let weapon = deriveWeapon(state.artifacts, fireRateBuffAt(reload, now));
-  if (input.reloadPressed) {
+  if (canAct && input.reloadPressed) {
     if (reload.reloading && weapon.activeWindow > 0) reload = attemptActiveReload(reload, weapon, now);
     else if (!reload.reloading && reload.ammo < reload.capacity) reload = startReload(reload, weapon, now);
     weapon = deriveWeapon(state.artifacts, fireRateBuffAt(reload, now));
@@ -304,13 +312,15 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
 
   const magnitude = Math.hypot(input.moveX, input.moveY);
   const movementScale = magnitude > 1 ? 1 / magnitude : 1;
-  const velocity = moveVelocityToward(
-    state.player.vx,
-    state.player.vy,
-    input.moveX * movementScale * state.player.speed,
-    input.moveY * movementScale * state.player.speed,
-    PLAYER_ACCELERATION * dt,
-  );
+  const velocity = canAct
+    ? moveVelocityToward(
+      state.player.vx,
+      state.player.vy,
+      input.moveX * movementScale * state.player.speed,
+      input.moveY * movementScale * state.player.speed,
+      PLAYER_ACCELERATION * dt,
+    )
+    : { vx: 0, vy: 0 };
   const nextX = state.player.x + velocity.vx * dt;
   const nextY = state.player.y + velocity.vy * dt;
   const x = clamp(nextX, state.room.minX + state.player.radius, state.room.maxX - state.player.radius);
@@ -328,9 +338,10 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   let nextId = state.nextId;
   let nextShotAt = state.nextShotAt;
 
-  if (input.firing && !reload.reloading && reload.ammo > 0 && now >= nextShotAt) {
+  if (canAct && input.firing && !reload.reloading && reload.ammo > 0 && now >= nextShotAt) {
     const aimAngle = Math.atan2(input.aimY - player.y, input.aimX - player.x);
     const shot = buildShot(weapon, aimAngle, state.rng, `trigger-${nextId}`);
+    if (shot.projectiles.length > 0) lastShotAt = now;
     const firingState = { ...state, player };
     const created = shot.projectiles.map((spec) => makeProjectile(spec, firingState, aimAngle, now, nextId++));
     projectiles = [...projectiles, ...created];
@@ -365,8 +376,17 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   });
 
   for (const target of targets) {
-    if (target.kind === "chaser" && overlaps(player, target) && now >= player.invulnerableUntil) {
-      player = { ...player, health: Math.max(0, player.health - 10), invulnerableUntil: now + 0.5 };
+    if (target.kind === "chaser" && diedAt === null && overlaps(player, target) && now >= player.invulnerableUntil) {
+      const health = Math.max(0, player.health - 10);
+      lastHurtAt = now;
+      if (health === 0) diedAt = now;
+      player = {
+        ...player,
+        health,
+        vx: health === 0 ? 0 : player.vx,
+        vy: health === 0 ? 0 : player.vy,
+        invulnerableUntil: now + 0.5,
+      };
       break;
     }
   }
@@ -524,6 +544,6 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   const telemetry = summarizeMetrics(metrics, now);
   return {
     ...state, player, aim, weapon, reload, projectiles: survivingProjectiles, targets, teslaLinks, teslaCooldowns, metrics, telemetry,
-    time: now, nextShotAt, nextId, paused: false,
+    time: now, nextShotAt, nextId, paused: false, lastShotAt, lastHurtAt, diedAt,
   };
 }

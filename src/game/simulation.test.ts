@@ -24,6 +24,75 @@ test("clamps HUD resources to integer values from zero through 99", () => {
   expect([-1, 0, 12.9, 99, 100].map(clampResource)).toEqual([0, 0, 12, 99, 99]);
 });
 
+test("records presentation timestamps only for successful events", () => {
+  let game = createGame(() => 0);
+  expect(game).toMatchObject({ lastShotAt: null, lastHurtAt: null, diedAt: null });
+
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  expect(game.lastShotAt).toBe(1);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1.1);
+  expect(game.lastShotAt).toBe(1);
+
+  game = {
+    ...game,
+    player: { ...game.player, health: 10 },
+    targets: [{
+      id: "fatal-chaser", kind: "chaser", x: game.player.x + 25, y: game.player.y + 25,
+      radius: 18, health: 80, maxHealth: 80, speed: 0, frozenUntil: 0,
+    }],
+  };
+  game = updateGame(game, idle, 0, 2);
+  expect(game).toMatchObject({
+    lastHurtAt: 2,
+    diedAt: 2,
+    player: { health: 0, vx: 0, vy: 0 },
+  });
+
+  game = updateGame(game, idle, 0, 3);
+  expect(game).toMatchObject({ lastHurtAt: 2, diedAt: 2 });
+});
+
+test("dead player ignores intent while projectiles and targets keep updating", () => {
+  let game = updateGame(createGame(() => 0), { ...idle, firing: true }, 0, 1);
+  game = {
+    ...game,
+    player: { ...game.player, health: 10 },
+    targets: [{
+      id: "fatal-chaser", kind: "chaser", x: game.player.x + 25, y: game.player.y + 25,
+      radius: 18, health: 80, maxHealth: 80, speed: 0, frozenUntil: 0,
+    }],
+  };
+  game = updateGame(game, idle, 0, 2);
+
+  const position = { x: game.player.x, y: game.player.y };
+  const ammo = game.reload.ammo;
+  const projectileX = game.projectiles[0]!.x;
+  game = updateGame(game, { ...idle, moveX: 1, firing: true, reloadPressed: true }, 0.1, 2.1);
+
+  expect(game.player).toMatchObject({ ...position, health: 0, vx: 0, vy: 0 });
+  expect(game.reload.ammo).toBe(ammo);
+  expect(game.lastShotAt).toBe(1);
+  expect(game.diedAt).toBe(2);
+  expect(game.projectiles[0]!.x).not.toBe(projectileX);
+});
+
+test("reset clears death and presentation timestamps", () => {
+  const base = createGame(() => 0);
+  const game = resetLab({
+    ...base,
+    lastShotAt: 1,
+    lastHurtAt: 2,
+    diedAt: 3,
+    player: { ...base.player, health: 0 },
+  });
+  expect(game).toMatchObject({
+    lastShotAt: null,
+    lastHurtAt: null,
+    diedAt: null,
+    player: { health: 100 },
+  });
+});
+
 test("a successful Tesla extra shot diverges into a non-zero electrical link", () => {
   let game = setArtifact(createGame(() => 0.329), "teslaBullets", true);
   const aim = { ...idle, aimY: game.player.y };
