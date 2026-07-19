@@ -471,17 +471,17 @@ export function collectCombatEvents(runtime: CombatRuntime | CombatPhaseState, c
           segment: path,
         });
       }
-      const wall = firstWallHit(segment.from, segment.to, projectile.radius, context.room);
-      if (wall) events.push({
-        eventTime: wall.time,
-        kind: "wall",
-        projectileId: projectile.id,
-        colliderId: "room",
-        point: pointAt(segment, wall.time),
-        normal: wall.normal,
-        segment: path,
-      });
     }
+    const wall = firstWallHit(segment.from, segment.to, projectile.radius, context.room);
+    if (wall) events.push({
+      eventTime: wall.time,
+      kind: "wall",
+      projectileId: projectile.id,
+      colliderId: "room",
+      point: pointAt(segment, wall.time),
+      normal: wall.normal,
+      segment: path,
+    });
     for (const target of current.targets) {
       if (target.health <= 0 || projectile.hitTargetIds.includes(target.id)) continue;
       const hit = sweptCircleCollision(segment.from, segment.to, projectile, target);
@@ -581,6 +581,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       const rule = context.build.emissions.find((candidate) =>
         candidate.kind === "splitCone" && projectile.activatedEffectIds.includes(candidate.effectId));
       if (rule && projectile.generation === 0) emissionRequests.push({ projectile: cloneProjectile(projectile), rule });
+      metrics = recordProjectileOutcome(metrics, projectile.everHit);
       removed.add(projectile.id);
       continue;
     }
@@ -594,6 +595,13 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
         metrics = recordProjectileOutcome(metrics, projectile.everHit);
         removed.add(projectile.id);
       } else {
+        if (event.kind === "prop") {
+          const prop = context.props.find(({ id }) => id === event.colliderId)!;
+          const normalLength = Math.hypot(event.normal!.x, event.normal!.y) || 1;
+          const separation = prop.collisionRadius + projectile.radius + 0.01;
+          projectile.x = prop.x + event.normal!.x / normalLength * separation;
+          projectile.y = prop.y + event.normal!.y / normalLength * separation;
+        }
         reflect(projectile, event.normal!);
         if (segment.expiresAfterMove) {
           metrics = recordProjectileOutcome(metrics, projectile.everHit);

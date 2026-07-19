@@ -202,6 +202,55 @@ test("motion and collision preserve a merged corner normal and swept path", () =
   });
 });
 
+test("Spectral obstacle penetration never passes through a room wall", () => {
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.1,
+    projectiles: [projectile({
+      x: 880,
+      y: 300,
+      vx: 200,
+      penetration: { obstacles: true, targets: true },
+      behaviors: Object.freeze({ penetration: { obstacles: true, targets: true } }),
+      activatedEffectIds: Object.freeze(["baseRevolver.direct", "spectralBullets.penetration"]),
+    })],
+  }), context({ dt: 0.1 }));
+
+  expect(resolved.projectiles).toEqual([]);
+  expect(resolved.metrics).toMatchObject({ misses: 1, successfulProjectiles: 0 });
+});
+
+test("a glancing prop ricochet separates outward before the next step", () => {
+  const prop = { id: "glance", kind: "rock" as const, x: 570, y: 310, size: 40, collisionRadius: 20 };
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.5,
+    projectiles: [projectile({ x: 500, y: 300, vx: 200, remainingBounces: 1 })],
+  }), context({ dt: 0.5, props: [prop] }));
+  const bounced = resolved.projectiles[0]!;
+
+  expect(bounced.remainingBounces).toBe(0);
+  expect(Math.hypot(bounced.x - prop.x, bounced.y - prop.y)).toBeCloseTo(
+    prop.collisionRadius + bounced.radius + 0.01,
+    10,
+  );
+
+  const continued = resolveCombatPhases({ ...resolved, now: 0.51, step: 2 }, context({ dt: 0.01, props: [prop] }));
+  expect(continued.projectiles).toHaveLength(1);
+  expect(continued.metrics.misses).toBe(resolved.metrics.misses);
+});
+
+test("an axis-aligned prop ricochet separates by the exact epsilon", () => {
+  const prop = { id: "axis", kind: "crate" as const, x: 570, y: 300, size: 40, collisionRadius: 20 };
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.5,
+    projectiles: [projectile({ x: 500, y: 300, vx: 200, remainingBounces: 1 })],
+  }), context({ dt: 0.5, props: [prop] }));
+  const bounced = resolved.projectiles[0]!;
+
+  expect(bounced.x).toBeCloseTo(prop.x - prop.collisionRadius - bounced.radius - 0.01, 10);
+  expect(bounced.y).toBe(prop.y);
+  expect(bounced.vx).toBe(-200);
+});
+
 test("every combat phase is observationally immutable", () => {
   const initial = runtime({ projectiles: [projectile()] });
   const unchanged = <T extends object, U>(value: T, run: (input: T) => U): U => {
