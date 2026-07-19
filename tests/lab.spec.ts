@@ -149,8 +149,14 @@ test("draws right-facing fire reload and round soul frames", async ({ page }) =>
 
 	await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.5);
 	await page.mouse.down();
-	await page.waitForTimeout(100);
-	await page.mouse.up();
+	try {
+		await expect.poll(async () => page.evaluate(() => {
+			const probe = (window as typeof window & { __animationProbe: AnimationProbe }).__animationProbe;
+			return probe.draws.some(({ path }) => path.endsWith("/muzzle-flash.png"));
+		}), { timeout: 1_000 }).toBe(true);
+	} finally {
+		await page.mouse.up();
+	}
 
 	await expect.poll(async () => page.evaluate(() => {
 		const probe = (window as typeof window & { __animationProbe: AnimationProbe }).__animationProbe;
