@@ -150,8 +150,7 @@ async function start(): Promise<void> {
 			accumulator = 0;
 		}
 
-		const moving = !state.paused && Math.hypot(state.player.vx, state.player.vy) > 0;
-		renderGame(context, state, assets, { moving, reducedMotion });
+		renderGame(context, state, assets, { reducedMotion });
 		updateLab(state);
 		updateHud(state);
 		pauseLabel.hidden = !state.paused;

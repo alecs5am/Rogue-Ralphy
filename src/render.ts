@@ -1,9 +1,13 @@
 import type { AssetKey, Assets } from "./assets";
+import {
+	RALPHY_ATLAS,
+	selectRalphyPose,
+	type RalphyPose,
+} from "./game/presentation";
 import type { GameState, Point } from "./game/simulation";
 import { ROOM_PROPS } from "./game/room";
 
-type RenderOptions = { moving: boolean; reducedMotion: boolean };
-const RALPHY_SIZE = 80;
+type RenderOptions = { reducedMotion: boolean };
 const round = (value: number) => Math.round(value);
 
 function imageAt(
@@ -55,15 +59,31 @@ function centeredImage(
 	);
 }
 
-function ralphyKey(state: GameState, moving: boolean): AssetKey {
-	const dx = state.aim.x - state.player.x;
-	const dy = state.aim.y - state.player.y;
-	if (Math.abs(dx) > Math.abs(dy)) {
-		if (dx < 0) return moving ? "ralphyLeftMove" : "ralphyLeft";
-		return moving ? "ralphyRightMove" : "ralphyRight";
-	}
-	if (dy < 0) return moving ? "ralphyUpMove" : "ralphyUp";
-	return moving ? "ralphyDownMove" : "ralphyDown";
+function drawRalphyFrame(
+	context: CanvasRenderingContext2D,
+	assets: Assets,
+	pose: RalphyPose,
+	x: number,
+	y: number,
+): void {
+	const atlas = assets.images.ralphyAtlas;
+	if (!atlas) return;
+	const { cellSize, destinationSize, anchorX, anchorY } = RALPHY_ATLAS;
+	context.save();
+	context.translate(round(x), round(y));
+	if (pose.flipX) context.scale(-1, 1);
+	context.drawImage(
+		atlas,
+		pose.frame.col * cellSize,
+		pose.frame.row * cellSize,
+		cellSize,
+		cellSize,
+		round((-destinationSize * anchorX) / cellSize),
+		round((-destinationSize * anchorY) / cellSize),
+		destinationSize,
+		destinationSize,
+	);
+	context.restore();
 }
 
 function drawTargets(
@@ -175,10 +195,10 @@ function drawProjectiles(
 			centeredImage(context, assets, "homingMarker", projectile, size * 1.7);
 			context.globalAlpha = 1;
 		}
-		context.save();
-		context.translate(round(projectile.x), round(projectile.y));
-		context.rotate(Math.atan2(projectile.vy, projectile.vx));
-		if (projectile.penetration)
+		if (projectile.penetration) {
+			context.save();
+			context.translate(round(projectile.x), round(projectile.y));
+			context.rotate(Math.atan2(projectile.vy, projectile.vx));
 			imageAt(
 				context,
 				assets,
@@ -188,8 +208,9 @@ function drawProjectiles(
 				size * 2.3,
 				size,
 			);
-		else imageAt(context, assets, "bullet", -size / 2, -size / 2, size);
-		context.restore();
+			context.restore();
+		}
+		centeredImage(context, assets, "soulProjectile", projectile, size);
 	}
 }
 
@@ -199,26 +220,41 @@ function drawPlayer(
 	assets: Assets,
 	options: RenderOptions,
 ): void {
-	const bob =
-		options.reducedMotion || !options.moving
-			? 0
-			: Math.round(Math.sin(state.time * 14) * 2);
-	imageAt(
-		context,
-		assets,
-		ralphyKey(state, options.moving),
-		state.player.x - RALPHY_SIZE / 2,
-		state.player.y - 46 + bob,
-		RALPHY_SIZE,
-	);
+	const pose = selectRalphyPose(state, options.reducedMotion);
 	const aim = Math.atan2(
 		state.aim.y - state.player.y,
 		state.aim.x - state.player.x,
 	);
+	const bob =
+		options.reducedMotion || pose.state !== "move"
+			? 0
+			: Math.round(Math.sin(state.time * 14) * 2);
+	const bodyX = state.player.x - Math.cos(aim) * pose.bodyRecoil;
+	const bodyY = state.player.y + bob - Math.sin(aim) * pose.bodyRecoil;
+	drawRalphyFrame(context, assets, pose, bodyX, bodyY);
+
+	if (pose.state === "death") return;
 	context.save();
-	context.translate(round(state.player.x), round(state.player.y + bob));
-	context.rotate(aim);
-	imageAt(context, assets, "revolver", 9, -32, 64);
+	context.translate(round(bodyX), round(bodyY));
+	context.rotate(aim + Math.sin(pose.gunSpin) * 0.08);
+	imageAt(
+		context,
+		assets,
+		"ghostRevolver",
+		9 - pose.gunRecoil,
+		-32,
+		64,
+	);
+	if (pose.state === "fire" && pose.frame.col % 4 === 0) {
+		imageAt(
+			context,
+			assets,
+			"muzzleFlash",
+			55 - pose.gunRecoil,
+			-16,
+			32,
+		);
+	}
 	context.restore();
 }
 
