@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { createGame } from "./simulation";
 import { selectRalphyPose, validateRalphyAtlas } from "./presentation";
 
@@ -39,6 +39,7 @@ test("honors fire reload hurt death boundaries and precedence", () => {
   expect(pose({ lastShotAt: 1 }, 1.059)).toMatchObject({ state: "fire", frame: { row: 2, col: 0 } });
   expect(pose({ lastShotAt: 1 }, 1.06)).toMatchObject({ state: "fire", frame: { row: 2, col: 1 } });
   expect(pose({ lastShotAt: 1 }, 1.16).state).toBe("idle");
+  expect(pose({ lastShotAt: 1, player: { ...base.player, vx: 1 } }, 1).state).toBe("fire");
   expect(pose({ lastHurtAt: 1 }, 1.179)).toMatchObject({ state: "hurt", frame: { row: 4 } });
   expect(pose({ lastHurtAt: 1 }, 1.18).state).toBe("idle");
 
