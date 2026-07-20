@@ -227,6 +227,23 @@ describe("row-four signature reducers", () => {
     expect(result.targets[1]!.frozenUntil).toBe(0);
     expect(result.targets[2]!.effects.slows).toEqual([]);
     expect(result.wantedBrand).toEqual(brand("source", 3));
+    expect(result.vfx.filter(({ kind }) => kind === "coldcaster.chill").map((command) => ({
+      artifactId: command.artifactId,
+      effectId: command.effectId,
+      rootTriggerId: command.rootTriggerId,
+      lineageId: command.lineageId,
+      bornAt: command.bornAt,
+      expiresAt: command.expiresAt,
+      targetId: command.geometry.type === "target" ? command.geometry.targetId : undefined,
+    }))).toEqual(["source", "chaser", "dummy"].map((targetId) => ({
+      artifactId: "coldcaster",
+      effectId: "coldcaster.chill",
+      rootTriggerId: "trigger-1",
+      lineageId: "trigger-1:0",
+      bornAt: 0,
+      expiresAt: 2,
+      targetId,
+    })));
   });
 });
 

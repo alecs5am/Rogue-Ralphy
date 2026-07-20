@@ -166,7 +166,7 @@ export type VfxCommand =
     RadiusGeometry
   >
   | (WorldVfxCommand<"hexBell.pulse", RadiusGeometry> & Readonly<{ targetId: string }>)
-  | WorldVfxCommand<"dustlineDuel.snapshot" | "dustlineDuel.fire", HeadingGeometry>
+  | WorldVfxCommand<"shotgun.split" | "dustlineDuel.snapshot" | "dustlineDuel.fire", HeadingGeometry>
   | WorldVfxCommand<"ectoplasmicWake.trail", PolylineGeometry>
   | WorldVfxCommand<"crossfireCovenant.cross", PairGeometry>
   | WorldVfxCommand<"lastGaspLocket.orbital", OrbitGeometry>
@@ -1573,7 +1573,22 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
         });
         projectile.emittedEffectIds = [...projectile.emittedEffectIds, rule.effectId];
         emittedEffects[key] = { rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId };
-        if (rule.kind === "splitCone" && pendingTokens) pendingEffectTokens.push(...pendingTokens);
+        if (rule.kind === "splitCone") {
+          const crossedAt = current.now - context.dt + event.eventTime * context.dt;
+          vfxCommands.push({
+            id: `vfx-${nextId++}`,
+            kind: "shotgun.split",
+            artifactId: rule.artifactId,
+            effectId: rule.effectId,
+            rootTriggerId: projectile.rootTriggerId,
+            lineageId: projectile.lineageId,
+            destination: "world",
+            bornAt: crossedAt,
+            expiresAt: crossedAt + 0.2,
+            geometry: headingGeometry(event.point, Math.atan2(projectile.vy, projectile.vx)),
+          });
+          if (pendingTokens) pendingEffectTokens.push(...pendingTokens);
+        }
       }
       const dustline = dustlineAfterimageRule(projectile, context.build);
       const dustlineKey = lineageEmissionKey("dustlineDuel.afterimage", projectile.lineageId);

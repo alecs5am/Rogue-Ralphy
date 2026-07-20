@@ -54,13 +54,13 @@ export async function bootstrap({
 	const pauseLabel = required<HTMLElement>(document, "#pause-label");
 	const quickdraw = required<HTMLElement>(document, "#quickdraw");
 	const context = canvasContext(canvas);
+	const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 	let state: GameState = createGame();
 	mountHud(hud);
-	updateHud(state);
+	updateHud(state, canvas);
 	let reloadPressed = false;
 	let firing = false;
 	const pressed = new Set<string>();
-	const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 	const updateLab = mountLab({
 		get: () => state,
 		set: (next) => {
@@ -170,7 +170,7 @@ export async function bootstrap({
 
 		renderGame(context, state, assets, { reducedMotion });
 		updateLab(state);
-		updateHud(state);
+		updateHud(state, canvas);
 		pauseLabel.hidden = !state.paused;
 		quickdraw.hidden = state.time >= state.cylinder.buffUntil;
 		const activeReloadStartedAt =

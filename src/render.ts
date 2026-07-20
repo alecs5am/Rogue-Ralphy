@@ -6,6 +6,12 @@ import {
 } from "./game/presentation";
 import type { GameState, Point } from "./game/simulation";
 import { ROOM_PROPS } from "./game/room";
+import {
+	assertNever,
+	projectEffectDraws,
+	type EffectDraw,
+	type EffectDrawLayer,
+} from "./render-effects";
 
 type RenderOptions = { reducedMotion: boolean };
 const round = (value: number) => Math.round(value);
@@ -125,70 +131,79 @@ function drawTargets(
 	}
 }
 
-function drawProjectiles(
+function drawBaseProjectiles(
 	context: CanvasRenderingContext2D,
 	state: GameState,
 	assets: LoadedAssets,
-	reducedMotion: boolean,
 ): void {
-	const projectiles = new Map(state.projectiles.map((projectile) => [projectile.id, projectile]));
-	for (const link of state.teslaLinks) {
-		const a = projectiles.get(link.a);
-		const b = projectiles.get(link.b);
-		if (!a || !b) continue;
-		const angle = Math.atan2(b.y - a.y, b.x - a.x);
-		context.save();
-		context.translate(round(a.x), round(a.y));
-		context.rotate(angle);
-		context.beginPath();
-		context.rect(0, -6, round(link.distance), 12);
-		context.clip();
-		context.globalAlpha = 0.7;
-		const phase = reducedMotion ? 0 : (state.time * 72) % 24;
-		for (let x = -phase; x < link.distance; x += 24)
-			context.drawImage(assets.teslaArc, round(x), -6, 24, 12);
-		context.restore();
-	}
-	const splitBursts = new Set<string>();
 	for (const projectile of state.projectiles) {
 		const size = Math.max(10, projectile.radius * 4.2);
-		if (
-			projectile.maxTravel !== undefined &&
-			projectile.travelled < 64 &&
-			projectile.splitParentId !== undefined &&
-			projectile.splitOrigin !== undefined &&
-			!splitBursts.has(projectile.splitParentId)
-		) {
-			centeredImage(context, assets, "shotgunSplit", projectile.splitOrigin, size * 4);
-			splitBursts.add(projectile.splitParentId);
-		}
-		if (projectile.behaviors.spiral) {
-			context.globalAlpha = 0.55;
-			centeredImage(context, assets, "orbitTrail", projectile, size * 1.5);
-			context.globalAlpha = 1;
-		}
-		if ((projectile.homingMarkerRemaining ?? 0) > 0) {
-			context.globalAlpha = 0.45;
-			centeredImage(context, assets, "homingMarker", projectile, size * 1.7);
-			context.globalAlpha = 1;
-		}
-		if (projectile.penetration) {
-			context.save();
-			context.translate(round(projectile.x), round(projectile.y));
-			context.rotate(Math.atan2(projectile.vy, projectile.vx));
-			imageAt(
-				context,
-				assets,
-				"spectralTrail",
-				-size * 1.8,
-				-size / 2,
-				size * 2.3,
-				size,
-			);
-			context.restore();
-		}
 		centeredImage(context, assets, "soulProjectile", projectile, size);
 	}
+}
+
+function drawTiledSegment(
+	context: CanvasRenderingContext2D,
+	assets: LoadedAssets,
+	draw: EffectDraw,
+	from: Point,
+	to: Point,
+	width: number,
+): void {
+	const dx = to.x - from.x;
+	const dy = to.y - from.y;
+	const distance = Math.hypot(dx, dy);
+	const angle = Math.atan2(dy, dx);
+	const tile = Math.max(12, width * 1.35);
+	const count = Math.max(1, Math.ceil(distance / tile));
+	for (let index = 0; index <= count; index += 1) {
+		const progress = count === 0 ? 0 : index / count;
+		context.save();
+		context.translate(round(from.x + dx * progress), round(from.y + dy * progress));
+		context.rotate(angle);
+		imageAt(context, assets, draw.asset, -tile / 2, -width / 2, tile, width);
+		context.restore();
+	}
+}
+
+function drawEffect(
+	context: CanvasRenderingContext2D,
+	assets: LoadedAssets,
+	draw: EffectDraw,
+): void {
+	context.save();
+	context.globalAlpha = draw.essential ? 0.9 : 0.72;
+	const geometry = draw.geometry;
+	switch (geometry.type) {
+		case "sprite":
+			context.translate(round(geometry.x), round(geometry.y));
+			context.rotate(geometry.rotation + draw.phase * Math.PI * 2);
+			imageAt(context, assets, draw.asset, -geometry.size / 2, -geometry.size / 2, geometry.size);
+			break;
+		case "disc":
+			context.translate(round(geometry.x), round(geometry.y));
+			context.rotate(draw.phase * Math.PI * 2);
+			imageAt(context, assets, draw.asset, -geometry.radius, -geometry.radius, geometry.radius * 2);
+			break;
+		case "path":
+			for (const segment of geometry.segments)
+				drawTiledSegment(context, assets, draw, segment.from, segment.to, geometry.width);
+			break;
+		case "hudDelivery":
+			break;
+		default:
+			assertNever(geometry);
+	}
+	context.restore();
+}
+
+function drawEffectLayer(
+	context: CanvasRenderingContext2D,
+	assets: LoadedAssets,
+	draws: readonly EffectDraw[],
+	layer: EffectDrawLayer,
+): void {
+	for (const draw of draws) if (draw.layer === layer) drawEffect(context, assets, draw);
 }
 
 function drawPlayer(
@@ -296,8 +311,15 @@ export function renderGame(
 			{ x: prop.x, y: prop.y },
 			prop.size,
 		);
+	const effectDraws = projectEffectDraws(state, options.reducedMotion);
+	drawEffectLayer(context, assets, effectDraws, "areas-trails");
 	drawTargets(context, state, assets);
-	drawProjectiles(context, state, assets, options.reducedMotion);
+	drawEffectLayer(context, assets, effectDraws, "target-cues");
+	drawEffectLayer(context, assets, effectDraws, "links");
+	drawEffectLayer(context, assets, effectDraws, "projectiles");
+	drawBaseProjectiles(context, state, assets);
+	drawEffectLayer(context, assets, effectDraws, "emission-cues");
+	drawEffectLayer(context, assets, effectDraws, "satellites-orbitals-decoy");
 	drawPlayer(context, state, assets, options);
 	drawDamage(context, state, assets, options.reducedMotion);
 	drawAim(context, state);

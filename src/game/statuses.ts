@@ -439,13 +439,26 @@ export function applyDirectStatuses(input: Readonly<{
           }
           if (destination.id !== target.id) {
             if (sourceEffects.chill.count > 0 && input.now < sourceEffects.chill.expiresAt) {
+              const previousChill = effects.chill;
+              const copiedChill = {
+                count: Math.max(previousChill.count, sourceEffects.chill.count) as 1 | 2,
+                expiresAt: Math.max(previousChill.expiresAt, sourceEffects.chill.expiresAt),
+              };
               effects = {
                 ...effects,
-                chill: {
-                  count: Math.max(effects.chill.count, sourceEffects.chill.count) as 1 | 2,
-                  expiresAt: Math.max(effects.chill.expiresAt, sourceEffects.chill.expiresAt),
-                },
+                chill: copiedChill,
               };
+              if (copiedChill.count !== previousChill.count || copiedChill.expiresAt !== previousChill.expiresAt) {
+                vfx.push(statusVfx(
+                  "coldcaster.chill",
+                  "coldcaster",
+                  "coldcaster.chill",
+                  source,
+                  destination,
+                  input.now,
+                  copiedChill.expiresAt,
+                ));
+              }
             }
             if (sourceEffects.burn) {
               const copied: BurnStatus = { ...sourceEffects.burn, nextTickAt: input.now + 0.4 };
