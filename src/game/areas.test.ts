@@ -124,7 +124,7 @@ test("path crossing accepts endpoints but rejects collinear overlap", () => {
 test("Spectral pierces props and targets once per leg but never room walls", () => {
   const build = compileCombatBuild({ spectralBullets: true });
   const effects = ["baseRevolver.direct", "spectralBullets.penetration"];
-  const state = resolveCombatPhases(runtime({
+  let state = resolveCombatPhases(runtime({
     now: 1,
     projectiles: [projectile("projectile-1", {
       x: ROOM.maxX - 80,
@@ -252,6 +252,37 @@ test("Big Iron launches one bounded moonlet per heavy main and merges pair hits 
   expect(game.metrics.hitEvents.filter(({ effectId }) => effectId === "bigIron.kineticExplosion"))
     .toEqual([expect.objectContaining({ source: "area", damage: 12 })]);
   expect(Object.values(game.bigIronPairHits ?? {}).filter(({ spent }) => spent)).toHaveLength(1);
+});
+
+test("an accepted Big Iron pair still merges after ownership is removed", () => {
+  let game = setArtifact(createGame(() => 0.9), "bigIron", true);
+  game = updateGame(game, {
+    moveX: 0, moveY: 0, aimX: 900, aimY: game.player.y,
+    firing: true, reloadPressed: false, paused: false,
+  }, 0, 1);
+  const main = game.projectiles.find(({ generation }) => generation === 0)!;
+  const moonlet = game.projectiles.find(({ emission }) => emission?.effectId === "bigIron.moonlet")!;
+  const center = { x: (main.x + moonlet.x) / 2, y: (main.y + moonlet.y) / 2 };
+  game = setArtifact({
+    ...game,
+    targets: [target("pair-target", center.x, center.y)],
+    projectiles: game.projectiles.map((shot) => ({
+      ...shot,
+      vx: 0,
+      vy: 0,
+      speed: 0,
+      penetration: { obstacles: false, targets: true },
+      behaviors: { ...shot.behaviors, penetration: { obstacles: false, targets: true } },
+    })),
+  }, "bigIron", false);
+
+  game = updateGame(game, {
+    moveX: 0, moveY: 0, aimX: 900, aimY: game.player.y,
+    firing: false, reloadPressed: false, paused: false,
+  }, 0, 1.01);
+
+  expect(game.metrics.hitEvents.filter(({ effectId }) => effectId === "bigIron.kineticExplosion"))
+    .toHaveLength(1);
 });
 
 test("Big Iron releases an orphaned moonlet at the parent's physical removal point with tangent velocity", () => {
@@ -478,7 +509,7 @@ test("Ectoplasmic Wake batches clipped path segments and ticks a lineage once pe
     to: { x: 210, y: 300 },
     width: 8,
     damage: 1,
-    expiresAt: 0.8,
+    expiresAt: 0.9,
   });
   expect(state.metrics.hitEvents.filter(({ effectId }) => effectId === "ectoplasmicWake.trail"))
     .toEqual([expect.objectContaining({ source: "area", damage: 1, time: 0.1 })]);
@@ -488,6 +519,8 @@ test("Ectoplasmic Wake batches clipped path segments and ticks a lineage once pe
   state = resolveCombatPhases({ ...state, now: 0.3, step: 3 }, context(build));
   expect(state.metrics.hitEvents.filter(({ effectId }) => effectId === "ectoplasmicWake.trail")).toHaveLength(2);
   state = resolveCombatPhases({ ...state, now: 0.8, step: 4 }, context(build, { dt: 0.5 }));
+  expect(state.wakeTrails?.[wake.lineageId]?.segments).toHaveLength(1);
+  state = resolveCombatPhases({ ...state, now: 0.9, step: 5 }, context(build));
   expect(state.wakeTrails).toEqual({});
 });
 
@@ -501,7 +534,7 @@ test("Ectoplasmic Wake catches up historical ticks before an entire segment expi
     activatedEffectIds: ["baseRevolver.direct", "ectoplasmicWake.trail"],
   });
 
-  const state = resolveCombatPhases(runtime({
+  let state = resolveCombatPhases(runtime({
     now: 0.9,
     projectiles: [wake],
     targets: [target("wake-target", 205, 309.5)],
@@ -511,24 +544,81 @@ test("Ectoplasmic Wake catches up historical ticks before an entire segment expi
     .filter(({ effectId }) => effectId === "ectoplasmicWake.trail")
     .map(({ time }) => Number(time.toFixed(1))))
     .toEqual([0.1, 0.3, 0.5, 0.7]);
+  expect(state.wakeTrails?.[wake.lineageId]?.segments[0]?.expiresAt).toBeCloseTo(1.7);
+  state = resolveCombatPhases({ ...state, now: 1.7, step: 2, projectiles: [] }, context(build, { dt: 0.8 }));
   expect(state.wakeTrails).toEqual({});
+});
+
+test("Ectoplasmic Wake never damages along path geometry before that geometry forms", () => {
+  const build = compileCombatBuild({ ectoplasmicWake: true });
+  const wake = projectile("projectile-1", {
+    x: 200,
+    y: 300,
+    vx: 100,
+    speed: 100,
+    activatedEffectIds: ["baseRevolver.direct", "ectoplasmicWake.trail"],
+  });
+
+  const state = resolveCombatPhases(runtime({
+    now: 0.9,
+    projectiles: [wake],
+    targets: [target("late-target", 285, 309.5)],
+  }), context(build, { dt: 0.9 }));
+
+  expect(state.metrics.hitEvents
+    .filter(({ effectId }) => effectId === "ectoplasmicWake.trail")
+    .map(({ time }) => Number(time.toFixed(1))))
+    .toEqual([0.9]);
+  expect(state.wakeTrails?.[wake.lineageId]?.segments).toHaveLength(1);
+});
+
+test("an earned Ectoplasmic Wake trail outlives artifact ownership", () => {
+  const wakeBuild = compileCombatBuild({ ectoplasmicWake: true });
+  const wake = projectile("projectile-1", {
+    activatedEffectIds: ["baseRevolver.direct", "ectoplasmicWake.trail"],
+  });
+  let state = resolveCombatPhases(runtime({ now: 0.1, projectiles: [wake] }), context(wakeBuild));
+
+  state = resolveCombatPhases({ ...state, now: 0.2, step: 2, projectiles: [] }, context(compileCombatBuild({})));
+
+  expect(state.wakeTrails?.[wake.lineageId]?.segments).toHaveLength(1);
+});
+
+test("a sustained 120 Hz Ectoplasmic Wake stays within its valid 97-point bound", () => {
+  const idle = {
+    moveX: 0, moveY: 0, aimX: 900, aimY: 288,
+    firing: false, reloadPressed: false, paused: false,
+  } as const;
+  let game = setArtifact(setArtifact(createGame(() => 0.9), "haloChamber", true), "ectoplasmicWake", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  let maximumPoints = 0;
+  for (let tick = 1; tick <= 110; tick += 1) {
+    game = updateGame(game, idle, 1 / 120, 1 + tick / 120);
+    for (const trail of Object.values(game.wakeTrails)) {
+      maximumPoints = Math.max(maximumPoints, trail.segments.length + 1);
+    }
+  }
+
+  expect(maximumPoints).toBe(97);
 });
 
 test("Crossfire creates one canonical pulse and consumes each projectile once", () => {
   const build = compileCombatBuild({ crossfireCovenant: true });
   const activatedEffectIds = ["baseRevolver.direct", "crossfireCovenant.cross"];
   const state = resolveCombatPhases(runtime({
-    now: 1,
+    now: 0.1,
     projectiles: [
-      projectile("projectile-2", { x: 250, y: 250, vx: 100, vy: 100, damage: 12, activatedEffectIds, penetration: { obstacles: false, targets: true } }),
-      projectile("projectile-1", { x: 250, y: 350, vx: 100, vy: -100, damage: 20, activatedEffectIds, penetration: { obstacles: false, targets: true } }),
-      projectile("projectile-3", { x: 300, y: 250, vx: 0, vy: 100, damage: 30, activatedEffectIds, penetration: { obstacles: false, targets: true } }),
+      projectile("projectile-2", { x: 250, y: 250, vx: 1000, vy: 1000, speed: Math.SQRT2 * 1000, damage: 12, activatedEffectIds, penetration: { obstacles: false, targets: true } }),
+      projectile("projectile-1", { x: 250, y: 350, vx: 1000, vy: -1000, speed: Math.SQRT2 * 1000, damage: 20, activatedEffectIds, penetration: { obstacles: false, targets: true } }),
+      projectile("projectile-3", { x: 300, y: 250, vx: 0, vy: 1000, speed: 1000, damage: 30, activatedEffectIds, penetration: { obstacles: false, targets: true } }),
     ],
     targets: [target("crossed", 300, 300)],
-  }), context(build, { dt: 1 }));
+  }), context(build, { dt: 0.1 }));
 
   expect(state.crossfirePulses).toHaveLength(1);
-  expect(state.crossfirePulses?.[0]).toMatchObject({ pairId: "projectile-1:projectile-2", damage: 3 });
+  expect(state.crossfirePulses?.[0]).toMatchObject({ pairId: "projectile-1:projectile-2", damage: 3, bornAt: 0.05, expiresAt: 0.25 });
+  expect(state.vfxCommands.find(({ kind }) => kind === "crossfireCovenant.cross"))
+    .toMatchObject({ bornAt: 0.05, expiresAt: 0.25 });
   expect(state.metrics.hitEvents.filter(({ effectId }) => effectId === "crossfireCovenant.cross"))
     .toEqual([expect.objectContaining({ source: "area", targetId: "crossed", projectileId: "projectile-2", damage: 3 })]);
   expect(Object.keys(state.crossfireParticipation ?? {}).sort()).toEqual(["projectile-1", "projectile-2"]);

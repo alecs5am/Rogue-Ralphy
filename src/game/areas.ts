@@ -29,7 +29,9 @@ export type WakeSegmentState = Readonly<{
   from: Point;
   to: Point;
   bornAt: number;
+  completeAt: number;
   expiresAt: number;
+  duration: number;
   width: number;
   damage: number;
   sourceProjectile: ProjectileState;
@@ -38,9 +40,14 @@ export type WakeSegmentState = Readonly<{
 export type WakeTrailState = Readonly<{
   lineageId: string;
   rootTriggerId: string;
+  artifactId: string;
+  effectId: string;
   nextTickAt: number;
   tickInterval: number;
   cooldown: number;
+  width: number;
+  duration: number;
+  damageScale: number;
   segments: readonly WakeSegmentState[];
 }>;
 

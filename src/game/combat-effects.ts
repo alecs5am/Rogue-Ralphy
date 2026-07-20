@@ -1374,8 +1374,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       ?? (projectile.bigIronMain ? projectileById.get(projectile.bigIronMain.moonletId)?.moonlet : undefined);
     const mainId = projectile.bigIronMain ? projectile.id : moonlet?.mainId;
     const moonletId = projectile.bigIronMain?.moonletId ?? (moonlet ? projectile.id : undefined);
-    const heavy = context.build.triggers.find((rule) => rule.kind === "heavyMainAndMoonlet");
-    if (mainId && moonletId && moonlet && heavy?.kind === "heavyMainAndMoonlet") {
+    if (mainId && moonletId && moonlet) {
       const pairId = canonicalPair(mainId, moonletId);
       const key = `bigIron.kineticExplosion\0${pairId}\0${target.id}`;
       const previous = bigIronPairHits[key];
@@ -1837,112 +1836,140 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
     return Boolean(a && b && liveProjectileIds.has(a) && liveProjectileIds.has(b));
   }));
 
-  const wakeRule = context.build.areas.find((rule) => rule.kind === "trail");
-  if (wakeRule?.kind === "trail") {
-    for (const segment of current.segments) {
-      const source = segment.source;
-      if (source.generation !== 0 || !source.activatedEffectIds.includes(wakeRule.effectId)
-        || segment.distance <= EPSILON) continue;
-      const bornAt = current.now - context.dt + segment.startTime * context.dt;
-      const wakeSegment = {
-        id: `${source.lineageId}:${current.step}:${segment.index}`,
-        from: { ...segment.from },
-        to: { ...segment.to },
-        bornAt,
-        expiresAt: bornAt + wakeRule.duration,
-        width: wakeRule.width,
-        damage: segment.startDamage * wakeRule.damageScale,
-        sourceProjectile: immutableProjectileSnapshot(source),
-      };
-      const previous = wakeTrails[source.lineageId];
-      const segments = [
-        ...(previous?.segments ?? []),
-        wakeSegment,
-      ].sort((a, b) => a.bornAt - b.bornAt || a.id.localeCompare(b.id));
-      const simultaneousSegments = Math.max(...segments.map((candidate) => segments.filter((segment) =>
-        segment.bornAt < candidate.expiresAt - EPSILON
-        && segment.expiresAt > candidate.bornAt + EPSILON).length));
-      if (simultaneousSegments + 1 > 97) throw new Error(`Wake trail point bound exceeds 97 for ${source.lineageId}`);
-      wakeTrails[source.lineageId] = {
-        lineageId: source.lineageId,
-        rootTriggerId: source.rootTriggerId,
-        nextTickAt: previous?.nextTickAt ?? bornAt + 1 / wakeRule.tickRate,
-        tickInterval: 1 / wakeRule.tickRate,
-        cooldown: wakeRule.cooldown,
-        segments,
-      };
-    }
-    wakeTrails = Object.fromEntries(Object.entries(wakeTrails).flatMap(([lineageId, trail]) => {
-      const segments = trail.segments;
-      let nextTickAt = trail.nextTickAt;
-      while (nextTickAt <= current.now + EPSILON) {
-        const active = segments.filter(({ bornAt, expiresAt }) => bornAt <= nextTickAt + EPSILON && nextTickAt < expiresAt - EPSILON);
-        if (active.length > 0) targets = targets.map((target) => {
-          if (!target.immortal && target.health <= 0) return target;
-          const key = `${wakeRule.effectId}\0${lineageId}\0${target.id}`;
-          if (nextTickAt < (wakeCooldowns[key] ?? 0) - EPSILON) return target;
-          const segment = active.find((candidate) =>
-            segmentCircleHitTime(candidate.from, candidate.to, target, target.radius + candidate.width / 2) !== null);
-          if (!segment) return target;
-          const source = segment.sourceProjectile;
-          const healthBefore = target.health;
-          const damaged = target.immortal ? target : { ...target, health: target.health - segment.damage };
-          const event: DamageEvent = {
-            source: "area",
-            damage: segment.damage,
-            time: nextTickAt,
-            targetId: target.id,
-            artifactId: wakeRule.artifactId,
-            effectId: wakeRule.effectId,
-            rootTriggerId: source.rootTriggerId,
-            lineageId: source.lineageId,
-            projectileId: source.id,
-            killReactionDepth: 0,
-            originPower: source.originPower,
-            generation: source.generation,
-            reactiveEffectIds: source.activatedEffectIds,
-            x: target.x,
-            y: target.y,
-          };
-          metrics = recordDamage(metrics, event);
-          const killed = captureKillContext(damaged, healthBefore, event, source);
-          if (killed) {
-            killContexts.push(killed);
-            metrics = recordKill(metrics, damaged.id);
-          }
-          wakeCooldowns[key] = nextTickAt + trail.cooldown;
-          return damaged;
-        });
-        nextTickAt += trail.tickInterval;
-      }
-      const liveSegments = segments.filter(({ expiresAt }) => expiresAt > current.now);
-      if (liveSegments.length === 0) return [];
-      const expiresAt = Math.max(...liveSegments.map((segment) => segment.expiresAt));
-      const vfxId = `area:wake:${lineageId}`;
-      const prior = vfxCommands.find(({ id }) => id === vfxId);
-      const command: VfxCommand = {
-        id: vfxId,
-        kind: wakeRule.effectId,
-        artifactId: wakeRule.artifactId,
-        bornAt: prior?.bornAt ?? liveSegments[0]!.bornAt,
-        expiresAt,
-        x: liveSegments.at(-1)!.to.x,
-        y: liveSegments.at(-1)!.to.y,
-      };
-      const commandIndex = vfxCommands.findIndex(({ id }) => id === vfxId);
-      if (commandIndex >= 0) vfxCommands[commandIndex] = command;
-      else vfxCommands.push(command);
-      return [[lineageId, { ...trail, nextTickAt, segments: liveSegments }]];
-    }));
-    const activeLineages = new Set(Object.keys(wakeTrails));
-    wakeCooldowns = Object.fromEntries(Object.entries(wakeCooldowns).filter(([key, expiresAt]) => {
-      const lineageId = key.split("\0")[1];
-      return expiresAt > current.now && Boolean(lineageId && activeLineages.has(lineageId));
-    }));
-  } else {
-    wakeTrails = {};
-    wakeCooldowns = {};
+  const currentWakeRule = context.build.areas.find((rule) => rule.kind === "trail");
+  for (const segment of current.segments) {
+    const source = segment.source;
+    const previous = wakeTrails[source.lineageId];
+    const wakeRule = currentWakeRule?.kind === "trail" && source.activatedEffectIds.includes(currentWakeRule.effectId)
+      ? currentWakeRule
+      : previous && source.activatedEffectIds.includes(previous.effectId) ? {
+        artifactId: previous.artifactId,
+        effectId: previous.effectId,
+        width: previous.width,
+        duration: previous.duration,
+        tickRate: 1 / previous.tickInterval,
+        damageScale: previous.damageScale,
+        cooldown: previous.cooldown,
+      } : undefined;
+    if (!wakeRule || source.generation !== 0 || segment.distance <= EPSILON) continue;
+    const bornAt = current.now - context.dt + segment.startTime * context.dt;
+    const completeAt = current.now - context.dt + segment.endTime * context.dt;
+    const wakeSegment = {
+      id: `${source.lineageId}:${current.step}:${segment.index}`,
+      from: { ...segment.from },
+      to: { ...segment.to },
+      bornAt,
+      completeAt,
+      expiresAt: completeAt + wakeRule.duration,
+      duration: wakeRule.duration,
+      width: wakeRule.width,
+      damage: segment.startDamage * wakeRule.damageScale,
+      sourceProjectile: immutableProjectileSnapshot(source),
+    };
+    const segments = [
+      ...(previous?.segments ?? []),
+      wakeSegment,
+    ].sort((a, b) => a.bornAt - b.bornAt || a.id.localeCompare(b.id));
+    wakeTrails[source.lineageId] = {
+      lineageId: source.lineageId,
+      rootTriggerId: source.rootTriggerId,
+      artifactId: wakeRule.artifactId,
+      effectId: wakeRule.effectId,
+      nextTickAt: previous?.nextTickAt ?? bornAt + 1 / wakeRule.tickRate,
+      tickInterval: 1 / wakeRule.tickRate,
+      cooldown: wakeRule.cooldown,
+      width: wakeRule.width,
+      duration: wakeRule.duration,
+      damageScale: wakeRule.damageScale,
+      segments,
+    };
   }
+  wakeTrails = Object.fromEntries(Object.entries(wakeTrails).flatMap(([lineageId, trail]) => {
+    const segments = trail.segments;
+    let nextTickAt = trail.nextTickAt;
+    while (nextTickAt <= current.now + EPSILON) {
+      const active = segments.flatMap((segment) => {
+        if (nextTickAt < segment.bornAt - EPSILON || nextTickAt >= segment.expiresAt - EPSILON) return [];
+        const formationDuration = segment.completeAt - segment.bornAt;
+        if (formationDuration <= EPSILON) return [{ segment, from: segment.from, to: segment.to }];
+        const endProgress = clamp((nextTickAt - segment.bornAt) / formationDuration, 0, 1);
+        const rawStart = (nextTickAt - segment.duration - segment.bornAt) / formationDuration;
+        const startProgress = clamp(rawStart + (rawStart >= 0 ? EPSILON : 0), 0, 1);
+        if (endProgress < startProgress) return [];
+        const pointAt = (progress: number) => ({
+          x: segment.from.x + (segment.to.x - segment.from.x) * progress,
+          y: segment.from.y + (segment.to.y - segment.from.y) * progress,
+        });
+        return [{ segment, from: pointAt(startProgress), to: pointAt(endProgress) }];
+      });
+      if (active.length > 0) targets = targets.map((target) => {
+        if (!target.immortal && target.health <= 0) return target;
+        const key = `${trail.effectId}\0${lineageId}\0${target.id}`;
+        if (nextTickAt < (wakeCooldowns[key] ?? 0) - EPSILON) return target;
+        const hit = active.find((candidate) => segmentCircleHitTime(
+          candidate.from,
+          candidate.to,
+          target,
+          target.radius + candidate.segment.width / 2,
+        ) !== null);
+        if (!hit) return target;
+        const { segment } = hit;
+        const source = segment.sourceProjectile;
+        const healthBefore = target.health;
+        const damaged = target.immortal ? target : { ...target, health: target.health - segment.damage };
+        const event: DamageEvent = {
+          source: "area",
+          damage: segment.damage,
+          time: nextTickAt,
+          targetId: target.id,
+          artifactId: trail.artifactId,
+          effectId: trail.effectId,
+          rootTriggerId: source.rootTriggerId,
+          lineageId: source.lineageId,
+          projectileId: source.id,
+          killReactionDepth: 0,
+          originPower: source.originPower,
+          generation: source.generation,
+          reactiveEffectIds: source.activatedEffectIds,
+          x: target.x,
+          y: target.y,
+        };
+        metrics = recordDamage(metrics, event);
+        const killed = captureKillContext(damaged, healthBefore, event, source);
+        if (killed) {
+          killContexts.push(killed);
+          metrics = recordKill(metrics, damaged.id);
+        }
+        wakeCooldowns[key] = nextTickAt + trail.cooldown;
+        return damaged;
+      });
+      nextTickAt += trail.tickInterval;
+    }
+    const liveSegments = segments.filter(({ expiresAt }) => tolerantDifference(expiresAt, current.now) > 0);
+    if (liveSegments.length === 0) return [];
+    if (liveSegments.length + 1 > 97) throw new Error(`Wake trail point bound exceeds 97 for ${lineageId}`);
+    const expiresAt = Math.max(...liveSegments.map((segment) => segment.expiresAt));
+    const vfxId = `area:wake:${lineageId}`;
+    const prior = vfxCommands.find(({ id }) => id === vfxId);
+    const command: VfxCommand = {
+      id: vfxId,
+      kind: trail.effectId,
+      artifactId: trail.artifactId,
+      bornAt: prior?.bornAt ?? liveSegments[0]!.bornAt,
+      expiresAt,
+      x: liveSegments.at(-1)!.to.x,
+      y: liveSegments.at(-1)!.to.y,
+    };
+    const commandIndex = vfxCommands.findIndex(({ id }) => id === vfxId);
+    if (commandIndex >= 0) vfxCommands[commandIndex] = command;
+    else vfxCommands.push(command);
+    return [[lineageId, { ...trail, nextTickAt, segments: liveSegments }]];
+  }));
+  const activeLineages = new Set(Object.keys(wakeTrails));
+  wakeCooldowns = Object.fromEntries(Object.entries(wakeCooldowns).filter(([key, expiresAt]) => {
+    const lineageId = key.split("\0")[1];
+    return expiresAt > current.now && Boolean(lineageId && activeLineages.has(lineageId));
+  }));
 
   const crossfireRule = context.build.areas.find((rule) => rule.kind === "pathCross");
   if (crossfireRule?.kind === "pathCross") {
@@ -1981,6 +2008,7 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
       const source = aDamage < bDamage || (aDamage === bDamage && crossing.a < crossing.b)
         ? crossing.aSegment.source : crossing.bSegment.source;
       const damage = Math.min(aDamage, bDamage) * crossfireRule.damageScale;
+      const pulseAt = current.now - context.dt + crossing.crossingTime * context.dt;
       const direction = (segment: SweptSegment) => {
         const dx = segment.to.x - segment.from.x;
         const dy = segment.to.y - segment.from.y;
@@ -2004,7 +2032,7 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
         const event: DamageEvent = {
           source: "area",
           damage,
-          time: current.now - context.dt + crossing.crossingTime * context.dt,
+          time: pulseAt,
           targetId: target.id,
           artifactId: crossfireRule.artifactId,
           effectId: crossfireRule.effectId,
@@ -2030,8 +2058,8 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
         id: `crossfire:${current.step}:${crossing.pairId}`,
         pairId: crossing.pairId,
         rootTriggerId: source.rootTriggerId,
-        bornAt: current.now,
-        expiresAt: current.now + crossfireRule.duration,
+        bornAt: pulseAt,
+        expiresAt: pulseAt + crossfireRule.duration,
         x: crossing.point.x,
         y: crossing.point.y,
         ax: aDirection.x,
@@ -2046,8 +2074,8 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
         id: `vfx-${nextId++}`,
         kind: crossfireRule.effectId,
         artifactId: crossfireRule.artifactId,
-        bornAt: current.now,
-        expiresAt: current.now + crossfireRule.duration,
+        bornAt: pulseAt,
+        expiresAt: pulseAt + crossfireRule.duration,
         x: crossing.point.x,
         y: crossing.point.y,
       });
