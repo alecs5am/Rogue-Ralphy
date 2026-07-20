@@ -110,7 +110,7 @@ function templateFromSpec(
   origin: Point,
   activatedEffectIds: readonly string[],
 ): ProjectileState {
-  const { split: _, ...behaviors } = spec.behaviors;
+  const { split: _, crossfire: __, ...behaviors } = spec.behaviors;
   const spiral = behaviors.spiral;
   const velocity = { vx: Math.cos(spec.heading) * spec.speed, vy: Math.sin(spec.heading) * spec.speed };
   return cloneProjectile({

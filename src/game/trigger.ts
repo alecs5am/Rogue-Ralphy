@@ -123,6 +123,7 @@ export function expandTrigger(context: TriggerContext) {
   const locket = trigger("lowHealthOrbital");
   const bigIron = trigger("heavyMainAndMoonlet");
   const posse = trigger("playerSatellite");
+  const crossfire = context.build.areas.find((rule) => rule.kind === "pathCross");
   const grave = trigger("delayedVolley");
   const teslaProc = Boolean(tesla && context.rng() < tesla.chance);
   const logicalCount = twin ? 2 + Number(teslaProc) : 1 + Number(teslaProc);
@@ -239,6 +240,21 @@ export function expandTrigger(context: TriggerContext) {
     };
   }
 
+  if (crossfire?.kind === "pathCross") for (const root of roots) root.spec = {
+    ...root.spec,
+    behaviors: {
+      ...root.spec.behaviors,
+      crossfire: {
+        artifactId: crossfire.artifactId,
+        effectId: crossfire.effectId,
+        length: crossfire.length,
+        damageScale: crossfire.damageScale,
+        participationCap: crossfire.participationCap,
+        duration: crossfire.duration,
+      },
+    },
+  };
+
   if (context.weapon.projectileBase.behaviors.spiral) {
     for (const at of new Set(roots.map(({ at }) => at))) {
       const volley = roots.filter((root) => root.at === at).sort((a, b) => a.localOrdinal - b.localOrdinal);
@@ -274,7 +290,7 @@ export function expandTrigger(context: TriggerContext) {
 
   if (bigIron) for (const source of generationZeroScheduled) {
     if (roots[source.localOrdinal]?.locket) continue;
-    const { split: _, ...compatibleBehaviors } = source.spec.behaviors;
+    const { split: _, crossfire: __, ...compatibleBehaviors } = source.spec.behaviors;
     scheduled.push(Object.freeze({
       at: source.at,
       generation: 1 as const,
@@ -357,7 +373,7 @@ export function expandTrigger(context: TriggerContext) {
     delay: number,
     damageScale: number,
   ): ScheduledProjectile => {
-    const { split: _, ...compatibleBehaviors } = source.spec.behaviors;
+    const { split: _, crossfire: __, ...compatibleBehaviors } = source.spec.behaviors;
     const effectIds = source.effectIds.filter((effectId) => !emissionEffectIds.has(effectId) && effectId !== "lastBell.rings");
     return Object.freeze({
       at: source.at + delay,

@@ -235,10 +235,14 @@ export function spawnWave(state: GameState): GameState {
 
 export function clearTargets(state: GameState): GameState {
   const metrics = retainTargetMetrics(state.metrics, []);
+  const activeProjectileIds = new Set(state.projectiles.map(({ id }) => id));
   const activeRoots = new Set([
     ...state.projectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...state.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
   ]);
+  const wakeTrails = Object.fromEntries(Object.entries(state.wakeTrails)
+    .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId)));
+  const activeWakeLineages = new Set(Object.keys(wakeTrails));
   return {
     ...state,
     targets: [],
@@ -246,14 +250,26 @@ export function clearTargets(state: GameState): GameState {
     areas: [],
     vfxCommands: [],
     teslaLinks: [],
-    teslaCooldowns: {},
-    satellites: [],
-    wakeTrails: {},
-    wakeCooldowns: {},
+    teslaCooldowns: Object.fromEntries(Object.entries(state.teslaCooldowns).filter(([key, expiresAt]) => {
+      if (expiresAt <= state.time) return false;
+      const pairId = key.split("\0")[1];
+      if (!pairId) return false;
+      const [a, b] = pairId.split(":");
+      return Boolean(a && b && activeProjectileIds.has(a) && activeProjectileIds.has(b));
+    })),
+    satellites: state.satellites.filter(({ expiresAt }) => expiresAt > state.time),
+    wakeTrails,
+    wakeCooldowns: Object.fromEntries(Object.entries(state.wakeCooldowns).filter(([key, expiresAt]) => {
+      const lineageId = key.split("\0")[1];
+      return expiresAt > state.time && Boolean(lineageId && activeWakeLineages.has(lineageId));
+    })),
     crossfirePulses: [],
-    crossfireParticipation: {},
-    bigIronPairHits: {},
-    descendantsByRoot: {},
+    crossfireParticipation: Object.fromEntries(Object.entries(state.crossfireParticipation)
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    bigIronPairHits: Object.fromEntries(Object.entries(state.bigIronPairHits)
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    descendantsByRoot: Object.fromEntries(Object.entries(state.descendantsByRoot)
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
     relayLedger: Object.fromEntries(Object.entries(state.relayLedger)
       .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
     emittedEffects: Object.fromEntries(Object.entries(state.emittedEffects)

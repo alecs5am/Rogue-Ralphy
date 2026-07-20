@@ -4,7 +4,7 @@ import { resolveCombatPhases, resolveImpactPhase, type CombatContext, type Comba
 import { createMetrics } from "./metrics";
 import type { ProjectileState } from "./projectiles";
 import { ROOM } from "./room";
-import { createGame, setArtifact, updateGame } from "./simulation";
+import { clearTargets, createGame, setArtifact, updateGame } from "./simulation";
 import {
   areaId,
   buildSpatialCandidates,
@@ -392,6 +392,70 @@ test("Big Iron keeps its moonlet attached when the main survives a bounce", () =
   expect(state.projectiles.find(({ id }) => id === moonlet.id)?.moonlet?.parentId).toBe(main.id);
 });
 
+test("a surviving main bounce clips its attached moonlet before invalid future hits", () => {
+  const build = compileCombatBuild({ bigIron: true, pinball: true });
+  const main = projectile("projectile-1", {
+    remainingBounces: 1,
+    moonletId: "projectile-2",
+    bigIronMain: { moonletId: "projectile-2", mainDamage: 24, heading: 0 },
+  });
+  const moonlet = projectile("projectile-2", {
+    generation: 1,
+    x: 214,
+    emission: { artifactId: "bigIron", effectId: "bigIron.moonlet" },
+    moonlet: {
+      mainId: main.id,
+      parentId: main.id,
+      orbitRadius: 14,
+      angularSpeed: 6 * Math.PI,
+      angle: 0,
+      expiresAt: 8,
+      remainingRange: 800,
+      mainDamage: 24,
+      pairWindow: 0.25,
+      explosionRadius: 56,
+      explosionDamageScale: 0.5,
+      knockback: 60,
+    },
+  });
+  const swept = (source: ProjectileState, fromX: number, toX: number) => ({
+    projectileId: source.id,
+    source,
+    index: 0,
+    from: { x: fromX, y: 300 },
+    to: { x: toX, y: 300 },
+    distance: toX - fromX,
+    startTime: 0,
+    endTime: 1,
+    liveDuration: 1,
+    expiresAfterMove: false,
+    startTravelled: 0,
+    endTravelled: toX - fromX,
+    startRadius: source.radius,
+    endRadius: source.radius,
+    startDamage: source.damage,
+    endDamage: source.damage,
+    leg: "outbound" as const,
+  });
+  const invalidTarget = target("invalid-continuation", 294, 300);
+  const state = resolveImpactPhase({
+    ...runtime({ projectiles: [main, moonlet], targets: [invalidTarget] }),
+    segments: [swept(main, 200, 300), swept(moonlet, 214, 314)],
+    events: [
+      { eventTime: 0.2, segmentTime: 0.2, segmentIndex: 0, kind: "wall", projectileId: main.id, colliderId: "room", point: { x: 220, y: 300 }, normal: { x: -1, y: 0 } },
+      { eventTime: 0.8, segmentTime: 0.8, segmentIndex: 0, kind: "target", projectileId: moonlet.id, targetId: invalidTarget.id, point: { x: 294, y: 300 }, normal: { x: -1, y: 0 } },
+    ],
+  } as unknown as CombatRuntime, context(build, { dt: 1 }));
+
+  const attached = state.projectiles.find(({ id }) => id === moonlet.id)!;
+  const angle = 6 * Math.PI * 0.2;
+  expect(state.metrics.hits).toBe(0);
+  expect(state.targets[0]?.health).toBe(100);
+  expect(attached.moonlet?.parentId).toBe(main.id);
+  expect(attached.x).toBeCloseTo(220 + Math.cos(angle) * 14, 8);
+  expect(attached.y).toBeCloseTo(300 + Math.sin(angle) * 14, 8);
+});
+
 test("a released moonlet ignores stale attached-path collisions after parent removal", () => {
   const build = compileCombatBuild({ bigIron: true });
   const main = projectile("projectile-1", {
@@ -604,13 +668,23 @@ test("a sustained 120 Hz Ectoplasmic Wake stays within its valid 97-point bound"
 
 test("Crossfire creates one canonical pulse and consumes each projectile once", () => {
   const build = compileCombatBuild({ crossfireCovenant: true });
+  const rule = build.areas.find((candidate) => candidate.kind === "pathCross");
+  if (rule?.kind !== "pathCross") throw new Error("Crossfire rule missing");
   const activatedEffectIds = ["baseRevolver.direct", "crossfireCovenant.cross"];
+  const behaviors = { crossfire: {
+    artifactId: rule.artifactId,
+    effectId: rule.effectId,
+    length: rule.length,
+    damageScale: rule.damageScale,
+    participationCap: rule.participationCap,
+    duration: rule.duration,
+  } };
   const state = resolveCombatPhases(runtime({
     now: 0.1,
     projectiles: [
-      projectile("projectile-2", { x: 250, y: 250, vx: 1000, vy: 1000, speed: Math.SQRT2 * 1000, damage: 12, activatedEffectIds, penetration: { obstacles: false, targets: true } }),
-      projectile("projectile-1", { x: 250, y: 350, vx: 1000, vy: -1000, speed: Math.SQRT2 * 1000, damage: 20, activatedEffectIds, penetration: { obstacles: false, targets: true } }),
-      projectile("projectile-3", { x: 300, y: 250, vx: 0, vy: 1000, speed: 1000, damage: 30, activatedEffectIds, penetration: { obstacles: false, targets: true } }),
+      projectile("projectile-2", { x: 250, y: 250, vx: 1000, vy: 1000, speed: Math.SQRT2 * 1000, damage: 12, activatedEffectIds, behaviors, penetration: { obstacles: false, targets: true } }),
+      projectile("projectile-1", { x: 250, y: 350, vx: 1000, vy: -1000, speed: Math.SQRT2 * 1000, damage: 20, activatedEffectIds, behaviors, penetration: { obstacles: false, targets: true } }),
+      projectile("projectile-3", { x: 300, y: 250, vx: 0, vy: 1000, speed: 1000, damage: 30, activatedEffectIds, behaviors, penetration: { obstacles: false, targets: true } }),
     ],
     targets: [target("crossed", 300, 300)],
   }), context(build, { dt: 0.1 }));
@@ -622,6 +696,98 @@ test("Crossfire creates one canonical pulse and consumes each projectile once", 
   expect(state.metrics.hitEvents.filter(({ effectId }) => effectId === "crossfireCovenant.cross"))
     .toEqual([expect.objectContaining({ source: "area", targetId: "crossed", projectileId: "projectile-2", damage: 3 })]);
   expect(Object.keys(state.crossfireParticipation ?? {}).sort()).toEqual(["projectile-1", "projectile-2"]);
+});
+
+test("accepted Crossfire projectiles retain their exact payload after ownership is removed", () => {
+  const idle = {
+    moveX: 0, moveY: 0, aimX: 576, aimY: 288,
+    firing: false, reloadPressed: false, paused: false,
+  } as const;
+  let game = setArtifact(setArtifact(createGame(() => 0.9), "twinChamber", true), "crossfireCovenant", true);
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  game = setArtifact(game, "crossfireCovenant", false);
+  game = {
+    ...game,
+    projectiles: game.projectiles.map((shot, index) => {
+      const { converge: _, ...behaviors } = shot.behaviors;
+      return {
+        ...shot,
+        x: 250,
+        y: index === 0 ? 250 : 350,
+        vx: 1000,
+        vy: index === 0 ? 1000 : -1000,
+        speed: Math.SQRT2 * 1000,
+        behaviors,
+        converge: undefined,
+        convergeDone: true,
+      };
+    }),
+  };
+  game = updateGame(game, idle, 0.1, 1.1);
+
+  expect(game.metrics.hitEvents.filter(({ effectId }) => effectId === "crossfireCovenant.cross")).toHaveLength(0);
+  expect(game.crossfirePulses).toHaveLength(1);
+  expect(Object.keys(game.crossfireParticipation)).toHaveLength(2);
+});
+
+test("Clear Targets retains live root relation histories and the cumulative descendant ceiling", () => {
+  const wake = projectile("projectile-1", {
+    activatedEffectIds: ["baseRevolver.direct", "ectoplasmicWake.trail"],
+  });
+  const peer = projectile("projectile-2");
+  const wakeState = resolveCombatPhases(runtime({ now: 0.1, projectiles: [wake] }), context(compileCombatBuild({ ectoplasmicWake: true })));
+  const pairId = canonicalPair(wake.id, peer.id);
+  const cooldownKey = `teslaBullets.link\0${pairId}\0removed-target`;
+  const cleared = clearTargets({
+    ...createGame(() => 0.9),
+    time: 0.1,
+    projectiles: [wake, peer],
+    targets: [target("removed-target", 220, 300)],
+    teslaCooldowns: { [cooldownKey]: 2 },
+    wakeTrails: { ...(wakeState.wakeTrails ?? {}) },
+    crossfireParticipation: {
+      [wake.id]: { rootTriggerId: wake.rootTriggerId, pairId },
+      stale: { rootTriggerId: "stale-root", pairId: "stale:pair" },
+    },
+    bigIronPairHits: {
+      live: {
+        rootTriggerId: wake.rootTriggerId,
+        mainId: wake.id,
+        moonletId: peer.id,
+        targetId: "removed-target",
+        firstAt: 0,
+        firstProjectileId: wake.id,
+        mainDamage: 20,
+        heading: 0,
+        spent: true,
+      },
+      stale: {
+        rootTriggerId: "stale-root",
+        mainId: "stale-main",
+        moonletId: "stale-moonlet",
+        targetId: "removed-target",
+        firstAt: 0,
+        firstProjectileId: "stale-main",
+        mainDamage: 20,
+        heading: 0,
+        spent: false,
+      },
+    },
+    descendantsByRoot: {
+      [wake.rootTriggerId]: { rootTriggerId: wake.rootTriggerId, count: 294, limit: 294 },
+      "stale-root": { rootTriggerId: "stale-root", count: 1, limit: 294 },
+    },
+  });
+
+  expect(cleared.teslaCooldowns).toEqual({ [cooldownKey]: 2 });
+  expect(cleared.wakeTrails[wake.lineageId]?.segments).toHaveLength(1);
+  expect(cleared.crossfireParticipation).toEqual({
+    [wake.id]: { rootTriggerId: wake.rootTriggerId, pairId },
+  });
+  expect(Object.keys(cleared.bigIronPairHits)).toEqual(["live"]);
+  expect(cleared.descendantsByRoot).toEqual({
+    [wake.rootTriggerId]: { rootTriggerId: wake.rootTriggerId, count: 294, limit: 294 },
+  });
 });
 
 test("cumulative generation-one accounting accepts child 294 and rejects child 295", () => {

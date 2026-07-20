@@ -6,6 +6,14 @@ import { buildSpatialCandidates } from "./areas";
 export type SpiralBehavior = Readonly<{ initialRadius: number; radialSpeed: number; angularSpeed: number; lifetime: number }>;
 export type HomingBehavior = Readonly<{ radius: number; turnRate: number }>;
 export type TeslaBehavior = Readonly<{ radius: number; neighbors: number; damageScale: number; cooldown: number }>;
+export type CrossfireBehavior = Readonly<{
+  artifactId: string;
+  effectId: string;
+  length: number;
+  damageScale: number;
+  participationCap: number;
+  duration: number;
+}>;
 export type SplitBehavior = Readonly<{
   distance: number;
   count: number;
@@ -61,6 +69,7 @@ export type ProjectileBehaviors = Readonly<{
   return?: ReturnBehavior;
   comet?: CometBehavior;
   tesla?: TeslaBehavior;
+  crossfire?: CrossfireBehavior;
   split?: SplitBehavior;
   penetration?: PenetrationBehavior;
 }>;
@@ -213,7 +222,7 @@ export function advanceTrajectory(projectile: ProjectileState, targets: readonly
 export function splitProjectile(parent: ProjectileState, nextIds: Iterable<string>): ProjectileState[] {
   const split = parent.behaviors.split;
   if (!split) return [];
-  const { split: _, ...inheritedBehaviors } = parent.behaviors;
+  const { split: _, crossfire: __, ...inheritedBehaviors } = parent.behaviors;
   const heading = Math.atan2(parent.vy, parent.vx);
   const splitOrigin = Object.freeze({ x: parent.x, y: parent.y });
   return Array.from(nextIds).slice(0, split.count).map((id, index) => {

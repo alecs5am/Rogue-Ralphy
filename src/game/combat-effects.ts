@@ -1045,7 +1045,7 @@ const lineageEmissionKey = (effectId: string, lineageId: string): string => `lin
 function emissionSpecs(source: ProjectileState, rule: EmissionRule, headings: readonly number[]): ProjectileSpec[] {
   const damageScale = "damageScale" in rule ? rule.damageScale : 1;
   const radiusScale = "radiusScale" in rule ? rule.radiusScale : 1;
-  const { split: _, ...behaviors } = source.behaviors;
+  const { split: _, crossfire: __, ...behaviors } = source.behaviors;
   return headings.map((heading) => ({
     triggerId: source.rootTriggerId,
     heading,
@@ -1158,6 +1158,28 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     moonlet.maxTravel = moonlet.travelled + moonlet.moonlet.remainingRange;
     releasedMoonlets.add(moonlet.id);
     releasedMoonletAt.set(moonlet.id, event.eventTime);
+  };
+
+  const settleAttachedMoonlet = (main: ProjectileState, event: CombatEvent): void => {
+    const moonlet = main.bigIronMain && projectileById.get(main.bigIronMain.moonletId);
+    if (!moonlet?.moonlet || moonlet.moonlet.parentId !== main.id
+      || removed.has(moonlet.id) || settled.has(moonlet.id)) return;
+    const motionSegment = current.segments.find(({ projectileId }) => projectileId === moonlet.id);
+    const motionStart = motionSegment?.source.moonlet;
+    const angle = (motionStart?.angle ?? moonlet.moonlet.angle)
+      + moonlet.moonlet.angularSpeed * context.dt * event.eventTime;
+    moonlet.x = main.x + Math.cos(angle) * moonlet.moonlet.orbitRadius;
+    moonlet.y = main.y + Math.sin(angle) * moonlet.moonlet.orbitRadius;
+    moonlet.vx = main.vx - Math.sin(angle) * moonlet.moonlet.angularSpeed * moonlet.moonlet.orbitRadius;
+    moonlet.vy = main.vy + Math.cos(angle) * moonlet.moonlet.angularSpeed * moonlet.moonlet.orbitRadius;
+    if (motionSegment) {
+      const local = motionSegment.endTime === motionSegment.startTime ? 0
+        : clamp((event.eventTime - motionSegment.startTime) / (motionSegment.endTime - motionSegment.startTime), 0, 1);
+      moonlet.travelled = motionSegment.startTravelled + motionSegment.distance * local;
+    }
+    moonlet.moonlet = { ...moonlet.moonlet, angle };
+    terminalTimes[moonlet.id] = event.eventTime;
+    settled.add(moonlet.id);
   };
 
   const stopProjectile = (projectile: ProjectileState, event: CombatEvent): void => {
@@ -1329,6 +1351,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
           stopProjectile(projectile, event);
           removed.add(projectile.id);
         } else {
+          settleAttachedMoonlet(projectile, event);
           terminalTimes[projectile.id] = event.eventTime;
           settled.add(projectile.id);
         }
@@ -1591,6 +1614,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
         stopProjectile(projectile, event);
         removed.add(projectile.id);
       } else {
+        settleAttachedMoonlet(projectile, event);
         terminalTimes[projectile.id] = event.eventTime;
         settled.add(projectile.id);
       }
@@ -1971,115 +1995,117 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
     return expiresAt > current.now && Boolean(lineageId && activeLineages.has(lineageId));
   }));
 
-  const crossfireRule = context.build.areas.find((rule) => rule.kind === "pathCross");
-  if (crossfireRule?.kind === "pathCross") {
-    const paths = new Map<string, typeof current.segments>();
-    for (const segment of current.segments) {
-      if (segment.source.generation !== 0 || !segment.source.activatedEffectIds.includes(crossfireRule.effectId)) continue;
-      paths.set(segment.projectileId, [...(paths.get(segment.projectileId) ?? []), segment]);
-    }
-    const candidates = buildSpatialCandidates([...paths].map(([id, segments]) => ({ id, segments })));
-    const crossings = candidates.flatMap(({ id: pairId, a, b }) => {
-      const found = (paths.get(a) ?? []).flatMap((aSegment) => (paths.get(b) ?? []).flatMap((bSegment) => {
-        const crossing = crossingOf(aSegment, bSegment);
-        if (!crossing) return [];
-        const sharedBirth = crossing.aTime <= EPSILON && crossing.bTime <= EPSILON
-          && Math.hypot(aSegment.from.x - bSegment.from.x, aSegment.from.y - bSegment.from.y) <= EPSILON;
-        if (sharedBirth) return [];
-        const aTerminal = current.terminalTimes[a];
-        const bTerminal = current.terminalTimes[b];
-        if ((aTerminal !== undefined && tolerantDifference(crossing.crossingTime, aTerminal) >= 0)
-          || (bTerminal !== undefined && tolerantDifference(crossing.crossingTime, bTerminal) >= 0)) return [];
-        return [{ pairId, a, b, aSegment, bSegment, ...crossing }];
-      }));
-      return found.sort((first, second) => first.crossingTime - second.crossingTime)[0] ?? [];
-    }).sort((a, b) => a.crossingTime - b.crossingTime || a.pairId.localeCompare(b.pairId));
+  const crossfireFor = (source: ProjectileState) => {
+    const snapshot = source.behaviors.crossfire;
+    return snapshot && source.activatedEffectIds.includes(snapshot.effectId) ? snapshot : undefined;
+  };
+  const paths = new Map<string, typeof current.segments>();
+  for (const segment of current.segments) {
+    if (segment.source.generation !== 0 || !crossfireFor(segment.source)) continue;
+    paths.set(segment.projectileId, [...(paths.get(segment.projectileId) ?? []), segment]);
+  }
+  const candidates = buildSpatialCandidates([...paths].map(([id, segments]) => ({ id, segments })));
+  const crossings = candidates.flatMap(({ id: pairId, a, b }) => {
+    const found = (paths.get(a) ?? []).flatMap((aSegment) => (paths.get(b) ?? []).flatMap((bSegment) => {
+      const crossing = crossingOf(aSegment, bSegment);
+      if (!crossing) return [];
+      const sharedBirth = crossing.aTime <= EPSILON && crossing.bTime <= EPSILON
+        && Math.hypot(aSegment.from.x - bSegment.from.x, aSegment.from.y - bSegment.from.y) <= EPSILON;
+      if (sharedBirth) return [];
+      const aTerminal = current.terminalTimes[a];
+      const bTerminal = current.terminalTimes[b];
+      if ((aTerminal !== undefined && tolerantDifference(crossing.crossingTime, aTerminal) >= 0)
+        || (bTerminal !== undefined && tolerantDifference(crossing.crossingTime, bTerminal) >= 0)) return [];
+      return [{ pairId, a, b, aSegment, bSegment, ...crossing }];
+    }));
+    return found.sort((first, second) => first.crossingTime - second.crossingTime)[0] ?? [];
+  }).sort((a, b) => a.crossingTime - b.crossingTime || a.pairId.localeCompare(b.pairId));
 
-    for (const crossing of crossings) {
-      if (crossfireParticipation[crossing.a] || crossfireParticipation[crossing.b]) continue;
-      crossfireParticipation[crossing.a] = { rootTriggerId: crossing.aSegment.source.rootTriggerId, pairId: crossing.pairId };
-      crossfireParticipation[crossing.b] = { rootTriggerId: crossing.bSegment.source.rootTriggerId, pairId: crossing.pairId };
-      const damageAt = (segment: SweptSegment, time: number) => {
-        const local = segment.endTime === segment.startTime ? 0 : (time - segment.startTime) / (segment.endTime - segment.startTime);
-        return segment.startDamage + (segment.endDamage - segment.startDamage) * clamp(local, 0, 1);
-      };
-      const aDamage = damageAt(crossing.aSegment, crossing.aTime);
-      const bDamage = damageAt(crossing.bSegment, crossing.bTime);
-      const source = aDamage < bDamage || (aDamage === bDamage && crossing.a < crossing.b)
-        ? crossing.aSegment.source : crossing.bSegment.source;
-      const damage = Math.min(aDamage, bDamage) * crossfireRule.damageScale;
-      const pulseAt = current.now - context.dt + crossing.crossingTime * context.dt;
-      const direction = (segment: SweptSegment) => {
-        const dx = segment.to.x - segment.from.x;
-        const dy = segment.to.y - segment.from.y;
-        const length = Math.hypot(dx, dy) || 1;
-        return { x: dx / length, y: dy / length };
-      };
-      const aDirection = direction(crossing.aSegment);
-      const bDirection = direction(crossing.bSegment);
-      const half = crossfireRule.length / 2;
-      targets = targets.map((target) => {
-        if (!target.immortal && target.health <= 0) return target;
-        const intersects = [aDirection, bDirection].some((axis) => segmentCircleHitTime(
-          { x: crossing.point.x - axis.x * half, y: crossing.point.y - axis.y * half },
-          { x: crossing.point.x + axis.x * half, y: crossing.point.y + axis.y * half },
-          target,
-          target.radius,
-        ) !== null);
-        if (!intersects) return target;
-        const healthBefore = target.health;
-        const damaged = target.immortal ? target : { ...target, health: target.health - damage };
-        const event: DamageEvent = {
-          source: "area",
-          damage,
-          time: pulseAt,
-          targetId: target.id,
-          artifactId: crossfireRule.artifactId,
-          effectId: crossfireRule.effectId,
-          rootTriggerId: source.rootTriggerId,
-          lineageId: source.lineageId,
-          projectileId: source.id,
-          killReactionDepth: 0,
-          originPower: source.originPower,
-          generation: 0,
-          reactiveEffectIds: source.activatedEffectIds,
-          x: target.x,
-          y: target.y,
-        };
-        metrics = recordDamage(metrics, event);
-        const killed = captureKillContext(damaged, healthBefore, event, source);
-        if (killed) {
-          killContexts.push(killed);
-          metrics = recordKill(metrics, damaged.id);
-        }
-        return damaged;
-      });
-      crossfirePulses.push({
-        id: `crossfire:${current.step}:${crossing.pairId}`,
-        pairId: crossing.pairId,
-        rootTriggerId: source.rootTriggerId,
-        bornAt: pulseAt,
-        expiresAt: pulseAt + crossfireRule.duration,
-        x: crossing.point.x,
-        y: crossing.point.y,
-        ax: aDirection.x,
-        ay: aDirection.y,
-        bx: bDirection.x,
-        by: bDirection.y,
-        length: crossfireRule.length,
+  for (const crossing of crossings) {
+    if (crossfireParticipation[crossing.a] || crossfireParticipation[crossing.b]) continue;
+    const crossfireRule = crossfireFor(crossing.aSegment.source)!;
+    crossfireParticipation[crossing.a] = { rootTriggerId: crossing.aSegment.source.rootTriggerId, pairId: crossing.pairId };
+    crossfireParticipation[crossing.b] = { rootTriggerId: crossing.bSegment.source.rootTriggerId, pairId: crossing.pairId };
+    const damageAt = (segment: SweptSegment, time: number) => {
+      const local = segment.endTime === segment.startTime ? 0 : (time - segment.startTime) / (segment.endTime - segment.startTime);
+      return segment.startDamage + (segment.endDamage - segment.startDamage) * clamp(local, 0, 1);
+    };
+    const aDamage = damageAt(crossing.aSegment, crossing.aTime);
+    const bDamage = damageAt(crossing.bSegment, crossing.bTime);
+    const source = aDamage < bDamage || (aDamage === bDamage && crossing.a < crossing.b)
+      ? crossing.aSegment.source : crossing.bSegment.source;
+    const damage = Math.min(aDamage, bDamage) * crossfireRule.damageScale;
+    const pulseAt = current.now - context.dt + crossing.crossingTime * context.dt;
+    const direction = (segment: SweptSegment) => {
+      const dx = segment.to.x - segment.from.x;
+      const dy = segment.to.y - segment.from.y;
+      const length = Math.hypot(dx, dy) || 1;
+      return { x: dx / length, y: dy / length };
+    };
+    const aDirection = direction(crossing.aSegment);
+    const bDirection = direction(crossing.bSegment);
+    const half = crossfireRule.length / 2;
+    targets = targets.map((target) => {
+      if (!target.immortal && target.health <= 0) return target;
+      const intersects = [aDirection, bDirection].some((axis) => segmentCircleHitTime(
+        { x: crossing.point.x - axis.x * half, y: crossing.point.y - axis.y * half },
+        { x: crossing.point.x + axis.x * half, y: crossing.point.y + axis.y * half },
+        target,
+        target.radius,
+      ) !== null);
+      if (!intersects) return target;
+      const healthBefore = target.health;
+      const damaged = target.immortal ? target : { ...target, health: target.health - damage };
+      const event: DamageEvent = {
+        source: "area",
         damage,
-        projectileId: source.id,
-      });
-      vfxCommands.push({
-        id: `vfx-${nextId++}`,
-        kind: crossfireRule.effectId,
+        time: pulseAt,
+        targetId: target.id,
         artifactId: crossfireRule.artifactId,
-        bornAt: pulseAt,
-        expiresAt: pulseAt + crossfireRule.duration,
-        x: crossing.point.x,
-        y: crossing.point.y,
-      });
-    }
+        effectId: crossfireRule.effectId,
+        rootTriggerId: source.rootTriggerId,
+        lineageId: source.lineageId,
+        projectileId: source.id,
+        killReactionDepth: 0,
+        originPower: source.originPower,
+        generation: 0,
+        reactiveEffectIds: source.activatedEffectIds,
+        x: target.x,
+        y: target.y,
+      };
+      metrics = recordDamage(metrics, event);
+      const killed = captureKillContext(damaged, healthBefore, event, source);
+      if (killed) {
+        killContexts.push(killed);
+        metrics = recordKill(metrics, damaged.id);
+      }
+      return damaged;
+    });
+    crossfirePulses.push({
+      id: `crossfire:${current.step}:${crossing.pairId}`,
+      pairId: crossing.pairId,
+      rootTriggerId: source.rootTriggerId,
+      bornAt: pulseAt,
+      expiresAt: pulseAt + crossfireRule.duration,
+      x: crossing.point.x,
+      y: crossing.point.y,
+      ax: aDirection.x,
+      ay: aDirection.y,
+      bx: bDirection.x,
+      by: bDirection.y,
+      length: crossfireRule.length,
+      damage,
+      projectileId: source.id,
+    });
+    vfxCommands.push({
+      id: `vfx-${nextId++}`,
+      kind: crossfireRule.effectId,
+      artifactId: crossfireRule.artifactId,
+      bornAt: pulseAt,
+      expiresAt: pulseAt + crossfireRule.duration,
+      x: crossing.point.x,
+      y: crossing.point.y,
+    });
   }
   return {
     ...current,
