@@ -511,6 +511,64 @@ test("combat runtime rejects nonfinite values unsafe areas duplicate instances a
   }), context())).toThrow("Snare runtime geometry");
 });
 
+test("combat runtime enforces derived area and durable status ledger bounds", () => {
+  const area = (index: number) => ({
+    id: `area-${index}`,
+    effectId: "test.area",
+    artifactId: "test",
+    rootTriggerId: `trigger-${index}`,
+    instanceKey: "root",
+    bornAt: 0,
+    expiresAt: 1,
+    tickInterval: 0.1,
+  } as const);
+  const areaLimit = Math.ceil(context().fireRate * 3) * (1 + context().build.maxDescendants);
+  expect(() => resolveCombatPhases(runtime({
+    areas: Array.from({ length: areaLimit + 1 }, (_, index) => area(index)),
+  }), context())).toThrow("area live count exceeds derived bound");
+
+  expect(() => resolveCombatPhases(runtime({
+    snareRoots: {
+      ["ectoplasmSnare.pool\0trigger-1"]: { rootTriggerId: "trigger-1" },
+    },
+  }), context())).toThrow("Snare ledger live count exceeds derived bound");
+
+  expect(() => resolveCombatPhases(runtime({
+    projectiles: [projectile()],
+    snareRoots: {
+      ["ectoplasmSnare.pool\0wrong"]: { rootTriggerId: "trigger-1" },
+    },
+  }), context())).toThrow("invalid Snare ledger record");
+
+  expect(() => resolveCombatPhases(runtime({
+    killReactionHistory: {
+      ["cinderGospel.emberRing\0trigger-1"]: { rootTriggerId: "trigger-1" },
+    },
+  }), context())).toThrow("kill-reaction ledger live count exceeds derived bound");
+
+  expect(() => resolveCombatPhases(runtime({
+    projectiles: [projectile()],
+    killReactionHistory: {
+      ["cinderGospel.emberRing\0wrong"]: { rootTriggerId: "trigger-1" },
+    },
+  }), context())).toThrow("invalid kill-reaction ledger record");
+
+  const hex = compileCombatBuild({ hexBell: true });
+  expect(() => resolveCombatPhases(runtime({
+    targets: [{
+      id: "over-slowed", kind: "chaser", immortal: false, x: 1, y: 1, radius: 18,
+      health: 10, maxHealth: 10, speed: 0, frozenUntil: 0,
+      effects: {
+        chill: { count: 0, expiresAt: 0 }, ledger: { count: 0, expiresAt: 0 },
+        slows: [
+          { effectId: "hexBell.pulse", multiplier: 0.6, until: 1 },
+          { effectId: "hexBell.pulse", multiplier: 0.5, until: 1 },
+        ],
+      },
+    }],
+  }), context({ build: hex }))).toThrow("duplicate durable slow effect");
+});
+
 test("VFX commands are finite unique bounded and expire deterministically", () => {
   const vfx = {
     id: "vfx-1",
@@ -538,7 +596,7 @@ test("VFX commands are finite unique bounded and expire deterministically", () =
   expect(() => resolveCombatPhases(runtime({ vfxCommands: [{ ...vfx, expiresAt: 3.01 }] }), context())).toThrow("three seconds");
   expect(() => resolveCombatPhases(runtime({ vfxCommands: [{ ...vfx, x: Infinity }] }), context())).toThrow("finite");
 
-  const limit = Math.ceil(context().fireRate * 3 * (11 + context().build.maxDescendants));
+  const limit = Math.ceil(context().fireRate * 3 * (1 + context().build.maxDescendants));
   const overBound = Array.from({ length: limit + 1 }, (_, index) => ({ ...vfx, id: `vfx-${index}` }));
   expect(() => resolveCombatPhases(runtime({ vfxCommands: overBound }), context())).toThrow("derived bound");
 });
@@ -613,6 +671,47 @@ test("a lethal Cinder direct hit applies burn before one depth-one ember ring", 
   expect(resolved.vfxCommands).toContainEqual(expect.objectContaining({ kind: "cinderGospel.emberRing", x: 600, y: 300 }));
 });
 
+test("a Hollow kill snapshots Cinder burn after the lethal direct hit refresh", () => {
+  const composed = compileCombatBuild({ hollowPoint: true, cinderGospel: true, cometSpur: true });
+  const effectIds = ["baseRevolver.direct", "hollowPoint.charge", "cinderGospel.burn", "cinderGospel.emberRing", "cometSpur.growth"];
+  const oldSource = projectile({ id: "old", rootTriggerId: "old-root", lineageId: "old-root:0", damage: 10 });
+  const currentSource = projectile({
+    id: "current", rootTriggerId: "current-root", lineageId: "current-root:0",
+    x: 500, vx: 600, damage: 50, originPower: 50, activatedEffectIds: effectIds,
+  });
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.2,
+    projectiles: [currentSource],
+    targets: [
+      {
+        id: "victim", kind: "chaser", immortal: false, x: 600, y: 300, radius: 22,
+        health: 100, maxHealth: 100, speed: 0, frozenUntil: 0,
+        effects: {
+          chill: { count: 0, expiresAt: 0 }, ledger: { count: 0, expiresAt: 0 }, slows: [],
+          hollowPoint: {
+            damage: 60, expiresAt: 2, rootTriggerId: "charge-root", lineageId: "charge-root:0",
+            projectileId: "charge", originPower: 60, generation: 0, reactiveEffectIds: [], sourceProjectile: oldSource,
+          },
+          burn: {
+            potency: 1, remainingTicks: 4, nextTickAt: 0.4, originPower: 10,
+            rootTriggerId: "old-root", lineageId: "old-root:0", projectileId: "old",
+            generation: 0, reactiveEligible: true, reactiveEffectIds: ["cinderGospel.emberRing"], sourceProjectile: oldSource,
+          },
+        },
+      },
+      { id: "nearby", kind: "chaser", immortal: false, x: 630, y: 300, radius: 18, health: 1000, maxHealth: 1000, speed: 0, frozenUntil: 0 },
+    ],
+  }), context({ dt: 0.2, build: composed }));
+
+  expect(resolved.metrics.hitEvents.find(({ source }) => source === "reactive")).toMatchObject({
+    damage: 10,
+    rootTriggerId: "current-root",
+    lineageId: "current-root:0",
+    projectileId: "current",
+    originPower: 50,
+  });
+});
+
 test("live Wanted Brand is injected before generation-zero projectile motion", () => {
   const branded = compileCombatBuild({ wantedBrand: true });
   const moved = resolveMotionPhase(runtime({
@@ -627,6 +726,49 @@ test("live Wanted Brand is injected before generation-zero projectile motion", (
 
   expect(moved.projectiles[0]).toMatchObject({ wantedTargetId: "marked", wantedTurnRate: 2 * Math.PI / 3 });
   expect(moved.projectiles[0]!.vy).toBeGreaterThan(0);
+});
+
+test("Wanted Brand steers only the pre-expiry slice of a crossing step", () => {
+  const branded = compileCombatBuild({ wantedBrand: true });
+  const moved = resolveMotionPhase(runtime({
+    now: 3.1,
+    wantedBrand: { targetId: "marked", expiresAt: 3 },
+    projectiles: [projectile({ x: 200, y: 200, vx: 100, vy: 0, bornAt: 2.9 })],
+    targets: [{
+      id: "marked", kind: "chaser", immortal: false,
+      x: 200, y: 400, radius: 18, health: 100, maxHealth: 100, speed: 0, frozenUntil: 0,
+    }],
+  }), context({ dt: 0.2, build: branded, props: [] }));
+
+  expect(moved.projectiles[0]!.vy).toBeGreaterThan(0);
+  expect(moved.segments.some(({ endTime }) => Math.abs(endTime - 0.5) < 1e-9)).toBe(true);
+
+  const equality = resolveMotionPhase(runtime({
+    now: 3.2,
+    wantedBrand: { targetId: "marked", expiresAt: 3 },
+    projectiles: [projectile({ x: 200, y: 200, vx: 100, vy: 0, bornAt: 3 })],
+    targets: [{
+      id: "marked", kind: "chaser", immortal: false,
+      x: 200, y: 400, radius: 18, health: 100, maxHealth: 100, speed: 0, frozenUntil: 0,
+    }],
+  }), context({ dt: 0.2, build: branded, props: [] }));
+  expect(equality.projectiles[0]!.vy).toBe(0);
+});
+
+test("a pre-expiry impact sees the old Brand but end-of-step cleanup expires it", () => {
+  const branded = compileCombatBuild({ wantedBrand: true });
+  const resolved = resolveCombatPhases(runtime({
+    now: 3.1,
+    wantedBrand: { targetId: "old-mark", expiresAt: 3 },
+    projectiles: [projectile({ x: 500, y: 300, vx: 440, vy: 0, speed: 440, bornAt: 2.9,
+      activatedEffectIds: ["baseRevolver.direct", "wantedBrand.brand"] })],
+    targets: [
+      { id: "new-hit", kind: "dummy", immortal: true, x: 550, y: 300, radius: 22, health: 1, maxHealth: 1, speed: 0, frozenUntil: 0 },
+      { id: "old-mark", kind: "dummy", immortal: true, x: 800, y: 300, radius: 22, health: 1, maxHealth: 1, speed: 0, frozenUntil: 0 },
+    ],
+  }), context({ dt: 0.2, build: branded, props: [] }));
+
+  expect(resolved.wantedBrand).toBeUndefined();
 });
 
 test("a lethal branded hit jumps the one mark with its original deadline", () => {

@@ -276,7 +276,7 @@ function phaseState(runtime: CombatRuntime | CombatPhaseState, context: CombatCo
     emittedEffects: runtime.emittedEffects ?? {},
     pendingEffectTokens: runtime.pendingEffectTokens ?? [],
     killContexts: previous.killContexts ?? [],
-    wantedBrand: runtime.wantedBrand && runtime.now < runtime.wantedBrand.expiresAt ? runtime.wantedBrand : undefined,
+    wantedBrand: runtime.wantedBrand,
     hexCounter: runtime.hexCounter ?? 0,
     snareRoots: runtime.snareRoots ?? {},
     killReactionHistory: runtime.killReactionHistory ?? {},
@@ -288,6 +288,15 @@ function assertFinite(value: unknown, path = "combat runtime", seen = new Set<ob
   if (!value || typeof value !== "object" || seen.has(value)) return;
   seen.add(value);
   for (const [key, child] of Object.entries(value)) assertFinite(child, `${path}.${key}`, seen);
+}
+
+function generationZeroProjectileBound(build: CombatBuild): number {
+  const twin = build.triggers.some(({ kind }) => kind === "twin");
+  const tesla = build.triggers.some(({ kind }) => kind === "fractionalMultishot");
+  const fan = build.triggers.find((rule) => rule.kind === "fan");
+  const dealer = build.triggers.some(({ kind }) => kind === "numberedSidePair");
+  return ((twin ? 2 : 1) + Number(tesla)) * (fan?.kind === "fan" ? fan.delays.length : 1)
+    + (dealer ? 2 : 0);
 }
 
 function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
@@ -348,6 +357,9 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
       throw new Error("Snare runtime damage and tick deadline must be positive");
     }
   }
+  const sourceBound = generationZeroProjectileBound(context.build) + context.build.maxDescendants;
+  const areaLimit = Math.max(1, Math.ceil(context.fireRate * 3) * sourceBound * Math.max(1, runtime.targets.length));
+  if (runtime.areas.length > areaLimit) throw new Error(`area live count exceeds derived bound ${areaLimit}`);
 
   for (const target of runtime.targets) {
     const effects = normalizeTargetEffects(target.effects);
@@ -368,11 +380,43 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
     }
     if (effects.slows.some(({ multiplier }) => multiplier <= 0 || multiplier > 1)) throw new Error("slow multiplier must be in (0, 1]");
     if (effects.slows.some(({ until }) => until < 0)) throw new Error("slow deadlines must be nonnegative");
+    if (new Set(effects.slows.map(({ effectId }) => effectId)).size !== effects.slows.length) {
+      throw new Error("duplicate durable slow effect");
+    }
+    const slowLimit = Math.max(1, context.build.impacts.filter(({ kind }) => kind === "statusPulse").length);
+    if (effects.slows.length > slowLimit) throw new Error(`durable slow live count exceeds derived bound ${slowLimit} per target`);
   }
   if (!Number.isInteger(runtime.hexCounter ?? 0) || (runtime.hexCounter ?? 0) < 0 || (runtime.hexCounter ?? 0) > 3) {
     throw new Error("Hex counter must be an integer from zero through three");
   }
   if (runtime.wantedBrand && runtime.wantedBrand.expiresAt < 0) throw new Error("Wanted Brand deadline must be nonnegative");
+
+  const liveRootIds = new Set([
+    ...runtime.projectiles.map(({ rootTriggerId }) => rootTriggerId),
+    ...runtime.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
+    ...runtime.pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
+    ...runtime.areas.map(({ rootTriggerId }) => rootTriggerId),
+    ...statusRootIds(runtime.targets.map((target) => ({
+      ...target,
+      effects: normalizeTargetEffects(target.effects),
+    })) as StatusTarget[]),
+  ]);
+  const snareEntries = Object.entries(runtime.snareRoots ?? {});
+  const snareLimit = liveRootIds.size * Math.max(1, context.build.impacts.filter(({ kind }) => kind === "poolOnHit").length);
+  if (snareEntries.length > snareLimit) throw new Error(`Snare ledger live count exceeds derived bound ${snareLimit}`);
+  for (const [key, record] of snareEntries) {
+    if (!record.rootTriggerId || key !== `ectoplasmSnare.pool\0${record.rootTriggerId}` || !liveRootIds.has(record.rootTriggerId)) {
+      throw new Error("invalid Snare ledger record");
+    }
+  }
+  const reactionEntries = Object.entries(runtime.killReactionHistory ?? {});
+  const reactionLimit = liveRootIds.size * Math.max(1, context.build.areas.filter(({ effectId }) => effectId === "cinderGospel.emberRing").length);
+  if (reactionEntries.length > reactionLimit) throw new Error(`kill-reaction ledger live count exceeds derived bound ${reactionLimit}`);
+  for (const [key, record] of reactionEntries) {
+    if (!record.rootTriggerId || key !== `cinderGospel.emberRing\0${record.rootTriggerId}` || !liveRootIds.has(record.rootTriggerId)) {
+      throw new Error("invalid kill-reaction ledger record");
+    }
+  }
 
   const vfxIds = new Set<string>();
   for (const command of runtime.vfxCommands) {
@@ -382,7 +426,7 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
     if (vfxIds.has(command.id)) throw new Error("duplicate VFX id");
     vfxIds.add(command.id);
   }
-  const vfxLimit = Math.max(1, Math.ceil(context.fireRate * 3 * (11 + context.build.maxDescendants)));
+  const vfxLimit = Math.max(1, Math.ceil(context.fireRate * 3 * sourceBound));
   if (runtime.vfxCommands.length > vfxLimit) throw new Error(`VFX live count exceeds derived bound ${vfxLimit}`);
 }
 
@@ -597,19 +641,37 @@ export function resolveMotionPhase(runtime: CombatRuntime | CombatPhaseState, co
   const brandRule = context.build.impacts.find((rule) => rule.kind === "brand");
   const projectiles = current.projectiles.map((source) => {
     const projectile = cloneProjectile(source);
-    if (projectile.generation === 0 && current.wantedBrand && current.now < current.wantedBrand.expiresAt && brandRule?.kind === "brand") {
-      projectile.wantedTargetId = current.wantedBrand.targetId;
-      projectile.wantedTurnRate = brandRule.steering;
-    } else {
-      projectile.wantedTargetId = undefined;
-      projectile.wantedTurnRate = undefined;
-    }
     const liveDuration = Math.max(0, Math.min(
       context.dt,
       projectile.lifetime - Math.max(0, current.now - context.dt - projectile.bornAt),
     ));
-    const motionNow = current.now - context.dt + liveDuration;
-    const result = applyMotionRules(projectile, context.trajectoryTargets ?? current.targets, liveDuration, motionNow);
+    const motionStart = current.now - context.dt;
+    const brandDuration = projectile.generation === 0 && current.wantedBrand && brandRule?.kind === "brand"
+      && motionStart < current.wantedBrand.expiresAt
+      ? Math.min(liveDuration, current.wantedBrand.expiresAt - motionStart)
+      : 0;
+    const move = (moving: ProjectileState, duration: number, offset: number, branded: boolean) => {
+      moving.wantedTargetId = branded ? current.wantedBrand?.targetId : undefined;
+      moving.wantedTurnRate = branded && brandRule?.kind === "brand" ? brandRule.steering : undefined;
+      return applyMotionRules(moving, context.trajectoryTargets ?? current.targets, duration, motionStart + offset + duration);
+    };
+    let result = move(projectile, brandDuration > 0 ? brandDuration : liveDuration, 0, brandDuration > 0);
+    if (brandDuration > 0 && brandDuration < liveDuration) {
+      const first = result;
+      const second = move(cloneProjectile(first.projectile), liveDuration - brandDuration, brandDuration, false);
+      const normalizePath = (path: typeof first.path, offset: number, duration: number) => path.map((part) => ({
+        ...part,
+        startTime: liveDuration === 0 ? 0 : (offset + part.startTime * duration) / liveDuration,
+        endTime: liveDuration === 0 ? 1 : (offset + part.endTime * duration) / liveDuration,
+      }));
+      result = {
+        ...second,
+        path: [
+          ...normalizePath(first.path, 0, brandDuration),
+          ...normalizePath(second.path, brandDuration, liveDuration - brandDuration),
+        ],
+      };
+    }
     const timeScale = context.dt === 0 ? 1 : liveDuration / context.dt;
     result.path.forEach((path, index) => segments.push({
       projectileId: projectile.id,
@@ -1244,7 +1306,12 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       killContexts.push(directKill);
       metrics = recordKill(metrics, target.id);
     }
-    killContexts.push(...secondaryKills);
+    killContexts.push(...secondaryKills.map((killed) => killed.victimId === target.id
+      ? Object.freeze({
+        ...killed,
+        targetEffects: Object.freeze(normalizeTargetEffects(target.effects, damageEvent.time)),
+      })
+      : killed));
 
     for (const request of applied.damages) {
       const marked = targetById.get(request.event.targetId);
@@ -1617,7 +1684,7 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
       targetId: marked.id,
     });
     else wantedBrand = undefined;
-  }
+  } else wantedBrand = undefined;
 
   targets = targets
     .filter((target) => target.immortal || target.health > 0)
