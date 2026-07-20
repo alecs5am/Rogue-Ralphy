@@ -114,7 +114,7 @@ VFX_SHEETS = (
     SpriteSheetDeclaration(VFX[24:32], 4, 2, (251, 4, 249)),
     SpriteSheetDeclaration(VFX[32:33], 1, 1, (249, 5, 248)),
 )
-HUD_SHEET = SpriteSheetDeclaration(HUD, 2, 2, (246, 5, 245))
+HUD_SHEET = SpriteSheetDeclaration(HUD, 2, 2, (235, 9, 235))
 
 PRODUCTION_SOURCES = tuple(
     PROJECT_ROOT / "tmp" / "imagegen" / "artifacts" / f"row-{index}.png"

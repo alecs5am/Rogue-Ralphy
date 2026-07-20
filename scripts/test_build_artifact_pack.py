@@ -212,6 +212,18 @@ class ArtifactPackTests(TestCase):
         self.assertTrue(callable(validator))
         self.assertEqual(validator(), [])
 
+    def test_ammo_echo_keeps_a_transparent_center_for_the_loaded_round(self) -> None:
+        with Image.open(pack.PRODUCTION_UI_OUTPUT / "ammo-echo.png") as source:
+            alpha = source.convert("RGBA").getchannel("A")
+            center = [
+                alpha.getpixel((x, y))
+                for y in range(64)
+                for x in range(64)
+                if (x - 32) ** 2 + (y - 32) ** 2 <= 10**2
+            ]
+        transparent_fraction = sum(value <= 16 for value in center) / len(center)
+        self.assertGreaterEqual(transparent_fraction, 0.75)
+
     def test_runtime_pack_is_complete_rgba_padded_and_unique(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
