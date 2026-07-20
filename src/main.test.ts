@@ -38,6 +38,7 @@ test("a failed asset preflight never mounts or requests a frame and leaves one a
 		value: fakeDocument,
 	});
 	let frameRequests = 0;
+	let stateResolutions = 0;
 	try {
 		await bootstrap({
 			loadAssets: async () => {
@@ -49,6 +50,10 @@ test("a failed asset preflight never mounts or requests a frame and leaves one a
 				frameRequests += 1;
 				return 1;
 			},
+			resolveInitialState: async () => {
+				stateResolutions += 1;
+				return undefined;
+			},
 		});
 	} finally {
 		if (previous) Object.defineProperty(globalThis, "document", previous);
@@ -57,6 +62,7 @@ test("a failed asset preflight never mounts or requests a frame and leaves one a
 
 	expect(queries).toEqual(["#app"]);
 	expect(frameRequests).toBe(0);
+	expect(stateResolutions).toBe(0);
 	expect(app.children).toHaveLength(1);
 	expect(app.children[0]?.attributes.get("role")).toBe("alert");
 	expect(app.children[0]?.textContent).toContain("twinWeave");

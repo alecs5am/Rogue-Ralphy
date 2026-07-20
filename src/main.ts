@@ -23,11 +23,13 @@ function canvasContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
 type BootstrapOptions = Readonly<{
 	loadAssets: () => Promise<LoadedAssets>;
 	requestFrame: (callback: FrameRequestCallback) => number;
+	resolveInitialState?: () => Promise<GameState | undefined>;
 }>;
 
 export async function bootstrap({
 	loadAssets,
 	requestFrame,
+	resolveInitialState,
 }: BootstrapOptions): Promise<void> {
 	let assets: LoadedAssets;
 	try {
@@ -43,6 +45,7 @@ export async function bootstrap({
 		app.removeAttribute("aria-busy");
 		return;
 	}
+	let state: GameState = (await resolveInitialState?.()) ?? createGame();
 
 	const app = required<HTMLElement>(document, "#app");
 	const canvas = required<HTMLCanvasElement>(document, "#game");
@@ -55,7 +58,6 @@ export async function bootstrap({
 	const quickdraw = required<HTMLElement>(document, "#quickdraw");
 	const context = canvasContext(canvas);
 	const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-	let state: GameState = createGame();
 	mountHud(hud);
 	updateHud(state, canvas);
 	let reloadPressed = false;
@@ -217,5 +219,15 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 	void bootstrap({
 		loadAssets: loadProductionAssets,
 		requestFrame: window.requestAnimationFrame.bind(window),
+		resolveInitialState: __RALPHY_E2E_BUILD__ &&
+			import.meta.env.VITE_E2E_FIXTURES === "1"
+			? async () => {
+				const fixtures = await import("./e2e-fixtures");
+				void fixtures.E2E_FIXTURE_MARKER;
+				return fixtures.materializeFixture(
+					new URLSearchParams(window.location.search).get("fixture"),
+				);
+			}
+			: undefined,
 	});
 }

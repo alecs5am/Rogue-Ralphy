@@ -259,6 +259,15 @@ export function mountLab(access: StateAccess): (state: GameState) => void {
 			control.setAttribute("aria-pressed", String(owned));
 		}
 		const telemetry = state.telemetry;
+		let triggerMultishot = state.weapon.multishot;
+		let triggerSpread = state.weapon.spread;
+		for (const rule of state.build.triggers) {
+			if (rule.kind === "twin") triggerMultishot += 1;
+			if (rule.kind === "fractionalMultishot") {
+				triggerMultishot += rule.chance;
+				triggerSpread = Math.max(triggerSpread, rule.spread);
+			}
+		}
 		const reloadProgress = state.cylinder.reloading
 			? Math.min(
 					1,
@@ -290,8 +299,8 @@ export function mountLab(access: StateAccess): (state: GameState) => void {
 			damage: format.number(state.weapon.damage),
 			rate: `${format.number(state.weapon.fireRate, 2)}/s`,
 			count: String(state.weapon.projectileCount),
-			multishot: `${state.weapon.multishot.toFixed(2)}× · ${Math.round((state.weapon.multishot % 1) * 100)}% extra`,
-			spread: format.degrees(state.weapon.spread),
+			multishot: `${triggerMultishot.toFixed(2)}× · ${Math.round((triggerMultishot % 1) * 100)}% extra`,
+			spread: format.degrees(triggerSpread),
 			size: `${format.number(state.weapon.radius)} px`,
 			speed: `${state.weapon.speed} px/s`,
 			lifetime: `${state.weapon.lifetime}s`,

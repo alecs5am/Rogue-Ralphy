@@ -16,7 +16,7 @@ export default defineConfig({
 	},
 	webServer: {
 		command:
-			"bun run build && bun run vite preview --host 127.0.0.1 --port 4174",
+			"VITE_E2E_FIXTURES=1 bun run build && bun run vite preview --host 127.0.0.1 --port 4174",
 		url: "http://127.0.0.1:4174",
 		reuseExistingServer: false,
 		timeout: 30_000,
