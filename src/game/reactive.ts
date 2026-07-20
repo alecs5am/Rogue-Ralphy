@@ -79,6 +79,8 @@ export type LocketHit = Readonly<{
   triggeredAt: number;
   originPower: number;
   damage: number;
+  contactFraction: number;
+  time: number;
   x: number;
   y: number;
 }>;
@@ -245,7 +247,9 @@ export function advanceLocketOrbitals(
   const hits: LocketHit[] = [];
   const remainingHealth = new Map(chasers.map(({ id, health }) => [id, health]));
   for (const orbital of live) {
-    const nextAngle = orbital.angle + orbital.angularSpeed * dt;
+    const liveDuration = Math.max(0, Math.min(dt, now - orbital.bornAt));
+    const motionStart = now - liveDuration;
+    const nextAngle = orbital.angle + orbital.angularSpeed * liveDuration;
     const from = {
       x: player.x + Math.cos(orbital.angle) * orbital.radius,
       y: player.y + Math.sin(orbital.angle) * orbital.radius,
@@ -254,11 +258,15 @@ export function advanceLocketOrbitals(
       x: player.x + Math.cos(nextAngle) * orbital.radius,
       y: player.y + Math.sin(nextAngle) * orbital.radius,
     };
-    const target = chasers
-      .filter(({ id, immortal, radius, ...center }) => (immortal || (remainingHealth.get(id) ?? 0) > 0)
-        && segmentCircleHitTime(from, to, center, radius + orbital.hitRadius) !== null)
-      .toSorted((a, b) => compareString(a.id, b.id))[0];
-    if (!target) continue;
+    const contact = chasers
+      .flatMap((target) => {
+        if (!target.immortal && (remainingHealth.get(target.id) ?? 0) <= 0) return [];
+        const contactFraction = segmentCircleHitTime(from, to, target, target.radius + orbital.hitRadius);
+        return contactFraction === null ? [] : [{ target, contactFraction }];
+      })
+      .toSorted((a, b) => compareString(a.target.id, b.target.id))[0];
+    if (!contact) continue;
+    const { target, contactFraction } = contact;
     consumed.add(orbital.id);
     if (!target.immortal) remainingHealth.set(target.id, (remainingHealth.get(target.id) ?? 0) - orbital.damage);
     hits.push({
@@ -277,13 +285,18 @@ export function advanceLocketOrbitals(
       triggeredAt: orbital.bornAt,
       originPower: orbital.originPower,
       damage: orbital.damage,
-      x: target.x,
-      y: target.y,
+      contactFraction,
+      time: motionStart + contactFraction * liveDuration,
+      x: from.x + (to.x - from.x) * contactFraction,
+      y: from.y + (to.y - from.y) * contactFraction,
     });
   }
   return {
     orbitals: live.filter(({ id }) => !consumed.has(id))
-      .map((orbital) => ({ ...orbital, angle: orbital.angle + orbital.angularSpeed * dt })),
+      .map((orbital) => ({
+        ...orbital,
+        angle: orbital.angle + orbital.angularSpeed * Math.max(0, Math.min(dt, now - orbital.bornAt)),
+      })),
     hits,
   };
 }

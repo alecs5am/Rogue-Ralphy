@@ -8,6 +8,7 @@ import { expandTrigger, type LocketState, type PlayerSatelliteState, type Schedu
 import {
   resolveCombatPhases,
   resolveReactiveKillPhase,
+  resolveRootCleanupPhase,
   type AreaState,
   type CombatTargetState,
   type KillContext,
@@ -19,10 +20,8 @@ import {
   effectiveSlow,
   normalizeTargetEffects,
   snareSlowAt,
-  statusRootIds,
   type RootStatusRecord,
   type SnareAreaState,
-  type StatusTarget,
   type WantedBrand,
 } from "./statuses";
 import type {
@@ -329,6 +328,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   let decoy = state.decoy && state.decoy.expiresAt > now ? state.decoy : undefined;
   let recoilWindows = state.recoilWindows.filter(({ expiresAt, refunded }) => expiresAt > now && !refunded);
   let pendingRefunds = [...state.pendingRefunds];
+  const validationRootIds = Object.freeze(state.locketOrbitals.map(({ rootTriggerId }) => rootTriggerId));
   let locketOrbitals = state.locketOrbitals.filter(({ expiresAt }) => expiresAt > now);
   let cylinder = advanceReload(state.cylinder, now);
   if (now >= cylinder.buffUntil && cylinder.fireRateBuff !== 0) cylinder = { ...cylinder, fireRateBuff: 0, buffUntil: 0 };
@@ -530,6 +530,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     pendingRefunds,
     bonanzaHistory: state.bonanzaHistory,
     retainedRootIds: Object.freeze(locketOrbitals.map(({ rootTriggerId }) => rootTriggerId)),
+    validationRootIds,
   }, combatContext);
   metrics = combat.metrics;
   let finalTargets = [...combat.targets];
@@ -553,7 +554,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     metrics = recordDamage(metrics, {
       source: "reactive",
       damage: hit.damage,
-      time: now,
+      time: hit.time,
       targetId: hit.targetId,
       artifactId: hit.artifactId,
       effectId: hit.effectId,
@@ -572,7 +573,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
         victimId: damaged.id,
         x: damaged.x,
         y: damaged.y,
-        time: now,
+        time: hit.time,
         source: "reactive",
         generation: 0,
         reactiveEffectIds: Object.freeze([...hit.reactiveEffectIds]),
@@ -590,7 +591,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
           spec: hit.sourceSpec,
           killReaction: hit.killReaction,
         }),
-        targetEffects: normalizeTargetEffects(damaged.effects, now),
+        targetEffects: normalizeTargetEffects(damaged.effects, hit.time),
       }));
     }
     vfxCommands.push({
@@ -601,8 +602,8 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       rootTriggerId: hit.rootTriggerId,
       lineageId: hit.lineageId,
       destination: "world",
-      bornAt: now,
-      expiresAt: now + 0.2,
+      bornAt: hit.time,
+      expiresAt: hit.time + 0.2,
       x: hit.x,
       y: hit.y,
       targetId: hit.targetId,
@@ -626,22 +627,20 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   const resolvedRefunds = resolvePendingRefunds(cylinder, combat.pendingRefunds ?? pendingRefunds, now);
   cylinder = resolvedRefunds.cylinder;
   pendingRefunds = resolvedRefunds.pendingRefunds;
-  const activeBonanzaRoots = new Set([
-    ...locketOrbitals.map(({ rootTriggerId }) => rootTriggerId),
-    ...combat.projectiles.map(({ rootTriggerId }) => rootTriggerId),
-    ...combat.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
-    ...combat.pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
-    ...combat.areas.map(({ rootTriggerId }) => rootTriggerId),
-    ...Object.values(combat.wakeTrails ?? {}).map(({ rootTriggerId }) => rootTriggerId),
-    ...(combat.crossfirePulses ?? []).map(({ rootTriggerId }) => rootTriggerId),
-    ...statusRootIds(finalTargets.map((target) => ({
-      ...target,
-      effects: normalizeTargetEffects(target.effects, now),
-    })) as StatusTarget[]),
-    ...pendingRefunds.map(({ rootTriggerId }) => rootTriggerId),
-  ]);
-  const bonanzaHistory = Object.fromEntries(Object.entries(combat.bonanzaHistory ?? {})
-    .filter(([, { rootTriggerId }]) => activeBonanzaRoots.has(rootTriggerId)));
+  combat = resolveRootCleanupPhase({
+    ...combat,
+    targets: finalTargets,
+    metrics,
+    vfxCommands,
+    nextId,
+    pendingRefunds,
+  }, combatContext, locketOrbitals.map(({ rootTriggerId }) => rootTriggerId));
+  metrics = combat.metrics;
+  finalTargets = [...combat.targets];
+  nextId = combat.nextId;
+  vfxCommands = [...combat.vfxCommands];
+  pendingRefunds = [...(combat.pendingRefunds ?? [])];
+  const bonanzaHistory = { ...(combat.bonanzaHistory ?? {}) };
   for (const refund of resolvedRefunds.resolved.filter(({ effectId }) => effectId === "recoilBoots.recoil")) {
     vfxCommands.push({
       id: `vfx-${nextId++}`,

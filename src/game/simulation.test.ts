@@ -1283,6 +1283,83 @@ test("Locket reactive kills enter ordered Bonanza cleanup without projectile tel
   expect(game.telemetry.accuracy).toBe(0);
 });
 
+test("Locket swept contact uses its fractional wall-clock time for damage and Bonanza", () => {
+  let game = setArtifactLoadout(createGame(() => 0.9), {
+    bonanzaClip: true,
+    lastGaspLocket: true,
+  });
+  game = {
+    ...game,
+    player: { ...game.player, health: 40 },
+    locketState: { armed: true, cadence: 0 },
+  };
+  game = updateGame(game, {
+    ...idle, aimX: game.player.x + 100, aimY: game.player.y, firing: true,
+  }, 0, 1);
+
+  const orbital = game.locketOrbitals[0]!;
+  const contactFraction = 0.47769;
+  const nextAngle = orbital.angle + orbital.angularSpeed * STEP;
+  const from = {
+    x: game.player.x + Math.cos(orbital.angle) * orbital.radius,
+    y: game.player.y + Math.sin(orbital.angle) * orbital.radius,
+  };
+  const to = {
+    x: game.player.x + Math.cos(nextAngle) * orbital.radius,
+    y: game.player.y + Math.sin(nextAngle) * orbital.radius,
+  };
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const distance = Math.hypot(dx, dy);
+  const targetRadius = 1;
+  const centerDistance = orbital.hitRadius + targetRadius + contactFraction * distance;
+  game = {
+    ...game,
+    targets: [{
+      id: "chaser-fractional", kind: "chaser",
+      x: from.x + dx / distance * centerDistance,
+      y: from.y + dy / distance * centerDistance,
+      radius: targetRadius, health: 1, maxHealth: 1, immortal: false, speed: 0, frozenUntil: 0,
+      effects: createTargetEffects(),
+    }],
+  };
+
+  const frameEnd = 1 + STEP;
+  game = updateGame(game, idle, STEP, frameEnd);
+  const expectedContactAt = 1.00398075;
+  expect(game.metrics.hitEvents[0]!.time).toBeCloseTo(expectedContactAt, 8);
+  expect(game.metrics.hitEvents[0]!.time).not.toBe(frameEnd);
+  expect(game.vfxCommands.find(({ kind }) => kind === "lastGaspLocket.consume")!.bornAt)
+    .toBeCloseTo(expectedContactAt, 8);
+  expect(game.pendingRefunds[0]!.arrivesAt).toBeCloseTo(1.25398075, 8);
+});
+
+test("a newborn Locket only point-tests at its birth timestamp", () => {
+  let game = setArtifactLoadout(createGame(() => 0.9), {
+    bonanzaClip: true,
+    lastGaspLocket: true,
+  });
+  game = {
+    ...game,
+    player: { ...game.player, health: 40 },
+    locketState: { armed: true, cadence: 0 },
+    targets: [{
+      id: "chaser-at-birth", kind: "chaser", x: game.player.x + 40, y: game.player.y,
+      radius: 18, health: 1, maxHealth: 1, immortal: false, speed: 0, frozenUntil: 0,
+      effects: createTargetEffects(),
+    }],
+  };
+
+  game = updateGame(game, {
+    ...idle, aimX: game.player.x + 100, aimY: game.player.y, firing: true,
+  }, STEP, STEP);
+
+  expect(game.lastShotAt).toBe(STEP);
+  expect(game.metrics.hitEvents[0]!.time).toBe(STEP);
+  expect(game.vfxCommands.find(({ kind }) => kind === "lastGaspLocket.consume")!.bornAt).toBe(STEP);
+  expect(game.pendingRefunds[0]!.arrivesAt).toBe(STEP + 0.25);
+});
+
 test("Locket reactive kills preserve Soul Harvester eligibility for exactly two next-step spirits", () => {
   let game = setArtifactLoadout(createGame(() => 0.9), {
     lastGaspLocket: true,
@@ -1377,7 +1454,7 @@ test("accepted Locket Soul snapshots survive artifact removal until later contac
   expect(game.metrics.projectiles).toBe(2);
 });
 
-test("a live Locket root retains Bonanza and Soul once-only ledgers", () => {
+test("a live Locket root retains once-only ledgers until contact or natural expiry", () => {
   let game = setArtifactLoadout(createGame(() => 0.9), {
     twinChamber: true,
     soulHarvester: true,
@@ -1415,6 +1492,15 @@ test("a live Locket root retains Bonanza and Soul once-only ledgers", () => {
   expect(game.emittedEffects).not.toEqual({});
   expect(game.descendantsByRoot["trigger-1"]?.count).toBe(2);
 
+  let expired = game;
+  expect(() => { expired = updateGame(expired, idle, 0.3, 3.5); }).not.toThrow();
+  expect(expired).toMatchObject({
+    locketOrbitals: [],
+    bonanzaHistory: {},
+    emittedEffects: {},
+    descendantsByRoot: {},
+  });
+
   const orbital = game.locketOrbitals[0]!;
   game = {
     ...game,
@@ -1433,6 +1519,45 @@ test("a live Locket root retains Bonanza and Soul once-only ledgers", () => {
   expect(game.pendingRefunds).toEqual([]);
   expect(game.pendingEmissions).toEqual([]);
   expect(game.metrics.projectiles).toBe(projectileCountAfterFirstSoulBatch);
+});
+
+test("consuming the last Locket orbital prunes retained Snare history in the same update", () => {
+  let game = setArtifactLoadout(createGame(() => 0.9), {
+    ectoplasmSnare: true,
+    lastGaspLocket: true,
+  });
+  game = {
+    ...game,
+    player: { ...game.player, health: 40 },
+    locketState: { armed: true, cadence: 0 },
+  };
+  game = updateGame(game, {
+    ...idle, aimX: game.player.x + 100, aimY: game.player.y, firing: true,
+  }, 0, 1);
+  game = clearTargets({
+    ...game,
+    snareRoots: {
+      "ectoplasmSnare.pool\0trigger-1": { rootTriggerId: "trigger-1" },
+    },
+  });
+  expect(game.snareRoots).not.toEqual({});
+
+  const orbital = game.locketOrbitals[0]!;
+  game = {
+    ...game,
+    targets: [{
+      id: "chaser-nonfatal", kind: "chaser",
+      x: game.player.x + Math.cos(orbital.angle) * orbital.radius,
+      y: game.player.y + Math.sin(orbital.angle) * orbital.radius,
+      radius: 18, health: 1_000, maxHealth: 1_000, immortal: false, speed: 0, frozenUntil: 0,
+      effects: createTargetEffects(),
+    }],
+  };
+  game = updateGame(game, idle, 0, 1.01);
+
+  expect(game.locketOrbitals).toEqual([]);
+  expect(game.snareRoots).toEqual({});
+  expect(() => updateGame(game, idle, STEP, 1.01 + STEP)).not.toThrow();
 });
 
 test("Undertaker's Coat leaves a pre-hit decoy only for nonfatal accepted contact", () => {

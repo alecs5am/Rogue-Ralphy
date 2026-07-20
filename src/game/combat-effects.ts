@@ -140,6 +140,7 @@ export type CombatRuntime = Readonly<{
   pendingRefunds?: readonly PendingRefund[];
   bonanzaHistory?: Readonly<Record<string, RootStatusRecord>>;
   retainedRootIds?: readonly string[];
+  validationRootIds?: readonly string[];
 }>;
 
 type RoomGeometry = Readonly<{
@@ -471,6 +472,7 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
   if (runtime.wantedBrand && runtime.wantedBrand.expiresAt < 0) throw new Error("Wanted Brand deadline must be nonnegative");
 
   const liveRootIds = new Set([
+    ...(runtime.validationRootIds ?? []),
     ...(runtime.retainedRootIds ?? []),
     ...runtime.projectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...runtime.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
@@ -2355,6 +2357,49 @@ function sourceProjectileForKill(killed: KillContext, context: CombatContext): P
   });
 }
 
+function pruneInactiveRootState(current: CombatPhaseState): CombatPhaseState {
+  const areas = current.areas.filter(({ expiresAt }) => expiresAt > current.now);
+  const crossfirePulses = (current.crossfirePulses ?? []).filter(({ expiresAt }) => expiresAt > current.now);
+  const activeRoots = new Set([
+    ...(current.retainedRootIds ?? []),
+    ...current.projectiles.map(({ rootTriggerId }) => rootTriggerId),
+    ...current.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
+    ...current.pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
+    ...areas.map(({ rootTriggerId }) => rootTriggerId),
+    ...Object.values(current.wakeTrails ?? {}).map(({ rootTriggerId }) => rootTriggerId),
+    ...crossfirePulses.map(({ rootTriggerId }) => rootTriggerId),
+    ...statusRootIds(current.targets.map((target) => ({
+      ...target,
+      effects: normalizeTargetEffects(target.effects, current.now),
+    })) as StatusTarget[]),
+    ...(current.pendingRefunds ?? []).map(({ rootTriggerId }) => rootTriggerId),
+  ]);
+  return {
+    ...current,
+    validationRootIds: Object.freeze([...(current.retainedRootIds ?? [])]),
+    areas,
+    emittedEffects: Object.fromEntries(Object.entries(current.emittedEffects ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    killReactionHistory: Object.fromEntries(Object.entries(current.killReactionHistory ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    snareRoots: Object.fromEntries(Object.entries(current.snareRoots ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    pendingEffectTokens: (current.pendingEffectTokens ?? [])
+      .filter(({ rootTriggerId }) => rootTriggerId === undefined || activeRoots.has(rootTriggerId)),
+    relayLedger: Object.fromEntries(Object.entries(current.relayLedger ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    crossfirePulses,
+    crossfireParticipation: Object.fromEntries(Object.entries(current.crossfireParticipation ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    bigIronPairHits: Object.fromEntries(Object.entries(current.bigIronPairHits ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    descendantsByRoot: Object.fromEntries(Object.entries(current.descendantsByRoot ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    bonanzaHistory: Object.fromEntries(Object.entries(current.bonanzaHistory ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+  };
+}
+
 export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const current = phaseState(runtime, context);
   let targets = current.targets.map((target) => cloneTarget(target, current.now));
@@ -2542,25 +2587,10 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
   targets = targets
     .filter((target) => target.immortal || target.health > 0)
     .map((target) => cloneTarget(target, current.now));
-  const activeRoots = new Set([
-    ...(current.retainedRootIds ?? []),
-    ...current.projectiles.map(({ rootTriggerId }) => rootTriggerId),
-    ...current.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
-    ...pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
-    ...current.areas.map(({ rootTriggerId }) => rootTriggerId),
-    ...Object.values(current.wakeTrails ?? {}).map(({ rootTriggerId }) => rootTriggerId),
-    ...(current.crossfirePulses ?? []).map(({ rootTriggerId }) => rootTriggerId),
-    ...statusRootIds(targets.map((target) => ({
-      ...target,
-      effects: normalizeTargetEffects(target.effects, current.now),
-    })) as StatusTarget[]),
-    ...pendingRefunds.map(({ rootTriggerId }) => rootTriggerId),
-  ]);
-  return {
+  return pruneInactiveRootState({
     ...current,
     targets,
     pendingEmissions,
-    areas: current.areas.filter(({ expiresAt }) => expiresAt > current.now),
     vfxCommands: vfxCommands.filter(({ expiresAt }) => expiresAt > current.now),
     metrics: retainTargetMetrics(metrics, targets.map(({ id }) => id)),
     events: [],
@@ -2569,28 +2599,28 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     killContexts: [],
     terminalTimes: {},
     nextId,
-    emittedEffects: Object.fromEntries(Object.entries(emittedEffects)
-      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
-    killReactionHistory: Object.fromEntries(Object.entries(killReactionHistory)
-      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
-    snareRoots: Object.fromEntries(Object.entries(current.snareRoots ?? {})
-      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    emittedEffects,
+    killReactionHistory,
     wantedBrand,
-    pendingEffectTokens: (current.pendingEffectTokens ?? [])
-      .filter(({ rootTriggerId }) => rootTriggerId === undefined || activeRoots.has(rootTriggerId)),
-    relayLedger: Object.fromEntries(Object.entries(current.relayLedger ?? {})
-      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
-    crossfirePulses: (current.crossfirePulses ?? []).filter(({ expiresAt }) => expiresAt > current.now),
-    crossfireParticipation: Object.fromEntries(Object.entries(current.crossfireParticipation ?? {})
-      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
-    bigIronPairHits: Object.fromEntries(Object.entries(current.bigIronPairHits ?? {})
-      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
-    descendantsByRoot: Object.fromEntries(Object.entries(descendantsByRoot)
-      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    descendantsByRoot,
     pendingRefunds,
-    bonanzaHistory: Object.fromEntries(Object.entries(bonanzaHistory)
-      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
-  };
+    bonanzaHistory,
+  });
+}
+
+export function resolveRootCleanupPhase(
+  runtime: CombatRuntime | CombatPhaseState,
+  context: CombatContext,
+  retainedRootIds: readonly string[],
+): CombatPhaseState {
+  const roots = Object.freeze([...retainedRootIds]);
+  const resolved = pruneInactiveRootState(phaseState({
+    ...runtime,
+    retainedRootIds: roots,
+    validationRootIds: roots,
+  }, context));
+  assertRuntime(resolved, context);
+  return resolved;
 }
 
 export function resolveReactiveKillPhase(
