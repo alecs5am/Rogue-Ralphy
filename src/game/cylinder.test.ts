@@ -142,3 +142,12 @@ test("stable dual refunds restore two distinct newest empty slots", () => {
   expect(restored.slots.map((slot) => slot.loaded)).toEqual([false, false, false, false, true, true]);
   expect(restored).toMatchObject({ emptied: [0, 1, 2, 3], nextSlot: 5 });
 });
+
+test("a frozen refund slot restores exactly the HUD destination instead of retargeting", () => {
+  const withTwoHoles = consume(createCylinder(6), 2);
+  const refunded = refundRound(withTwoHoles, "bonanzaClip", 1, 0);
+
+  expect(refunded.slots[0]).toEqual({ loaded: true, echo: null });
+  expect(refunded.slots[1]).toEqual({ loaded: false, echo: null });
+  expect(refunded.emptied).toEqual([1]);
+});

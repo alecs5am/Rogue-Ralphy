@@ -16,16 +16,26 @@ export type RecoilWindow = Readonly<{
 
 export type StillwaterState = Readonly<{ progress: number; charged: boolean }>;
 
-export type PendingRefund = Readonly<{
-  effectId: "bonanzaClip.refund" | "recoilBoots.recoil";
-  artifactId: "bonanzaClip" | "recoilBoots";
+type PendingRefundBase = Readonly<{
   rootTriggerId: string;
   rootIndex: number;
   arrivesAt: number;
-  x: number;
-  y: number;
+  from: Point;
   lineageId?: string;
 }>;
+
+export type PendingRefund =
+  | (PendingRefundBase & Readonly<{
+    effectId: "bonanzaClip.refund";
+    artifactId: "bonanzaClip";
+    slot: number;
+  }>)
+  | (PendingRefundBase & Readonly<{
+    effectId: "recoilBoots.recoil";
+    artifactId: "recoilBoots";
+  }>);
+
+type BonanzaRefund = Extract<PendingRefund, { effectId: "bonanzaClip.refund" }>;
 
 export type LocketOrbitalSeed = Readonly<{
   rootTriggerId: string;
@@ -96,6 +106,8 @@ const snapshotSpec = (spec: LocketSourceSpec): LocketSourceSpec => Object.freeze
   bell: spec.bell && Object.freeze({ ...spec.bell }),
 });
 
+const immutablePoint = (point: Point): Point => Object.freeze({ x: point.x, y: point.y });
+
 export function resolveStillwater(
   state: StillwaterState,
   owned: boolean,
@@ -130,8 +142,7 @@ export function resolveBoundaryClamp(
       rootTriggerId: window.rootTriggerId,
       rootIndex: window.rootIndex,
       arrivesAt: now,
-      x: point.x,
-      y: point.y,
+      from: immutablePoint(point),
     }));
   return {
     recoilWindows: live.filter((window) => !closed.has(window)),
@@ -141,7 +152,7 @@ export function resolveBoundaryClamp(
 
 const compareString = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
 
-export function sortPendingRefunds(refunds: readonly PendingRefund[]): PendingRefund[] {
+export function sortPendingRefunds<T extends PendingRefund>(refunds: readonly T[]): T[] {
   return [...refunds].sort((a, b) => a.arrivesAt - b.arrivesAt
     || compareString(a.effectId, b.effectId)
     || a.rootIndex - b.rootIndex);
@@ -156,7 +167,9 @@ export function resolvePendingRefunds(
   const due = ordered.filter(({ arrivesAt }) => arrivesAt <= now);
   let nextCylinder = cylinder;
   for (const refund of due) {
-    nextCylinder = refundRound(nextCylinder, refund.artifactId, now);
+    nextCylinder = refund.effectId === "bonanzaClip.refund"
+      ? refundRound(nextCylinder, refund.artifactId, now, refund.slot)
+      : refundRound(nextCylinder, refund.artifactId, now);
   }
   return {
     cylinder: nextCylinder,
@@ -175,27 +188,39 @@ export function queueBonanzaRefunds(
   kills: readonly KillContext[],
   history: Readonly<Record<string, Readonly<{ rootTriggerId: string }>>>,
   delivery: number,
+  cylinder: CylinderState,
+  existingRefunds: readonly PendingRefund[],
 ): Readonly<{
-  pendingRefunds: PendingRefund[];
+  pendingRefunds: BonanzaRefund[];
   history: Record<string, Readonly<{ rootTriggerId: string }>>;
 }> {
   const nextHistory = { ...history };
-  const pendingRefunds: PendingRefund[] = [];
+  const pendingRefunds: BonanzaRefund[] = [];
+  const reservedSlots = new Set(existingRefunds.flatMap((refund) =>
+    refund.effectId === "bonanzaClip.refund" ? [refund.slot] : []));
+  const nextSlot = (): number => {
+    const empty = [...cylinder.emptied].reverse().find((slot) => !reservedSlots.has(slot));
+    if (empty !== undefined) return empty;
+    return Array.from({ length: 6 }, (_, offset) => (cylinder.nextSlot + offset) % 6)
+      .find((slot) => !reservedSlots.has(slot)) ?? cylinder.nextSlot;
+  };
   for (const kill of kills) {
     if (kill.generation !== 0 || kill.killReactionDepth !== 0
       || !kill.reactiveEffectIds.includes("bonanzaClip.refund")) continue;
     const key = `bonanzaClip.refund\0${kill.rootTriggerId}`;
     if (nextHistory[key]) continue;
     nextHistory[key] = { rootTriggerId: kill.rootTriggerId };
+    const slot = nextSlot();
+    reservedSlots.add(slot);
     pendingRefunds.push({
       effectId: "bonanzaClip.refund",
       artifactId: "bonanzaClip",
       rootTriggerId: kill.rootTriggerId,
       rootIndex: rootIndex(kill),
       arrivesAt: kill.time + delivery,
-      x: kill.x,
-      y: kill.y,
-      lineageId: kill.lineageId,
+      from: immutablePoint(kill),
+      slot,
+      ...(kill.lineageId ? { lineageId: kill.lineageId } : {}),
     });
   }
   return { pendingRefunds: sortPendingRefunds(pendingRefunds), history: nextHistory };

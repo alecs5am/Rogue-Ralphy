@@ -48,11 +48,13 @@ import {
   type BurnStatus,
   type RootStatusRecord,
   type SnareAreaState,
+  type StatusVfxRequest,
   type StatusTarget,
   type TargetEffects,
   type WantedBrand,
 } from "./statuses";
 import { queueBonanzaRefunds, sortPendingRefunds, type PendingRefund } from "./reactive";
+import type { CylinderState } from "./cylinder";
 
 export type CombatEvent = Readonly<{
   eventTime: number;
@@ -94,20 +96,138 @@ type GenericAreaState = Readonly<{
 
 export type AreaState = GenericAreaState | SnareAreaState;
 
-export type VfxCommand = Readonly<{
+type VfxCommandBase = Readonly<{
   id: string;
-  kind: string;
   artifactId: string;
   effectId: string;
   rootTriggerId: string;
   lineageId?: string;
-  destination: "world" | "hud";
   bornAt: number;
   expiresAt: number;
-  x: number;
-  y: number;
-  targetId?: string;
 }>;
+
+type WorldVfxCommand<Kind extends string, Geometry> = VfxCommandBase & Readonly<{
+  kind: Kind;
+  destination: "world";
+  geometry: Geometry;
+}>;
+
+type PointGeometry = Readonly<{ type: "point"; at: Point }>;
+type TargetGeometry = Readonly<{ type: "target"; targetId: string; at: Point }>;
+type SegmentGeometry = Readonly<{ type: "segment"; from: Point; to: Point }>;
+type LinkGeometry = Readonly<{ type: "link"; from: Point; to: Point }>;
+type RadiusGeometry = Readonly<{ type: "radius"; center: Point; radius: number }>;
+type HeadingGeometry = Readonly<{ type: "heading"; at: Point; heading: number }>;
+type TimedVfxSegment = Readonly<{
+  from: Point;
+  to: Point;
+  bornAt: number;
+  completeAt: number;
+  expiresAt: number;
+  width: number;
+}>;
+type PolylineGeometry = Readonly<{ type: "polyline"; segments: readonly TimedVfxSegment[] }>;
+type PairGeometry = Readonly<{
+  type: "pair";
+  pairId: string;
+  center: Point;
+  length: number;
+  first: SegmentGeometry;
+  second: SegmentGeometry;
+}>;
+type OrbitGeometry = Readonly<{ type: "orbit"; center: Point; slot: number; radius: number; angle: number }>;
+type HudDeliveryGeometry = Readonly<{
+  type: "hudDelivery";
+  from: Point;
+  slot: number;
+  arrivesAt: number;
+}>;
+
+export type VfxCommand =
+  | WorldVfxCommand<"recoilBoots.skid" | "stillwater.ward" | "undertakersCoat.decoy", PointGeometry>
+  | WorldVfxCommand<
+    | "coldcaster.chill"
+    | "coldcaster.freeze"
+    | "cinderGospel.burn"
+    | "wantedBrand.mark"
+    | "widowsLedger.notch"
+    | "lastGaspLocket.consume",
+    TargetGeometry
+  >
+  | WorldVfxCommand<"widowsLedger.line", SegmentGeometry>
+  | (WorldVfxCommand<"pinball.relay", LinkGeometry> & Readonly<{ targetId: string }>)
+  | (WorldVfxCommand<"pinball.relay", PointGeometry> & Readonly<{ targetId: null }>)
+  | WorldVfxCommand<
+    | "hollowPoint.explosion"
+    | "ectoplasmSnare.pool"
+    | "bigIron.kineticExplosion"
+    | "lastBell.ring"
+    | "cinderGospel.emberRing",
+    RadiusGeometry
+  >
+  | (WorldVfxCommand<"hexBell.pulse", RadiusGeometry> & Readonly<{ targetId: string }>)
+  | WorldVfxCommand<"dustlineDuel.snapshot" | "dustlineDuel.fire", HeadingGeometry>
+  | WorldVfxCommand<"ectoplasmicWake.trail", PolylineGeometry>
+  | WorldVfxCommand<"crossfireCovenant.cross", PairGeometry>
+  | WorldVfxCommand<"lastGaspLocket.orbital", OrbitGeometry>
+  | (VfxCommandBase & Readonly<{
+    kind: "bonanza.delivery";
+    destination: "hud";
+    geometry: HudDeliveryGeometry;
+  }>);
+
+const immutablePoint = (point: Point): Point => Object.freeze({ x: point.x, y: point.y });
+const pointGeometry = (at: Point): PointGeometry => Object.freeze({ type: "point", at: immutablePoint(at) });
+const targetGeometry = (targetId: string, at: Point): TargetGeometry =>
+  Object.freeze({ type: "target", targetId, at: immutablePoint(at) });
+const segmentGeometry = (from: Point, to: Point): SegmentGeometry =>
+  Object.freeze({ type: "segment", from: immutablePoint(from), to: immutablePoint(to) });
+const linkGeometry = (from: Point, to: Point): LinkGeometry =>
+  Object.freeze({ type: "link", from: immutablePoint(from), to: immutablePoint(to) });
+const radiusGeometry = (center: Point, radius: number): RadiusGeometry =>
+  Object.freeze({ type: "radius", center: immutablePoint(center), radius });
+const headingGeometry = (at: Point, heading: number): HeadingGeometry =>
+  Object.freeze({ type: "heading", at: immutablePoint(at), heading });
+const assertNever = (value: never): never => {
+  throw new Error(`Unhandled closed VFX variant: ${JSON.stringify(value)}`);
+};
+
+function assertVfxGeometry(command: VfxCommand): void {
+  const geometry = command.geometry;
+  switch (geometry.type) {
+    case "point":
+    case "target":
+    case "segment":
+    case "link":
+    case "heading":
+      return;
+    case "radius":
+      if (geometry.radius <= 0) throw new Error("VFX radius must be positive");
+      return;
+    case "polyline":
+      if (geometry.segments.length === 0 || geometry.segments.some((segment) =>
+        segment.width <= 0 || segment.completeAt < segment.bornAt || segment.expiresAt <= segment.completeAt)) {
+        throw new Error("VFX polyline requires live positive-width timed segments");
+      }
+      return;
+    case "pair":
+      if (!geometry.pairId || geometry.length <= 0) throw new Error("VFX pair requires identity and positive length");
+      return;
+    case "orbit":
+      if (!Number.isInteger(geometry.slot) || geometry.slot < 0 || geometry.slot > 2 || geometry.radius <= 0) {
+        throw new Error("VFX orbit requires a valid slot and positive radius");
+      }
+      return;
+    case "hudDelivery":
+      if (!Number.isInteger(geometry.slot) || geometry.slot < 0 || geometry.slot > 5
+        || geometry.arrivesAt < command.bornAt || geometry.arrivesAt > command.expiresAt) {
+        throw new Error("HUD delivery requires slot zero through five and bounded arrival");
+      }
+      return;
+    default:
+      return assertNever(geometry);
+  }
+}
 
 export type CombatTargetState = Readonly<Point & {
   id: string;
@@ -171,6 +291,7 @@ export type CombatContext = Readonly<{
   teslaLinks: readonly TeslaLink[];
   teslaCooldowns: Readonly<Record<string, number>>;
   fireRate: number;
+  cylinder: CylinderState;
 }>;
 
 type SweptSegment = Readonly<{
@@ -519,6 +640,10 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
     if (!Number.isSafeInteger(refund.rootIndex) || refund.rootIndex < 0 || refund.arrivesAt < 0) {
       throw new Error("pending refund ordering and deadline must be nonnegative");
     }
+    if (refund.effectId === "bonanzaClip.refund"
+      && (!Number.isInteger(refund.slot) || refund.slot < 0 || refund.slot > 5)) {
+      throw new Error("Bonanza pending refund requires slot zero through five");
+    }
     refundKeys.add(key);
   }
   const bonanzaEntries = Object.entries(runtime.bonanzaHistory ?? {});
@@ -542,6 +667,7 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
       || (command.destination !== "world" && command.destination !== "hud")) {
       throw new Error("VFX command requires complete semantic provenance");
     }
+    assertVfxGeometry(command);
     if (vfxIds.has(command.id)) throw new Error("duplicate VFX id");
     vfxIds.add(command.id);
   }
@@ -772,7 +898,8 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
   const vfxCommands = [...runtime.vfxCommands];
   for (const _ of created) metrics = recordProjectile(metrics);
   for (const emission of duePending.filter(({ effectId }) => effectId === "dustlineDuel.afterimage")) {
-    const point = emission.templates?.[0] ?? context.player;
+    const template = emission.templates?.[0];
+    const point = template ?? context.player;
     vfxCommands.push({
       id: `vfx-${nextId++}`,
       kind: "dustlineDuel.fire",
@@ -783,8 +910,7 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
       destination: "world",
       bornAt: runtime.now,
       expiresAt: runtime.now + 0.15,
-      x: point.x,
-      y: point.y,
+      geometry: headingGeometry(point, template ? Math.atan2(template.vy, template.vx) : 0),
     });
   }
   return {
@@ -1209,6 +1335,22 @@ function directProvenance(projectile: ProjectileState): Readonly<{ artifactId: s
     : { artifactId: "baseRevolver", effectId: "baseRevolver.direct" };
 }
 
+function statusRequestToVfx(request: StatusVfxRequest): VfxCommand {
+  switch (request.kind) {
+    case "coldcaster.chill":
+    case "coldcaster.freeze":
+    case "cinderGospel.burn":
+    case "wantedBrand.mark":
+    case "widowsLedger.notch":
+    case "widowsLedger.line":
+    case "ectoplasmSnare.pool":
+    case "hexBell.pulse":
+      return Object.freeze({ ...request, destination: "world" });
+    default:
+      return assertNever(request);
+  }
+}
+
 export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const current = phaseState(runtime, context);
   const projectiles = current.projectiles.map(cloneProjectile);
@@ -1395,8 +1537,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
               destination: "world",
               bornAt: crossedAt,
               expiresAt: crossedAt + 0.2,
-              x: event.point.x,
-              y: event.point.y,
+              geometry: headingGeometry(event.point, Math.atan2(projectile.vy, projectile.vx)),
             });
           }
         }
@@ -1460,8 +1601,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
           destination: "world",
           bornAt: crossedAt,
           expiresAt: crossedAt + 0.2,
-          x: event.point.x,
-          y: event.point.y,
+          geometry: headingGeometry(event.point, Math.atan2(projectile.vy, projectile.vx)),
         });
       }
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
@@ -1497,11 +1637,14 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
           projectile.speed = Math.hypot(projectile.vx, projectile.vy) * relay.speedScale;
           projectile.vx *= relay.speedScale;
           projectile.vy *= relay.speedScale;
-          projectile.relayTargetId = targets
+          const relayTarget = targets
             .filter((target) => target.health > 0 && Math.hypot(target.x - event.point.x, target.y - event.point.y) <= relay.radius)
             .sort((a, b) => Math.hypot(a.x - event.point.x, a.y - event.point.y)
-              - Math.hypot(b.x - event.point.x, b.y - event.point.y) || a.id.localeCompare(b.id))[0]?.id;
-          vfxCommands.push({
+              - Math.hypot(b.x - event.point.x, b.y - event.point.y) || a.id.localeCompare(b.id))[0];
+          if (relayTarget) projectile.relayTargetId = relayTarget.id;
+          else delete projectile.relayTargetId;
+          const relayAt = current.now - context.dt + event.eventTime * context.dt;
+          const relayCommand: VfxCommand = relayTarget ? {
             id: `vfx-${nextId++}`,
             kind: "pinball.relay",
             artifactId: "pinball",
@@ -1509,12 +1652,24 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
             rootTriggerId: projectile.rootTriggerId,
             lineageId: projectile.lineageId,
             destination: "world",
-            bornAt: current.now,
-            expiresAt: current.now + 0.18,
-            x: event.point.x,
-            y: event.point.y,
-            targetId: projectile.relayTargetId,
-          });
+            bornAt: relayAt,
+            expiresAt: relayAt + 0.18,
+            targetId: relayTarget.id,
+            geometry: linkGeometry(event.point, relayTarget),
+          } : {
+            id: `vfx-${nextId++}`,
+            kind: "pinball.relay",
+            artifactId: "pinball",
+            effectId: "pinball.relay",
+            rootTriggerId: projectile.rootTriggerId,
+            lineageId: projectile.lineageId,
+            destination: "world",
+            bornAt: relayAt,
+            expiresAt: relayAt + 0.18,
+            targetId: null,
+            geometry: pointGeometry(event.point),
+          };
+          vfxCommands.push(Object.freeze(relayCommand));
         }
         for (const rule of resolveImpactRules({ source: projectile, build: context.build, kind: "bounce" }).emissions) {
           const key = lineageEmissionKey(rule.effectId, projectile.lineageId);
@@ -1640,10 +1795,9 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
           rootTriggerId: projectile.rootTriggerId,
           lineageId: projectile.lineageId,
           destination: "world",
-          bornAt: current.now,
-          expiresAt: current.now + 0.25,
-          x: event.point.x,
-          y: event.point.y,
+          bornAt: damageEvent.time,
+          expiresAt: damageEvent.time + 0.25,
+          geometry: radiusGeometry(event.point, moonlet.explosionRadius),
         });
       }
     }
@@ -1684,6 +1838,20 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
           metrics = recordKill(metrics, nearby.id);
         }
       }
+      const hollow = context.build.areas.find((rule) => rule.effectId === "hollowPoint.explosion");
+      const explosionRadius = hollow?.kind === "explosion" ? hollow.radius : 64;
+      vfxCommands.push(Object.freeze({
+        id: `vfx-${nextId++}`,
+        kind: "hollowPoint.explosion",
+        artifactId: "hollowPoint",
+        effectId: "hollowPoint.explosion",
+        rootTriggerId: charge.rootTriggerId,
+        ...(charge.lineageId ? { lineageId: charge.lineageId } : {}),
+        destination: "world",
+        bornAt: damageEvent.time,
+        expiresAt: damageEvent.time + 0.25,
+        geometry: radiusGeometry(target, explosionRadius),
+      }));
     } else {
       const hollow = context.build.impacts.find((rule) => rule.kind === "embeddedCharge"
         && projectile.activatedEffectIds.includes(rule.effectId));
@@ -1735,13 +1903,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       id: `area-${nextId++}`,
       sourceProjectile: area.sourceProjectile && immutableProjectileSnapshot(area.sourceProjectile),
     });
-    for (const command of applied.vfx) upsertVfx({
-      ...command,
-      effectId: command.kind,
-      rootTriggerId: projectile.rootTriggerId,
-      lineageId: projectile.lineageId,
-      destination: "world",
-    });
+    for (const command of applied.vfx) upsertVfx(statusRequestToVfx(command));
 
     if (applied.shatter) {
       const key = lineageEmissionKey(applied.shatter.rule.effectId, projectile.lineageId);
@@ -2008,10 +2170,9 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
         rootTriggerId: projectile.rootTriggerId,
         lineageId: projectile.lineageId,
         destination: "world",
-        bornAt: current.now,
-        expiresAt: current.now + 0.2,
-        x: projectile.x,
-        y: projectile.y,
+        bornAt: pulseAt,
+        expiresAt: pulseAt + 0.2,
+        geometry: radiusGeometry(projectile, pulse.radius),
       });
       pulse = { ...pulse, nextAt: pulse.nextAt + pulse.interval, remaining: pulse.remaining - 1 };
     }
@@ -2184,7 +2345,7 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
     const prior = vfxCommands.find(({ id }) => id === vfxId);
     const command: VfxCommand = {
       id: vfxId,
-      kind: trail.effectId,
+      kind: "ectoplasmicWake.trail",
       artifactId: trail.artifactId,
       effectId: trail.effectId,
       rootTriggerId: trail.rootTriggerId,
@@ -2192,8 +2353,17 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
       destination: "world",
       bornAt: prior?.bornAt ?? liveSegments[0]!.bornAt,
       expiresAt,
-      x: liveSegments.at(-1)!.to.x,
-      y: liveSegments.at(-1)!.to.y,
+      geometry: Object.freeze({
+        type: "polyline",
+        segments: Object.freeze(liveSegments.map((segment) => Object.freeze({
+          from: immutablePoint(segment.from),
+          to: immutablePoint(segment.to),
+          bornAt: segment.bornAt,
+          completeAt: segment.completeAt,
+          expiresAt: segment.expiresAt,
+          width: segment.width,
+        }))),
+      }),
     };
     const commandIndex = vfxCommands.findIndex(({ id }) => id === vfxId);
     if (commandIndex >= 0) vfxCommands[commandIndex] = command;
@@ -2310,7 +2480,7 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
     });
     vfxCommands.push({
       id: `vfx-${nextId++}`,
-      kind: crossfireRule.effectId,
+      kind: "crossfireCovenant.cross",
       artifactId: crossfireRule.artifactId,
       effectId: crossfireRule.effectId,
       rootTriggerId: source.rootTriggerId,
@@ -2318,8 +2488,20 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
       destination: "world",
       bornAt: pulseAt,
       expiresAt: pulseAt + crossfireRule.duration,
-      x: crossing.point.x,
-      y: crossing.point.y,
+      geometry: Object.freeze({
+        type: "pair",
+        pairId: crossing.pairId,
+        center: immutablePoint(crossing.point),
+        length: crossfireRule.length,
+        first: segmentGeometry(
+          { x: crossing.point.x - aDirection.x * half, y: crossing.point.y - aDirection.y * half },
+          { x: crossing.point.x + aDirection.x * half, y: crossing.point.y + aDirection.y * half },
+        ),
+        second: segmentGeometry(
+          { x: crossing.point.x - bDirection.x * half, y: crossing.point.y - bDirection.y * half },
+          { x: crossing.point.x + bDirection.x * half, y: crossing.point.y + bDirection.y * half },
+        ),
+      }),
     });
   }
   return {
@@ -2430,21 +2612,31 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
   if (bonanza?.kind === "ammoReturn"
     || current.killContexts.some(({ reactiveEffectIds }) => reactiveEffectIds.includes("bonanzaClip.refund"))) {
     const delivery = bonanza?.kind === "ammoReturn" ? bonanza.delivery : 0.25;
-    const queued = queueBonanzaRefunds(current.killContexts, bonanzaHistory, delivery);
+    const queued = queueBonanzaRefunds(
+      current.killContexts,
+      bonanzaHistory,
+      delivery,
+      context.cylinder,
+      pendingRefunds,
+    );
     pendingRefunds = sortPendingRefunds([...pendingRefunds, ...queued.pendingRefunds]);
     bonanzaHistory = queued.history;
     for (const refund of queued.pendingRefunds) vfxCommands.push({
       id: `vfx-${nextId++}`,
-      kind: "bonanzaClip.delivery",
+      kind: "bonanza.delivery",
       artifactId: "bonanzaClip",
       effectId: refund.effectId,
       rootTriggerId: refund.rootTriggerId,
-      lineageId: refund.lineageId,
+      ...(refund.lineageId ? { lineageId: refund.lineageId } : {}),
       destination: "hud",
       bornAt: refund.arrivesAt - delivery,
       expiresAt: refund.arrivesAt + 0.2,
-      x: refund.x,
-      y: refund.y,
+      geometry: Object.freeze({
+        type: "hudDelivery",
+        from: immutablePoint(refund.from),
+        slot: refund.slot,
+        arrivesAt: refund.arrivesAt,
+      }),
     });
   }
 
@@ -2489,16 +2681,15 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
         });
         vfxCommands.push({
           id: `vfx-${nextId++}`,
-          kind: cinder.effectId,
+          kind: "cinderGospel.emberRing",
           artifactId: cinder.artifactId,
           effectId: cinder.effectId,
-          rootTriggerId: killed.rootTriggerId,
-          lineageId: killed.lineageId,
+          rootTriggerId: burn.rootTriggerId,
+          ...(burn.lineageId ? { lineageId: burn.lineageId } : {}),
           destination: "world",
-          bornAt: current.now,
-          expiresAt: current.now + 0.25,
-          x: killed.x,
-          y: killed.y,
+          bornAt: killed.time,
+          expiresAt: killed.time + 0.25,
+          geometry: radiusGeometry(killed, cinder.radius),
         });
       }
     }
@@ -2573,23 +2764,20 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
       );
     }
   } else wantedBrand = undefined;
-  const priorBrandVfx = vfxCommands.find(({ kind }) => kind === "wantedBrand.mark");
   vfxCommands = vfxCommands.filter(({ kind }) => kind !== "wantedBrand.mark");
   if (wantedBrand && current.now < wantedBrand.expiresAt) {
     const marked = targets.find(({ id }) => id === wantedBrand!.targetId);
     if (marked && (marked.immortal || marked.health > 0)) vfxCommands.push({
       id: `status:wantedBrand.mark:${marked.id}`,
       kind: "wantedBrand.mark",
-      artifactId: "wantedBrand",
-      effectId: priorBrandVfx?.effectId ?? "wantedBrand.mark",
-      rootTriggerId: priorBrandVfx?.rootTriggerId ?? "wantedBrand",
-      lineageId: priorBrandVfx?.lineageId,
+      artifactId: wantedBrand.artifactId,
+      effectId: wantedBrand.effectId,
+      rootTriggerId: wantedBrand.rootTriggerId,
+      ...(wantedBrand.lineageId ? { lineageId: wantedBrand.lineageId } : {}),
       destination: "world",
-      bornAt: priorBrandVfx?.targetId === marked.id ? priorBrandVfx.bornAt : current.now,
+      bornAt: wantedBrand.markedAt,
       expiresAt: wantedBrand.expiresAt,
-      x: marked.x,
-      y: marked.y,
-      targetId: marked.id,
+      geometry: targetGeometry(marked.id, marked),
     });
     else wantedBrand = undefined;
   } else wantedBrand = undefined;

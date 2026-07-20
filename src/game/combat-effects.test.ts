@@ -14,8 +14,10 @@ import {
   type CombatContext,
   type CombatEvent,
   type CombatRuntime,
+  type VfxCommand,
 } from "./combat-effects";
 import { createMetrics } from "./metrics";
+import { createCylinder } from "./cylinder";
 import type { ProjectileSpec, ProjectileState } from "./projectiles";
 import { ROOM, ROOM_PROPS } from "./room";
 
@@ -64,6 +66,16 @@ const runtime = (overrides: Partial<CombatRuntime> = {}): CombatRuntime => ({
   ...overrides,
 });
 
+const brand = (targetId: string, expiresAt: number, markedAt = 0) => Object.freeze({
+  targetId,
+  markedAt,
+  expiresAt,
+  artifactId: "wantedBrand" as const,
+  effectId: "wantedBrand.brand",
+  rootTriggerId: "brand-root",
+  lineageId: "brand-root:0",
+});
+
 const build = compileCombatBuild({ shotgun: true });
 const context = (overrides: Partial<CombatContext> = {}): CombatContext => ({
   dt: 0.1,
@@ -75,6 +87,7 @@ const context = (overrides: Partial<CombatContext> = {}): CombatContext => ({
   teslaLinks: [],
   teslaCooldowns: {},
   fireRate: 3,
+  cylinder: createCylinder(),
   ...overrides,
 });
 
@@ -432,7 +445,11 @@ test("a live Last Bell pulse deals secondary area damage from its then-current d
   expect(resolved.projectiles[0]?.bellPulse).toEqual({
     nextAt: 1.5, remaining: 2, interval: 0.25, radius: 44, damageScale: 0.25,
   });
-  expect(resolved.vfxCommands[0]).toMatchObject({ kind: "lastBell.ring", artifactId: "lastBell", x: 200, y: 300 });
+  expect(resolved.vfxCommands[0]).toMatchObject({
+    kind: "lastBell.ring",
+    artifactId: "lastBell",
+    geometry: { type: "radius", center: { x: 200, y: 300 }, radius: 44 },
+  });
 });
 
 test("exact-time physical removal wins before a Last Bell area pulse", () => {
@@ -573,16 +590,15 @@ test("combat runtime enforces derived area and durable status ledger bounds", ()
 test("VFX commands are finite unique bounded and expire deterministically", () => {
   const vfx = {
     id: "vfx-1",
-    kind: "impact",
-    artifactId: "baseRevolver",
-    effectId: "baseRevolver.direct",
+    kind: "stillwater.ward",
+    artifactId: "stillwater",
+    effectId: "stillwater.charge",
     rootTriggerId: "trigger-1",
     destination: "world",
     bornAt: 0,
     expiresAt: 0.2,
-    x: 4,
-    y: 5,
-  } as const;
+    geometry: { type: "point", at: { x: 4, y: 5 } },
+  } as const satisfies VfxCommand;
   const expiredArea = {
     id: "area-expired",
     effectId: "ectoplasmSnare.pool",
@@ -598,12 +614,21 @@ test("VFX commands are finite unique bounded and expire deterministically", () =
   expect(resolved.vfxCommands).toEqual([]);
   expect(() => resolveCombatPhases(runtime({ vfxCommands: [vfx, { ...vfx }] }), context())).toThrow("duplicate VFX");
   expect(() => resolveCombatPhases(runtime({ vfxCommands: [{ ...vfx, expiresAt: 3.01 }] }), context())).toThrow("three seconds");
-  expect(() => resolveCombatPhases(runtime({ vfxCommands: [{ ...vfx, x: Infinity }] }), context())).toThrow("finite");
+  expect(() => resolveCombatPhases(runtime({ vfxCommands: [{
+    ...vfx,
+    geometry: { type: "point", at: { x: Infinity, y: 5 } },
+  }] }), context())).toThrow("finite");
 
   const limit = Math.ceil(context().fireRate * 3 * (1 + context().build.maxDescendants));
   const overBound = Array.from({ length: limit + 1 }, (_, index) => ({ ...vfx, id: `vfx-${index}` }));
   expect(() => resolveCombatPhases(runtime({ vfxCommands: overBound }), context())).toThrow("derived bound");
-  const forgedTargets = overBound.map((command, index) => ({ ...command, targetId: `forged-${index}` }));
+  const forgedTargets: VfxCommand[] = overBound.map((command, index) => ({
+    ...command,
+    kind: "coldcaster.chill",
+    artifactId: "coldcaster",
+    effectId: "coldcaster.chill",
+    geometry: { type: "target", targetId: `forged-${index}`, at: { x: index, y: 0 } },
+  }));
   expect(() => resolveCombatPhases(runtime({ vfxCommands: forgedTargets }), context())).toThrow("derived bound");
 });
 
@@ -614,19 +639,33 @@ test("VFX bound accepts a valid Cinder Ledger and Snare command composition", ()
     "widowsLedger.notch", "widowsLedger.notch", "widowsLedger.line",
     "ectoplasmSnare.pool", "ectoplasmSnare.pool", "ectoplasmSnare.pool",
     "cinderGospel.emberRing",
-  ];
-  const commands = kinds.map((kind, index) => ({
-    id: `valid-composed-${index}`,
-    kind,
-    artifactId: kind.split(".")[0]!,
-    effectId: kind,
-    rootTriggerId: "trigger-1",
-    destination: "world" as const,
-    bornAt: 0,
-    expiresAt: 0.2,
-    x: index,
-    y: index,
-  }));
+  ] as const;
+  const commands: VfxCommand[] = kinds.map((kind, index) => {
+    const common = {
+      id: `valid-composed-${index}`,
+      artifactId: kind.split(".")[0]!,
+      effectId: kind,
+      rootTriggerId: "trigger-1",
+      destination: "world" as const,
+      bornAt: 0,
+      expiresAt: 0.2,
+    };
+    if (kind === "widowsLedger.line") return {
+      ...common,
+      kind,
+      geometry: { type: "segment", from: { x: 0, y: 0 }, to: { x: index, y: index } },
+    };
+    if (kind === "ectoplasmSnare.pool" || kind === "cinderGospel.emberRing") return {
+      ...common,
+      kind,
+      geometry: { type: "radius", center: { x: index, y: index }, radius: 40 },
+    };
+    return {
+      ...common,
+      kind,
+      geometry: { type: "target", targetId: `target-${index}`, at: { x: index, y: index } },
+    };
+  });
 
   expect(() => resolveCombatPhases(runtime({ vfxCommands: commands }), context({ build: composed }))).not.toThrow();
 });
@@ -668,8 +707,14 @@ test("same-tick Twin hits deterministically detonate Hollow and advance chill tw
   const resolved = resolveCombatPhases(runtime({
     now: 0.2,
     projectiles: [
-      projectile({ id: "projectile-2", lineageId: "trigger-1:1", x: 500, vx: 600, activatedEffectIds: effectIds }),
-      projectile({ id: "projectile-1", lineageId: "trigger-1:0", x: 500, vx: 600, activatedEffectIds: effectIds }),
+      projectile({
+        id: "projectile-2", rootTriggerId: "detonator-root", lineageId: "detonator-root:0",
+        x: 500, vx: 600, activatedEffectIds: effectIds,
+      }),
+      projectile({
+        id: "projectile-1", rootTriggerId: "charge-root", lineageId: "charge-root:0",
+        x: 500, vx: 600, activatedEffectIds: effectIds,
+      }),
     ],
     targets: [target],
   }), context({ dt: 0.2, build: composed }));
@@ -678,6 +723,17 @@ test("same-tick Twin hits deterministically detonate Hollow and advance chill tw
     .toEqual(["projectile-1", "projectile-2"]);
   expect(resolved.targets[0]!.effects?.hollowPoint).toBeUndefined();
   expect(resolved.targets[0]!.effects?.chill).toEqual({ count: 2, expiresAt: 2.12 });
+  const hollowCommands = resolved.vfxCommands.filter(({ kind }) => kind === "hollowPoint.explosion");
+  expect(hollowCommands).toHaveLength(1);
+  const explosionAt = resolved.metrics.hitEvents.find(({ effectId }) => effectId === "hollowPoint.explosion")!.time;
+  expect(hollowCommands[0]).toMatchObject({
+    artifactId: "hollowPoint",
+    effectId: "hollowPoint.explosion",
+    rootTriggerId: "charge-root",
+    lineageId: "charge-root:0",
+    bornAt: explosionAt,
+    geometry: { type: "radius", center: { x: 600, y: 300 }, radius: 64 },
+  });
 });
 
 test("a lethal Cinder direct hit applies burn before one depth-one ember ring", () => {
@@ -698,7 +754,10 @@ test("a lethal Cinder direct hit applies burn before one depth-one ember ring", 
     source: "reactive", damage: 4, time: 0.12, targetId: "nearby", artifactId: "cinderGospel",
     effectId: "cinderGospel.emberRing", rootTriggerId: "trigger-1", killReactionDepth: 1, originPower: 20,
   });
-  expect(resolved.vfxCommands).toContainEqual(expect.objectContaining({ kind: "cinderGospel.emberRing", x: 600, y: 300 }));
+  expect(resolved.vfxCommands).toContainEqual(expect.objectContaining({
+    kind: "cinderGospel.emberRing",
+    geometry: { type: "radius", center: { x: 600, y: 300 }, radius: 64 },
+  }));
 });
 
 test("a Hollow kill snapshots Cinder burn after the lethal direct hit refresh", () => {
@@ -766,7 +825,7 @@ test("live Wanted Brand is injected before generation-zero projectile motion", (
   const branded = compileCombatBuild({ wantedBrand: true });
   const moved = resolveMotionPhase(runtime({
     now: 0.1,
-    wantedBrand: { targetId: "marked", expiresAt: 3 },
+    wantedBrand: brand("marked", 3),
     projectiles: [projectile({ x: 200, y: 200, vx: 100, vy: 0 })],
     targets: [{
       id: "marked", kind: "chaser", immortal: false,
@@ -782,7 +841,7 @@ test("Wanted Brand steers only the pre-expiry slice of a crossing step", () => {
   const branded = compileCombatBuild({ wantedBrand: true });
   const moved = resolveMotionPhase(runtime({
     now: 3.1,
-    wantedBrand: { targetId: "marked", expiresAt: 3 },
+    wantedBrand: brand("marked", 3),
     projectiles: [projectile({ x: 200, y: 200, vx: 100, vy: 0, bornAt: 2.9 })],
     targets: [{
       id: "marked", kind: "chaser", immortal: false,
@@ -795,7 +854,7 @@ test("Wanted Brand steers only the pre-expiry slice of a crossing step", () => {
 
   const equality = resolveMotionPhase(runtime({
     now: 3.2,
-    wantedBrand: { targetId: "marked", expiresAt: 3 },
+    wantedBrand: brand("marked", 3),
     projectiles: [projectile({ x: 200, y: 200, vx: 100, vy: 0, bornAt: 3 })],
     targets: [{
       id: "marked", kind: "chaser", immortal: false,
@@ -809,7 +868,7 @@ test("a pre-expiry impact sees the old Brand but end-of-step cleanup expires it"
   const branded = compileCombatBuild({ wantedBrand: true });
   const resolved = resolveCombatPhases(runtime({
     now: 3.1,
-    wantedBrand: { targetId: "old-mark", expiresAt: 3 },
+    wantedBrand: brand("old-mark", 3),
     projectiles: [projectile({ x: 500, y: 300, vx: 440, vy: 0, speed: 440, bornAt: 2.9,
       activatedEffectIds: ["baseRevolver.direct", "wantedBrand.brand"] })],
     targets: [
@@ -825,7 +884,7 @@ test("a lethal branded hit jumps the one mark with its original deadline", () =>
   const branded = compileCombatBuild({ wantedBrand: true });
   const resolved = resolveCombatPhases(runtime({
     now: 0.2,
-    wantedBrand: { targetId: "branded", expiresAt: 3 },
+    wantedBrand: brand("branded", 3),
     projectiles: [projectile({ x: 500, vx: 600 })],
     targets: [
       { id: "branded", kind: "chaser", immortal: false, x: 600, y: 300, radius: 22, health: 20, maxHealth: 20, speed: 0, frozenUntil: 0 },
@@ -834,9 +893,16 @@ test("a lethal branded hit jumps the one mark with its original deadline", () =>
     ],
   }), context({ dt: 0.2, build: branded }));
 
-  expect(resolved.wantedBrand).toEqual({ targetId: "tie-a", expiresAt: 3 });
+  expect(resolved.wantedBrand).toEqual(brand("tie-a", 3, 0.2));
   expect(resolved.vfxCommands.filter(({ kind }) => kind === "wantedBrand.mark"))
-    .toEqual([expect.objectContaining({ targetId: "tie-a", expiresAt: 3 })]);
+    .toEqual([expect.objectContaining({
+      effectId: "wantedBrand.brand",
+      rootTriggerId: "brand-root",
+      lineageId: "brand-root:0",
+      bornAt: 0.2,
+      geometry: { type: "target", targetId: "tie-a", at: { x: 700, y: 300 } },
+      expiresAt: 3,
+    })]);
 });
 
 test("generation-one lethal burn applies status but cannot invoke Cinder", () => {
@@ -1007,10 +1073,26 @@ test("Pinball consumes one lineage relay across simultaneous physical bounces an
       projectile({ ...shared, id: "projectile-a", x: 890, y: 200, vx: 100, speed: 100 }),
       projectile({ ...shared, id: "projectile-b", x: 70, y: 400, vx: -100, speed: 100 }),
     ],
+    targets: [{
+      id: "relay-target", kind: "dummy", x: 820, y: 200, radius: 18,
+      health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0,
+    }],
   }), context({ dt: 0.1, build: pinballBuild, props: [] }));
 
   expect(Object.keys(resolved.relayLedger ?? {})).toEqual([shared.lineageId]);
   expect(resolved.vfxCommands.filter(({ kind }) => kind === "pinball.relay")).toHaveLength(1);
+  const relay = resolved.vfxCommands.find(({ kind }) => kind === "pinball.relay")!;
+  expect(relay).toMatchObject({
+    bornAt: 0.05,
+    targetId: "relay-target",
+    geometry: {
+      type: "link",
+      from: { x: ROOM.maxX - 1, y: 200 },
+      to: { x: 820, y: 200 },
+    },
+  });
+  expect(relay.expiresAt).toBeCloseTo(0.23, 12);
+  expect(Object.isFrozen(relay.geometry)).toBe(true);
   expect(resolved.projectiles.map(({ vx, vy }) => Math.hypot(vx, vy)).sort((a, b) => a - b))
     .toEqual([100, 135]);
 

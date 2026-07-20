@@ -64,20 +64,22 @@ test("Bonanza queues only the first eligible depth-zero generation-zero kill per
     kill({ victimId: "target-1" }),
     kill({ victimId: "child", generation: 1 }),
     kill({ victimId: "reaction", killReactionDepth: 1 }),
-  ], {}, 0.25);
+  ], {}, 0.25, createCylinder(5), []);
 
   expect(result.pendingRefunds).toEqual([expect.objectContaining({
     effectId: "bonanzaClip.refund", rootTriggerId: "trigger-3", rootIndex: 3, arrivesAt: 1.25,
-    x: 10, y: 20, artifactId: "bonanzaClip",
+    from: { x: 10, y: 20 }, slot: 5, artifactId: "bonanzaClip",
   })]);
   expect(Object.keys(result.history)).toEqual(["bonanzaClip.refund\0trigger-3"]);
 });
 
 test("due Bonanza and Recoil refunds use arrival, effect ID, and numeric root order", () => {
-  const pending = (effectId: PendingRefund["effectId"], rootIndex: number, arrivesAt = 1): PendingRefund => ({
-    effectId, artifactId: effectId === "bonanzaClip.refund" ? "bonanzaClip" : "recoilBoots",
-    rootTriggerId: `trigger-${rootIndex}`, rootIndex, arrivesAt, x: 0, y: 0,
-  });
+  const pending = (effectId: PendingRefund["effectId"], rootIndex: number, arrivesAt = 1): PendingRefund => {
+    const common = { rootTriggerId: `trigger-${rootIndex}`, rootIndex, arrivesAt, from: { x: 0, y: 0 } };
+    return effectId === "bonanzaClip.refund"
+      ? { ...common, effectId, artifactId: "bonanzaClip", slot: 4 }
+      : { ...common, effectId, artifactId: "recoilBoots" };
+  };
   expect(sortPendingRefunds([
     pending("recoilBoots.recoil", 2),
     pending("bonanzaClip.refund", 9),

@@ -3,6 +3,7 @@ import { ARTIFACT_IDS, type ArtifactLoadout } from "./artifacts";
 import { compileCombatBuild, type CombatBuild } from "./combat-build";
 import { resolveCombatPhases, type CombatContext, type CombatRuntime } from "./combat-effects";
 import { createMetrics } from "./metrics";
+import { createCylinder } from "./cylinder";
 import type { ProjectileState } from "./projectiles";
 import { ROOM } from "./room";
 import {
@@ -73,6 +74,7 @@ const context = (build: CombatBuild, overrides: Partial<CombatContext> = {}): Co
   teslaLinks: [],
   teslaCooldowns: {},
   fireRate: 3,
+  cylinder: createCylinder(),
   ...overrides,
 });
 

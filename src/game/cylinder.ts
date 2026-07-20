@@ -100,12 +100,17 @@ export function refundRound(
   state: CylinderState,
   effectId: "bonanzaClip" | "recoilBoots",
   now: number,
+  frozenSlot?: number,
 ): CylinderState {
   void effectId;
   void now;
   if (ammoCount(state) === 6) return state;
-  const slot = state.emptied.at(-1);
+  if (frozenSlot !== undefined && (!Number.isInteger(frozenSlot) || frozenSlot < 0 || frozenSlot >= state.slots.length)) {
+    throw new Error("frozen refund slot must be an integer from zero through five");
+  }
+  const slot = frozenSlot ?? state.emptied.at(-1);
   if (slot === undefined) return state;
+  if (state.slots[slot]?.loaded) return state;
   const wasEmpty = ammoCount(state) === 0;
   const slots = state.slots.slice() as CylinderSlot[];
   slots[slot] = { loaded: true, echo: null };
@@ -113,7 +118,7 @@ export function refundRound(
     ...state,
     slots: slots as unknown as CylinderState["slots"],
     nextSlot: wasEmpty ? slot : state.nextSlot,
-    emptied: state.emptied.slice(0, -1),
+    emptied: state.emptied.filter((emptySlot) => emptySlot !== slot),
     reloading: false,
     reloadKind: null,
   };

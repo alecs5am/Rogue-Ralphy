@@ -40,7 +40,15 @@ export type TargetEffects = Readonly<{
   slows: readonly Readonly<{ effectId: string; multiplier: number; until: number }>[];
 }>;
 
-export type WantedBrand = Readonly<{ targetId: string; expiresAt: number }>;
+export type WantedBrand = Readonly<{
+  targetId: string;
+  markedAt: number;
+  expiresAt: number;
+  artifactId: "wantedBrand";
+  effectId: string;
+  rootTriggerId: string;
+  lineageId?: string;
+}>;
 export type RootStatusRecord = Readonly<{ rootTriggerId: string }>;
 
 export type StatusTarget = Readonly<Point & {
@@ -86,16 +94,41 @@ export type StatusDamageRequest = Readonly<{
   burn?: BurnStatus;
 }>;
 
-export type StatusVfxRequest = Readonly<{
+type StatusVfxBase = Readonly<{
   id: string;
-  kind: string;
   artifactId: string;
+  effectId: string;
+  rootTriggerId: string;
+  lineageId?: string;
   bornAt: number;
   expiresAt: number;
-  x: number;
-  y: number;
-  targetId?: string;
 }>;
+
+type StatusTargetVfxKind =
+  | "coldcaster.chill"
+  | "coldcaster.freeze"
+  | "cinderGospel.burn"
+  | "wantedBrand.mark"
+  | "widowsLedger.notch";
+
+export type StatusVfxRequest =
+  | (StatusVfxBase & Readonly<{
+    kind: StatusTargetVfxKind;
+    geometry: Readonly<{ type: "target"; targetId: string; at: Point }>;
+  }>)
+  | (StatusVfxBase & Readonly<{
+    kind: "widowsLedger.line";
+    geometry: Readonly<{ type: "segment"; from: Point; to: Point }>;
+  }>)
+  | (StatusVfxBase & Readonly<{
+    kind: "ectoplasmSnare.pool";
+    geometry: Readonly<{ type: "radius"; center: Point; radius: number }>;
+  }>)
+  | (StatusVfxBase & Readonly<{
+    kind: "hexBell.pulse";
+    targetId: string;
+    geometry: Readonly<{ type: "radius"; center: Point; radius: number }>;
+  }>);
 
 export type DirectStatusResult = StatusRuntime & Readonly<{
   areas: readonly Omit<SnareAreaState, "id">[];
@@ -178,23 +211,38 @@ function upsertSlow(
   return [...slows.filter((slow) => slow.effectId !== effectId), { effectId, multiplier, until }];
 }
 
-function statusVfx(
-  kind: string,
+const immutablePoint = (point: Point): Point => Object.freeze({ x: point.x, y: point.y });
+const statusBase = (
+  id: string,
   artifactId: string,
+  effectId: string,
+  source: StatusProvenance,
+  bornAt: number,
+  expiresAt: number,
+): StatusVfxBase => Object.freeze({
+  id,
+  artifactId,
+  effectId,
+  rootTriggerId: source.rootTriggerId,
+  ...(source.lineageId ? { lineageId: source.lineageId } : {}),
+  bornAt,
+  expiresAt,
+});
+
+function statusVfx(
+  kind: StatusTargetVfxKind,
+  artifactId: string,
+  effectId: string,
+  source: StatusProvenance,
   target: StatusTarget,
   bornAt: number,
   expiresAt: number,
 ): StatusVfxRequest {
-  return {
-    id: `status:${kind}:${target.id}`,
+  return Object.freeze({
+    ...statusBase(`status:${kind}:${target.id}`, artifactId, effectId, source, bornAt, expiresAt),
     kind,
-    artifactId,
-    bornAt,
-    expiresAt,
-    x: target.x,
-    y: target.y,
-    targetId: target.id,
-  };
+    geometry: Object.freeze({ type: "target", targetId: target.id, at: immutablePoint(target) }),
+  });
 }
 
 export function applyDirectStatuses(input: Readonly<{
@@ -246,13 +294,13 @@ export function applyDirectStatuses(input: Readonly<{
             frozenUntil: Math.max(target.frozenUntil, input.now + rule.freezeDuration),
             effects: { ...target.effects, chill: EMPTY_CHILL },
           });
-          vfx.push(statusVfx("coldcaster.freeze", rule.artifactId, target, input.now, input.now + rule.freezeDuration));
+          vfx.push(statusVfx("coldcaster.freeze", rule.artifactId, rule.effectId, source, target, input.now, input.now + rule.freezeDuration));
         } else {
           replaceTarget({
             ...target,
             effects: { ...target.effects, chill: { count: count as 1 | 2, expiresAt: input.now + rule.stackDuration } },
           });
-          vfx.push(statusVfx("coldcaster.chill", rule.artifactId, target, input.now, input.now + rule.stackDuration));
+          vfx.push(statusVfx("coldcaster.chill", rule.artifactId, rule.effectId, source, target, input.now, input.now + rule.stackDuration));
         }
         break;
       }
@@ -267,6 +315,8 @@ export function applyDirectStatuses(input: Readonly<{
         vfx.push(statusVfx(
           "cinderGospel.burn",
           rule.artifactId,
+          rule.effectId,
+          source,
           target,
           input.now,
           Math.max(input.now + 0.01, burn.nextTickAt + (burn.remainingTicks - 1) * rule.interval),
@@ -275,8 +325,16 @@ export function applyDirectStatuses(input: Readonly<{
       }
       case "brand":
         if (!wantedBrand && input.targetWasAlive) {
-          wantedBrand = { targetId: target.id, expiresAt: input.now + rule.duration };
-          vfx.push(statusVfx("wantedBrand.mark", rule.artifactId, target, input.now, wantedBrand.expiresAt));
+          wantedBrand = Object.freeze({
+            targetId: target.id,
+            markedAt: input.now,
+            expiresAt: input.now + rule.duration,
+            artifactId: "wantedBrand",
+            effectId: rule.effectId,
+            rootTriggerId: source.rootTriggerId,
+            ...(source.lineageId ? { lineageId: source.lineageId } : {}),
+          });
+          vfx.push(statusVfx("wantedBrand.mark", rule.artifactId, rule.effectId, source, target, input.now, wantedBrand.expiresAt));
         }
         break;
       case "hitCounter": {
@@ -302,23 +360,29 @@ export function applyDirectStatuses(input: Readonly<{
               y: target.y,
             };
             damages.push({ event, sourceProjectile: source.sourceProjectile, burn: target.effects.burn });
-            vfx.push({
-              id: `vfx:widowsLedger.line:${source.projectileId}:${target.id}:${input.now}`,
+            vfx.push(Object.freeze({
+              ...statusBase(
+                `vfx:widowsLedger.line:${source.projectileId}:${target.id}:${input.now}`,
+                rule.artifactId,
+                "widowsLedger.line",
+                source,
+                input.now,
+                input.now + 0.2,
+              ),
               kind: "widowsLedger.line",
-              artifactId: rule.artifactId,
-              bornAt: input.now,
-              expiresAt: input.now + 0.2,
-              x: input.player.x,
-              y: input.player.y,
-              targetId: target.id,
-            });
+              geometry: Object.freeze({
+                type: "segment",
+                from: immutablePoint(input.player),
+                to: immutablePoint(target),
+              }),
+            }));
           }
         } else {
           replaceTarget({
             ...target,
             effects: { ...target.effects, ledger: { count, expiresAt: input.now + rule.duration } },
           });
-          vfx.push(statusVfx("widowsLedger.notch", rule.artifactId, target, input.now, input.now + rule.duration));
+          vfx.push(statusVfx("widowsLedger.notch", rule.artifactId, rule.effectId, source, target, input.now, input.now + rule.duration));
         }
         break;
       }
@@ -342,15 +406,22 @@ export function applyDirectStatuses(input: Readonly<{
             slow: rule.slow,
             ...source,
           });
-          vfx.push({
-            id: `status:ectoplasmSnare.pool:${source.rootTriggerId}`,
+          vfx.push(Object.freeze({
+            ...statusBase(
+              `status:ectoplasmSnare.pool:${source.rootTriggerId}`,
+              rule.artifactId,
+              rule.effectId,
+              source,
+              input.now,
+              input.now + rule.duration,
+            ),
             kind: "ectoplasmSnare.pool",
-            artifactId: rule.artifactId,
-            bornAt: input.now,
-            expiresAt: input.now + rule.duration,
-            x: input.impactPoint.x,
-            y: input.impactPoint.y,
-          });
+            geometry: Object.freeze({
+              type: "radius",
+              center: immutablePoint(input.impactPoint),
+              radius: rule.radius,
+            }),
+          }));
         }
         break;
       }
@@ -388,16 +459,19 @@ export function applyDirectStatuses(input: Readonly<{
           targets[index] = destination;
           if (destination.id === target.id) target = destination;
         }
-        vfx.push({
-          id: `vfx:hexBell.pulse:${source.projectileId}:${target.id}:${input.now}`,
+        vfx.push(Object.freeze({
+          ...statusBase(
+            `vfx:hexBell.pulse:${source.projectileId}:${target.id}:${input.now}`,
+            rule.artifactId,
+            rule.effectId,
+            source,
+            input.now,
+            input.now + 0.25,
+          ),
           kind: "hexBell.pulse",
-          artifactId: rule.artifactId,
-          bornAt: input.now,
-          expiresAt: input.now + 0.25,
-          x: target.x,
-          y: target.y,
           targetId: target.id,
-        });
+          geometry: Object.freeze({ type: "radius", center: immutablePoint(target), radius: rule.radius }),
+        }));
         break;
       }
       default:
@@ -438,7 +512,7 @@ export function jumpWantedBrand(
 ): WantedBrand | undefined {
   if (!brand || !(now < brand.expiresAt) || brand.targetId !== killed.id) return brand && now < brand.expiresAt ? brand : undefined;
   const targetId = selectBrandTarget(killed, targets.filter(({ id }) => id !== killed.id), radius);
-  return targetId ? { targetId, expiresAt: brand.expiresAt } : undefined;
+  return targetId ? Object.freeze({ ...brand, targetId, markedAt: now }) : undefined;
 }
 
 export function advanceStatuses(input: Readonly<{

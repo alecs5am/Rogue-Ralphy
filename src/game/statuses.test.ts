@@ -9,6 +9,7 @@ import {
   selectBrandTarget,
   type StatusRuntime,
   type StatusTarget,
+  type WantedBrand,
 } from "./statuses";
 
 const ROW_FOUR = [
@@ -41,6 +42,16 @@ const runtime = (targets: readonly StatusTarget[], overrides: Partial<StatusRunt
   hexCounter: 0,
   snareRoots: {},
   ...overrides,
+});
+
+const brand = (targetId: string, expiresAt: number, markedAt = 0): WantedBrand => Object.freeze({
+  targetId,
+  markedAt,
+  expiresAt,
+  artifactId: "wantedBrand",
+  effectId: "wantedBrand.brand",
+  rootTriggerId: "trigger-1",
+  lineageId: "trigger-1:0",
 });
 
 const hit = (
@@ -115,14 +126,22 @@ describe("row-four signature reducers", () => {
     const effectIds = ["baseRevolver.direct", "wantedBrand.brand"];
     const targets = [target("first", 100), target("later", 200), target("tie-b", 300), target("tie-a", 300)];
     let result = hit(runtime(targets), "first", projectile({ activatedEffectIds: effectIds }), 0, { wantedBrand: true });
-    expect(result.wantedBrand).toEqual({ targetId: "first", expiresAt: ROW_FOUR[2][1].duration });
+    expect(result.wantedBrand).toEqual({
+      targetId: "first",
+      expiresAt: ROW_FOUR[2][1].duration,
+      markedAt: 0,
+      artifactId: "wantedBrand",
+      effectId: "wantedBrand.brand",
+      rootTriggerId: "trigger-1",
+      lineageId: "trigger-1:0",
+    });
     result = hit(result, "later", projectile({ id: "projectile-2", activatedEffectIds: effectIds }), 1, { wantedBrand: true });
-    expect(result.wantedBrand).toEqual({ targetId: "first", expiresAt: 3 });
+    expect(result.wantedBrand).toEqual(brand("first", 3));
     expect(selectBrandTarget({ x: 100, y: 100 }, result.targets.filter(({ id }) => id.startsWith("tie")), 200)).toBe("tie-a");
     expect(selectBrandTarget({ x: 0, y: 0 }, [target("edge", 240, { y: 0 })], 240)).toBe("edge");
 
-    result = hit({ ...result, wantedBrand: { targetId: "first", expiresAt: 1 } }, "later", projectile({ id: "projectile-3", activatedEffectIds: effectIds }), 1, { wantedBrand: true });
-    expect(result.wantedBrand).toEqual({ targetId: "later", expiresAt: 4 });
+    result = hit({ ...result, wantedBrand: brand("first", 1) }, "later", projectile({ id: "projectile-3", activatedEffectIds: effectIds }), 1, { wantedBrand: true });
+    expect(result.wantedBrand).toEqual(brand("later", 4, 1));
   });
 
   test("Widow's Ledger consumes the fifth live-target notch into one guaranteed area hit", () => {
@@ -139,6 +158,15 @@ describe("row-four signature reducers", () => {
       source: "area", damage: 24, targetId: "marked", artifactId: "widowsLedger",
       effectId: "widowsLedger.line", originPower: 20,
     });
+    expect(result.vfx.at(-1)).toMatchObject({
+      kind: "widowsLedger.line",
+      geometry: {
+        type: "segment",
+        from: { x: 0, y: 100 },
+        to: { x: 100, y: 100 },
+      },
+    });
+    expect(Object.isFrozen(result.vfx.at(-1)!.geometry)).toBe(true);
   });
 
   test("Ectoplasm Snare creates once per root and resolves all fifteen ticks including expiry", () => {
@@ -183,7 +211,7 @@ describe("row-four signature reducers", () => {
     ];
     const result = hit(runtime([source, chaser, dummy], {
       hexCounter: 3,
-      wantedBrand: { targetId: "source", expiresAt: 3 },
+      wantedBrand: brand("source", 3),
     }), "source", projectile({ activatedEffectIds: effectIds }), 0, {
       coldcaster: true, cinderGospel: true, wantedBrand: true, widowsLedger: true, hexBell: true,
     });
@@ -198,7 +226,7 @@ describe("row-four signature reducers", () => {
     expect(result.targets[1]!.effects.hollowPoint).toBeUndefined();
     expect(result.targets[1]!.frozenUntil).toBe(0);
     expect(result.targets[2]!.effects.slows).toEqual([]);
-    expect(result.wantedBrand).toEqual({ targetId: "source", expiresAt: 3 });
+    expect(result.wantedBrand).toEqual(brand("source", 3));
   });
 });
 

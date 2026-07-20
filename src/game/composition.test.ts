@@ -9,6 +9,7 @@ import {
   type CombatTargetState,
 } from "./combat-effects";
 import { createMetrics } from "./metrics";
+import { createCylinder } from "./cylinder";
 import type { KillContext } from "./emissions";
 import type { ProjectileState } from "./projectiles";
 import { ROOM } from "./room";
@@ -138,6 +139,7 @@ const context = (build: CombatBuild, overrides: Partial<CombatContext> = {}): Co
   teslaLinks: [],
   teslaCooldowns: {},
   fireRate: 3,
+  cylinder: createCylinder(),
   ...overrides,
 });
 
@@ -545,7 +547,7 @@ test("Harvester + Brand + Bonanza reacts once to a root and ignores generation-o
     targets: [target("victim", 300, 1), target("survivor-b", 350), target("survivor-a", 350)],
   }), context(build));
   const spirits = state.pendingEmissions.find(({ effectId }) => effectId === "soulHarvester.spirits")!;
-  expect(state.wantedBrand).toEqual({ targetId: "survivor-a", expiresAt: 4 });
+  expect(state.wantedBrand).toMatchObject({ targetId: "survivor-a", expiresAt: 4 });
   expect(spirits.templates?.map(({ damage, soulTargetId }) => [damage, soulTargetId])).toEqual([
     [7, "survivor-a"], [7, "survivor-b"],
   ]);

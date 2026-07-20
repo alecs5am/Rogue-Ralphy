@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { compileCombatBuild, type CombatBuild } from "./combat-build";
 import { resolveCombatPhases, type CombatContext, type CombatRuntime, type CombatTargetState } from "./combat-effects";
 import { createMetrics } from "./metrics";
+import { createCylinder } from "./cylinder";
 import { buildGenerationOneEmission } from "./emissions";
 import { selectMotionTarget } from "./motions";
 import type { ProjectileState } from "./projectiles";
@@ -68,6 +69,7 @@ const context = (build: CombatBuild, overrides: Partial<CombatContext> = {}): Co
   teslaLinks: [],
   teslaCooldowns: {},
   fireRate: 3,
+  cylinder: createCylinder(),
   ...overrides,
 });
 

@@ -281,7 +281,7 @@ export function clearTargets(state: GameState): GameState {
     targets: [],
     pendingEmissions: [],
     areas: [],
-    vfxCommands: state.vfxCommands.filter(({ kind, expiresAt }) => kind === "bonanzaClip.delivery" && expiresAt > state.time),
+    vfxCommands: state.vfxCommands.filter(({ kind, expiresAt }) => kind === "bonanza.delivery" && expiresAt > state.time),
     teslaLinks: [],
     teslaCooldowns: Object.fromEntries(Object.entries(state.teslaCooldowns).filter(([key, expiresAt]) => {
       if (expiresAt <= state.time) return false;
@@ -510,6 +510,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     teslaLinks: state.teslaLinks,
     teslaCooldowns: state.teslaCooldowns,
     fireRate: weapon.fireRate,
+    cylinder,
   } as const;
   let combat = resolveCombatPhases({
     projectiles: state.projectiles,
@@ -612,9 +613,11 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       destination: "world",
       bornAt: hit.time,
       expiresAt: hit.time + 0.2,
-      x: hit.x,
-      y: hit.y,
-      targetId: hit.targetId,
+      geometry: Object.freeze({
+        type: "target",
+        targetId: hit.targetId,
+        at: Object.freeze({ x: hit.x, y: hit.y }),
+      }),
     });
   }
   finalTargets = finalTargets.filter((target) => target.immortal || target.health > 0);
@@ -656,12 +659,11 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       artifactId: "recoilBoots",
       effectId: refund.effectId,
       rootTriggerId: refund.rootTriggerId,
-      lineageId: refund.lineageId,
+      ...(refund.lineageId ? { lineageId: refund.lineageId } : {}),
       destination: "world",
       bornAt: now,
       expiresAt: now + 0.2,
-      x: player.x,
-      y: player.y,
+      geometry: Object.freeze({ type: "point", at: Object.freeze({ x: player.x, y: player.y }) }),
     });
   }
   const priorStillwater = vfxCommands.find(({ id }) => id === "reactive:stillwater");
@@ -676,8 +678,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     destination: "world",
     bornAt: Math.max(priorStillwater?.bornAt ?? now - stillwater.progress, now - 2.9),
     expiresAt: now + 1 / 120,
-    x: player.x,
-    y: player.y,
+    geometry: Object.freeze({ type: "point", at: Object.freeze({ x: player.x, y: player.y }) }),
   });
   if (decoy) withoutReactiveState.push({
     id: "reactive:coat",
@@ -688,8 +689,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     destination: "world",
     bornAt: decoy.expiresAt - 1,
     expiresAt: decoy.expiresAt,
-    x: decoy.x,
-    y: decoy.y,
+    geometry: Object.freeze({ type: "point", at: Object.freeze({ x: decoy.x, y: decoy.y }) }),
   });
   for (const orbital of locketOrbitals) withoutReactiveState.push({
     id: `reactive:${orbital.id}`,
@@ -701,8 +701,13 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     destination: "world",
     bornAt: orbital.bornAt,
     expiresAt: orbital.expiresAt,
-    x: player.x + Math.cos(orbital.angle) * orbital.radius,
-    y: player.y + Math.sin(orbital.angle) * orbital.radius,
+    geometry: Object.freeze({
+      type: "orbit",
+      center: Object.freeze({ x: player.x, y: player.y }),
+      slot: orbital.slot,
+      radius: orbital.radius,
+      angle: orbital.angle,
+    }),
   });
   const recoilRule = state.build.triggers.find((rule) => rule.kind === "recoil");
   const reloadRule = state.build.triggers.find((rule) => rule.kind === "activeReload");

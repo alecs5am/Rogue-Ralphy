@@ -150,9 +150,9 @@ test("clear targets and reset clean deferred combat and Tesla histories", () => 
       rootTriggerId: "trigger-1", instanceKey: "dummy-1", bornAt: 1, expiresAt: 2, tickInterval: 0.1,
     }],
     vfxCommands: [{
-      id: "vfx-1", kind: "impact", artifactId: "shotgun", effectId: "shotgun.split",
+      id: "vfx-1", kind: "stillwater.ward", artifactId: "stillwater", effectId: "stillwater.charge",
       rootTriggerId: "trigger-1", destination: "world", bornAt: 1, expiresAt: 2,
-      x: 600, y: 270,
+      geometry: { type: "point", at: { x: 600, y: 270 } },
     }],
     teslaLinks: [{ id: "projectile-1:projectile-2", a: "projectile-1", b: "projectile-2", distance: 1, damageScale: 0.25, cooldown: 0.15 }],
     teslaCooldowns: { "projectile-1:projectile-2:dummy-1": 2 },
@@ -1214,7 +1214,7 @@ test("Bonanza schedules one earned HUD delivery and resolves an ordinary round a
   game = setArtifact(game, "bonanzaClip", false);
   game = updateGame(game, idle, 0.2, 1.2);
   expect(game.pendingRefunds).toEqual([expect.objectContaining({
-    effectId: "bonanzaClip.refund", rootTriggerId: "trigger-1",
+    effectId: "bonanzaClip.refund", rootTriggerId: "trigger-1", slot: 0,
   })]);
   const arrivesAt = game.pendingRefunds[0]!.arrivesAt;
   expect(arrivesAt - game.metrics.hitEvents[0]!.time).toBeCloseTo(0.25, 12);
@@ -1222,9 +1222,56 @@ test("Bonanza schedules one earned HUD delivery and resolves an ordinary round a
   game = updateGame(game, idle, 0, arrivesAt);
   expect(ammoCount(game.cylinder)).toBe(6);
   expect(game.pendingRefunds).toEqual([]);
-  expect(game.vfxCommands.some(({ kind }) => kind === "bonanzaClip.delivery")).toBe(true);
+  expect(game.vfxCommands.find(({ kind }) => kind === "bonanza.delivery")).toMatchObject({
+    bornAt: game.metrics.hitEvents[0]!.time,
+    expiresAt: arrivesAt + 0.2,
+    geometry: {
+      type: "hudDelivery",
+      from: { x: game.player.x + 80, y: game.player.y },
+      slot: 0,
+      arrivesAt,
+    },
+  });
   expect(() => { game = updateGame(game, idle, 1 / 120, arrivesAt + 1 / 120); }).not.toThrow();
   expect(game.bonanzaHistory).toEqual({});
+});
+
+test("Bonanza delivery keeps its frozen slot through Clear Targets and a full-cylinder no-op", () => {
+  let game = setArtifact(createGame(() => 0.9), "bonanzaClip", true);
+  game = {
+    ...game,
+    targets: [{
+      id: "chaser-full-delivery", kind: "chaser", x: game.player.x + 80, y: game.player.y,
+      radius: 18, health: 1, maxHealth: 1, immortal: false, speed: 0, frozenUntil: 0,
+      effects: createTargetEffects(),
+    }],
+  };
+  game = updateGame(game, { ...idle, aimY: game.player.y, firing: true }, 0, 1);
+  game = setArtifact(game, "bonanzaClip", false);
+  game = updateGame(game, idle, 0.2, 1.2);
+
+  const refund = game.pendingRefunds[0]!;
+  const delivery = game.vfxCommands.find(({ kind }) => kind === "bonanza.delivery")!;
+  expect(delivery).toMatchObject({
+    bornAt: game.metrics.hitEvents[0]!.time,
+    expiresAt: refund.arrivesAt + 0.2,
+    geometry: {
+      type: "hudDelivery",
+      from: { x: game.player.x + 80, y: game.player.y },
+      slot: 0,
+      arrivesAt: refund.arrivesAt,
+    },
+  });
+
+  game = { ...clearTargets(game), cylinder: createCylinder(6) };
+  expect(game.vfxCommands).toContainEqual(delivery);
+  game = updateGame(game, idle, 0, refund.arrivesAt);
+  expect(ammoCount(game.cylinder)).toBe(6);
+  expect(game.pendingRefunds).toEqual([]);
+  expect(game.vfxCommands).toContainEqual(delivery);
+
+  game = updateGame(game, idle, 0, delivery.expiresAt);
+  expect(game.vfxCommands.find(({ kind }) => kind === "bonanza.delivery")).toBeUndefined();
 });
 
 test("Last Gasp converts every third low-health root without projectile telemetry and respects the cap", () => {
@@ -1647,13 +1694,14 @@ test("earned Bonanza delivery survives Clear Targets and expired reactive state 
     ...game,
     pendingRefunds: [{
       effectId: "bonanzaClip.refund", artifactId: "bonanzaClip", rootTriggerId: "trigger-1",
-      rootIndex: 1, arrivesAt: 2, x: 500, y: 300,
+      rootIndex: 1, arrivesAt: 2, from: { x: 500, y: 300 }, slot: 0,
     }],
     bonanzaHistory: { "bonanzaClip.refund\0trigger-1": { rootTriggerId: "trigger-1" } },
     vfxCommands: [{
-      id: "bonanza-earned", kind: "bonanzaClip.delivery", artifactId: "bonanzaClip",
+      id: "bonanza-earned", kind: "bonanza.delivery", artifactId: "bonanzaClip",
       effectId: "bonanzaClip.refund", rootTriggerId: "trigger-1", destination: "hud",
-      bornAt: 1, expiresAt: 2.2, x: 500, y: 300,
+      bornAt: 1, expiresAt: 2.2,
+      geometry: { type: "hudDelivery", from: { x: 500, y: 300 }, slot: 0, arrivesAt: 2 },
     }],
     recoilWindows: [{
       effectId: "recoilBoots.recoil", rootTriggerId: "trigger-2", rootIndex: 2,
