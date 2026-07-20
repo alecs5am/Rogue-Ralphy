@@ -242,7 +242,12 @@ export const ARTIFACT_CATALOG = [
     icon: "bigIron", family: "relation", grid: { row: 5, column: 3 }, tags: ["heavy", "moonlet"],
     synergies: ["twinChamber", "cometSpur", "hollowPoint"],
     rules: [
-      { family: "trigger", kind: "heavyMainAndMoonlet", artifactId: "bigIron", effectId: "bigIron.heavy", phase: 70, radiusScale: 1.25, damageScale: 1.2, speedScale: 0.8 },
+      {
+        family: "trigger", kind: "heavyMainAndMoonlet", artifactId: "bigIron", effectId: "bigIron.heavy", phase: 70,
+        radiusScale: 1.25, damageScale: 1.2, speedScale: 0.8,
+        moonRadius: 14, moonAngular: 6 * Math.PI, moonSize: 0.5, moonDamage: 0.35,
+        pairWindow: 0.25, explosionRadius: 56, explosionDamage: 0.5, knockback: 60,
+      },
       { family: "motion", kind: "orbit", artifactId: "bigIron", effectId: "bigIron.moonletOrbit", phase: 10, radius: 14, angularSpeed: 6 * Math.PI },
       { family: "area", kind: "explosion", artifactId: "bigIron", effectId: "bigIron.kineticExplosion", phase: 20, radius: 56, damageScale: 0.5 },
     ],
@@ -266,7 +271,7 @@ export const ARTIFACT_CATALOG = [
     description: "Crossing friendly paths create one 48 px X pulse for 25% of the lower projectile damage.",
     icon: "crossfireCovenant", family: "relation", grid: { row: 5, column: 6 }, tags: ["crossfire", "area"],
     synergies: ["twinChamber", "haloChamber", "teslaBullets"],
-    rules: [{ family: "area", kind: "pathCross", artifactId: "crossfireCovenant", effectId: "crossfireCovenant.cross", phase: 50, length: 48, damageScale: 0.25, participationCap: 1 }],
+    rules: [{ family: "area", kind: "pathCross", artifactId: "crossfireCovenant", effectId: "crossfireCovenant.cross", phase: 50, length: 48, damageScale: 0.25, participationCap: 1, duration: 0.2 }],
   },
   {
     id: "recoilBoots", name: "Recoil Boots",

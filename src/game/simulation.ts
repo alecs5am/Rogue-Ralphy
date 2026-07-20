@@ -4,7 +4,7 @@ import { compileCombatBuild, type CombatBuild } from "./combat-build";
 import { deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon } from "./weapon";
 import { type PendingEffectToken, type ProjectileState, type TeslaLink } from "./projectiles";
 import { ROOM, ROOM_PROPS, TILE_SIZE, type Point } from "./room";
-import { expandTrigger, type LocketState, type ScheduledProjectile } from "./trigger";
+import { expandTrigger, type LocketState, type PlayerSatelliteState, type ScheduledProjectile } from "./trigger";
 import {
   resolveCombatPhases,
   type AreaState,
@@ -21,6 +21,13 @@ import {
   type SnareAreaState,
   type WantedBrand,
 } from "./statuses";
+import type {
+  BigIronPairHit,
+  CrossfireParticipation,
+  CrossfirePulseState,
+  DescendantRecord,
+  WakeTrailState,
+} from "./areas";
 
 export { ROOM, TILE_SIZE } from "./room";
 export type { Point } from "./room";
@@ -49,6 +56,10 @@ export type GameState = {
   cylinder: CylinderState; scheduledProjectiles: ScheduledProjectile[]; pendingEmissions: PendingEmission[];
   projectiles: ProjectileState[]; targets: TargetState[]; areas: AreaState[]; vfxCommands: VfxCommand[];
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
+  satellites: PlayerSatelliteState[];
+  wakeTrails: Record<string, WakeTrailState>; wakeCooldowns: Record<string, number>;
+  crossfirePulses: CrossfirePulseState[]; crossfireParticipation: Record<string, CrossfireParticipation>;
+  bigIronPairHits: Record<string, BigIronPairHit>; descendantsByRoot: Record<string, DescendantRecord>;
   relayLedger: Record<string, Readonly<{ rootTriggerId: string }>>;
   emittedEffects: Record<string, Readonly<{ rootTriggerId: string; lineageId?: string }>>;
   pendingEffectTokens: PendingEffectToken[];
@@ -132,6 +143,13 @@ export function createGame(rng: () => number = Math.random): GameState {
     vfxCommands: [],
     teslaLinks: [],
     teslaCooldowns: {},
+    satellites: [],
+    wakeTrails: {},
+    wakeCooldowns: {},
+    crossfirePulses: [],
+    crossfireParticipation: {},
+    bigIronPairHits: {},
+    descendantsByRoot: {},
     relayLedger: {},
     emittedEffects: {},
     pendingEffectTokens: [],
@@ -229,6 +247,13 @@ export function clearTargets(state: GameState): GameState {
     vfxCommands: [],
     teslaLinks: [],
     teslaCooldowns: {},
+    satellites: [],
+    wakeTrails: {},
+    wakeCooldowns: {},
+    crossfirePulses: [],
+    crossfireParticipation: {},
+    bigIronPairHits: {},
+    descendantsByRoot: {},
     relayLedger: Object.fromEntries(Object.entries(state.relayLedger)
       .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
     emittedEffects: Object.fromEntries(Object.entries(state.emittedEffects)
@@ -291,6 +316,17 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   let dealerCounter = state.dealerCounter;
   let locketState: LocketState = player.health > 40 ? { armed: false, cadence: 0 } : state.locketState;
   let nextShotAt = state.nextShotAt;
+  let satellites = state.satellites
+    .filter(({ expiresAt }) => expiresAt > now)
+    .map((satellite) => {
+      const angle = satellite.phase + (now - satellite.bornAt) * Math.PI;
+      return {
+        ...satellite,
+        x: player.x + Math.cos(angle) * satellite.radius,
+        y: player.y + Math.sin(angle) * satellite.radius,
+      };
+    });
+  let descendantsByRoot = { ...state.descendantsByRoot };
 
   if (canAct && input.firing && !cylinder.reloading && ammoCount(cylinder) > 0 && now >= nextShotAt) {
     const aimAngle = Math.atan2(input.aimY - player.y, input.aimX - player.x);
@@ -311,11 +347,19 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       build: state.build,
       weapon,
       rng: state.rng,
+      satellites,
     });
     if (trigger.projectiles.length > 0) lastShotAt = now;
     scheduledProjectiles.push(...trigger.projectiles);
     dealerCounter = trigger.dealerCounter;
     locketState = trigger.locketState;
+    satellites = [...trigger.satellites];
+    const descendantCount = trigger.projectiles.filter(({ generation }) => generation === 1).length;
+    if (descendantCount > 0) descendantsByRoot[trigger.rootTriggerId] = {
+      rootTriggerId: trigger.rootTriggerId,
+      count: (descendantsByRoot[trigger.rootTriggerId]?.count ?? 0) + descendantCount,
+      limit: Math.min(294, Math.max(state.build.maxDescendants, descendantCount)),
+    };
     cylinder = consumed.state;
     metrics = recordTrigger(metrics);
     nextShotAt = now + 1 / weapon.fireRate;
@@ -372,6 +416,12 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     hexCounter: state.hexCounter,
     snareRoots: state.snareRoots,
     killReactionHistory: state.killReactionHistory,
+    wakeTrails: state.wakeTrails,
+    wakeCooldowns: state.wakeCooldowns,
+    crossfirePulses: state.crossfirePulses,
+    crossfireParticipation: state.crossfireParticipation,
+    bigIronPairHits: state.bigIronPairHits,
+    descendantsByRoot,
   }, {
     dt,
     room: state.room,
@@ -400,6 +450,13 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     vfxCommands: [...combat.vfxCommands],
     teslaLinks: [...combat.teslaLinks],
     teslaCooldowns: { ...combat.teslaCooldowns },
+    satellites,
+    wakeTrails: { ...(combat.wakeTrails ?? {}) },
+    wakeCooldowns: { ...(combat.wakeCooldowns ?? {}) },
+    crossfirePulses: [...(combat.crossfirePulses ?? [])],
+    crossfireParticipation: { ...(combat.crossfireParticipation ?? {}) },
+    bigIronPairHits: { ...(combat.bigIronPairHits ?? {}) },
+    descendantsByRoot: { ...(combat.descendantsByRoot ?? {}) },
     relayLedger: { ...(combat.relayLedger ?? {}) },
     emittedEffects: { ...(combat.emittedEffects ?? {}) },
     pendingEffectTokens: [...(combat.pendingEffectTokens ?? [])],

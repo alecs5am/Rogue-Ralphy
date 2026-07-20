@@ -30,6 +30,16 @@ import { applyMotionRules, type MotionDistanceEffect, type MotionLeg } from "./m
 import { segmentCircleHitTime, type Point } from "./room";
 import { compareScheduledProjectiles, type ScheduledProjectile } from "./trigger";
 import {
+  buildSpatialCandidates,
+  canonicalPair,
+  crossingOf,
+  type BigIronPairHit,
+  type CrossfireParticipation,
+  type CrossfirePulseState,
+  type DescendantRecord,
+  type WakeTrailState,
+} from "./areas";
+import {
   advanceStatuses,
   applyDirectStatuses,
   jumpWantedBrand,
@@ -116,6 +126,12 @@ export type CombatRuntime = Readonly<{
   hexCounter?: number;
   snareRoots?: Readonly<Record<string, RootStatusRecord>>;
   killReactionHistory?: Readonly<Record<string, RootStatusRecord>>;
+  wakeTrails?: Readonly<Record<string, WakeTrailState>>;
+  wakeCooldowns?: Readonly<Record<string, number>>;
+  crossfirePulses?: readonly CrossfirePulseState[];
+  crossfireParticipation?: Readonly<Record<string, CrossfireParticipation>>;
+  bigIronPairHits?: Readonly<Record<string, BigIronPairHit>>;
+  descendantsByRoot?: Readonly<Record<string, DescendantRecord>>;
 }>;
 
 type RoomGeometry = Readonly<{
@@ -142,6 +158,7 @@ export type CombatContext = Readonly<{
 
 type SweptSegment = Readonly<{
   projectileId: string;
+  source: ProjectileState;
   index: number;
   from: Point;
   to: Point;
@@ -178,6 +195,7 @@ type CombatPhaseState = CombatRuntime & Readonly<{
   teslaLinks: readonly TeslaLink[];
   teslaCooldowns: Readonly<Record<string, number>>;
   killContexts: readonly KillContext[];
+  terminalTimes: Readonly<Record<string, number>>;
 }>;
 
 const EVENT_PRIORITY: Readonly<Record<CombatEvent["kind"], number>> = {
@@ -223,6 +241,8 @@ const cloneProjectile = (projectile: ProjectileState): ProjectileState => ({
   splitOrigin: projectile.splitOrigin,
   spiralOrigin: projectile.spiralOrigin,
   bellPulse: projectile.bellPulse && { ...projectile.bellPulse },
+  bigIronMain: projectile.bigIronMain && { ...projectile.bigIronMain },
+  moonlet: projectile.moonlet && { ...projectile.moonlet },
 });
 
 const immutableProjectileSnapshot = (projectile: ProjectileState): ProjectileState => {
@@ -265,6 +285,19 @@ const cloneTarget = (target: CombatTargetState, now = -Infinity): CombatTargetSt
 
 function phaseState(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const previous = runtime as Partial<CombatPhaseState>;
+  const inferredDescendants: Record<string, DescendantRecord> = {};
+  if (!runtime.descendantsByRoot) {
+    const add = (rootTriggerId: string, count: number) => {
+      inferredDescendants[rootTriggerId] = {
+        rootTriggerId,
+        count: (inferredDescendants[rootTriggerId]?.count ?? 0) + count,
+        limit: 294,
+      };
+    };
+    for (const projectile of runtime.projectiles) if (projectile.generation === 1) add(projectile.rootTriggerId, 1);
+    for (const scheduled of runtime.scheduledProjectiles) if (scheduled.generation === 1) add(scheduled.rootTriggerId, 1);
+    for (const pending of runtime.pendingEmissions) add(pending.rootTriggerId, pending.specs.length);
+  }
   return {
     ...runtime,
     segments: previous.segments ?? [],
@@ -280,6 +313,13 @@ function phaseState(runtime: CombatRuntime | CombatPhaseState, context: CombatCo
     hexCounter: runtime.hexCounter ?? 0,
     snareRoots: runtime.snareRoots ?? {},
     killReactionHistory: runtime.killReactionHistory ?? {},
+    wakeTrails: runtime.wakeTrails ?? {},
+    wakeCooldowns: runtime.wakeCooldowns ?? {},
+    crossfirePulses: runtime.crossfirePulses ?? [],
+    crossfireParticipation: runtime.crossfireParticipation ?? {},
+    bigIronPairHits: runtime.bigIronPairHits ?? {},
+    descendantsByRoot: runtime.descendantsByRoot ?? inferredDescendants,
+    terminalTimes: previous.terminalTimes ?? {},
   };
 }
 
@@ -343,11 +383,25 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
   const descendantsByRoot = new Map<string, number>();
   const countDescendants = (rootTriggerId: string, count: number) =>
     descendantsByRoot.set(rootTriggerId, (descendantsByRoot.get(rootTriggerId) ?? 0) + count);
-  for (const projectile of runtime.projectiles) if (projectile.generation === 1) countDescendants(projectile.rootTriggerId, 1);
-  for (const scheduled of runtime.scheduledProjectiles) if (scheduled.generation === 1) countDescendants(scheduled.rootTriggerId, 1);
-  for (const pending of runtime.pendingEmissions) countDescendants(pending.rootTriggerId, pending.specs.length);
-  if ([...descendantsByRoot.values()].some((count) => count > 384)) {
-    throw new Error("generation-one descendant bound exceeds 384 for one root");
+  if (runtime.descendantsByRoot) {
+    for (const [rootTriggerId, record] of Object.entries(runtime.descendantsByRoot)) {
+      if (record.rootTriggerId !== rootTriggerId || !Number.isInteger(record.count) || record.count < 0) {
+        throw new Error("invalid cumulative descendant ledger");
+      }
+      descendantsByRoot.set(rootTriggerId, record.count);
+    }
+  } else {
+    for (const projectile of runtime.projectiles) if (projectile.generation === 1) countDescendants(projectile.rootTriggerId, 1);
+    for (const scheduled of runtime.scheduledProjectiles) if (scheduled.generation === 1) countDescendants(scheduled.rootTriggerId, 1);
+    for (const pending of runtime.pendingEmissions) countDescendants(pending.rootTriggerId, pending.specs.length);
+  }
+  for (const [rootTriggerId, count] of descendantsByRoot) {
+    const descendantLimit = runtime.descendantsByRoot
+      ? Math.min(294, runtime.descendantsByRoot[rootTriggerId]?.limit ?? context.build.maxDescendants)
+      : 294;
+    if (count > descendantLimit) {
+      throw new Error(`generation-one descendant overflow: ${rootTriggerId} exceeds ${descendantLimit} (generation-one descendant bound)`);
+    }
   }
   for (const event of runtime.metrics.hitEvents) {
     if (event.killReactionDepth !== 0 && event.killReactionDepth !== 1) throw new Error("kill reaction depth exceeds one");
@@ -500,7 +554,7 @@ function materializeScheduled(
   const { spec } = scheduled;
   const aimAngle = scheduled.aim ?? spec.heading;
   const origin = scheduled.origin ?? context.player;
-  const muzzle = {
+  const muzzle = scheduled.exactOrigin ? { ...origin } : {
     x: origin.x + Math.cos(aimAngle) * (context.player.radius + spec.radius + 2),
     y: origin.y + Math.sin(aimAngle) * (context.player.radius + spec.radius + 2),
   };
@@ -628,6 +682,35 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
     const childIndex = siblings.findIndex((candidate) => candidate === scheduledProjectile);
     return materializeScheduled(scheduledProjectile, context, runtime.now, `projectile-${nextId++}`, childIndex, siblings.length);
   });
+  const mainByLineage = new Map(created.filter(({ generation }) => generation === 0)
+    .map((projectile) => [projectile.lineageId, projectile]));
+  dueSchedules.forEach((scheduledProjectile, index) => {
+    if (!scheduledProjectile.moonlet) return;
+    const moonlet = created[index]!;
+    const parent = mainByLineage.get(scheduledProjectile.moonlet.parentLineageId);
+    if (!parent) throw new Error(`Big Iron moonlet is missing parent ${scheduledProjectile.moonlet.parentLineageId}`);
+    const angle = scheduledProjectile.spec.motionPhase ?? scheduledProjectile.spec.heading;
+    moonlet.x = parent.x + Math.cos(angle) * scheduledProjectile.moonlet.orbitRadius;
+    moonlet.y = parent.y + Math.sin(angle) * scheduledProjectile.moonlet.orbitRadius;
+    moonlet.vx = parent.vx - Math.sin(angle) * scheduledProjectile.moonlet.angularSpeed * scheduledProjectile.moonlet.orbitRadius;
+    moonlet.vy = parent.vy + Math.cos(angle) * scheduledProjectile.moonlet.angularSpeed * scheduledProjectile.moonlet.orbitRadius;
+    moonlet.moonlet = {
+      mainId: parent.id,
+      parentId: parent.id,
+      orbitRadius: scheduledProjectile.moonlet.orbitRadius,
+      angularSpeed: scheduledProjectile.moonlet.angularSpeed,
+      angle,
+      expiresAt: runtime.now + scheduledProjectile.spec.lifetime,
+      remainingRange: scheduledProjectile.moonlet.remainingRange,
+      mainDamage: scheduledProjectile.moonlet.mainDamage,
+      pairWindow: scheduledProjectile.moonlet.pairWindow,
+      explosionRadius: scheduledProjectile.moonlet.explosionRadius,
+      explosionDamageScale: scheduledProjectile.moonlet.explosionDamageScale,
+      knockback: scheduledProjectile.moonlet.knockback,
+    };
+    parent.moonletId = moonlet.id;
+    parent.bigIronMain = { moonletId: moonlet.id, mainDamage: scheduledProjectile.moonlet.mainDamage, heading: scheduledProjectile.spec.heading };
+  });
   for (const emission of duePending) {
     const materialized = materializePending(emission, context, runtime.now, nextId);
     created.push(...materialized.projectiles);
@@ -656,6 +739,7 @@ export function resolveMotionPhase(runtime: CombatRuntime | CombatPhaseState, co
   const brandRule = context.build.impacts.find((rule) => rule.kind === "brand");
   const projectiles = current.projectiles.map((source) => {
     const projectile = cloneProjectile(source);
+    if (source.moonlet?.parentId) return projectile;
     const liveDuration = Math.max(0, Math.min(
       context.dt,
       projectile.lifetime - Math.max(0, current.now - context.dt - projectile.bornAt),
@@ -690,6 +774,7 @@ export function resolveMotionPhase(runtime: CombatRuntime | CombatPhaseState, co
     const timeScale = context.dt === 0 ? 1 : liveDuration / context.dt;
     result.path.forEach((path, index) => segments.push({
       projectileId: projectile.id,
+      source: immutableProjectileSnapshot(source),
       index,
       from: path.from,
       to: path.to,
@@ -711,6 +796,43 @@ export function resolveMotionPhase(runtime: CombatRuntime | CombatPhaseState, co
       endSpiralAngle: path.endSpiralAngle,
     }));
     return result.projectile;
+  });
+  const movedById = new Map(projectiles.map((projectile) => [projectile.id, projectile]));
+  current.projectiles.forEach((source, index) => {
+    if (!source.moonlet?.parentId) return;
+    const projectile = projectiles[index]!;
+    const parent = movedById.get(source.moonlet.parentId);
+    if (!parent) {
+      projectile.moonlet = { ...source.moonlet, parentId: undefined };
+      return;
+    }
+    const liveDuration = Math.max(0, Math.min(context.dt, source.moonlet.expiresAt - (current.now - context.dt)));
+    const angle = source.moonlet.angle + source.moonlet.angularSpeed * liveDuration;
+    projectile.x = parent.x + Math.cos(angle) * source.moonlet.orbitRadius;
+    projectile.y = parent.y + Math.sin(angle) * source.moonlet.orbitRadius;
+    projectile.vx = parent.vx - Math.sin(angle) * source.moonlet.angularSpeed * source.moonlet.orbitRadius;
+    projectile.vy = parent.vy + Math.cos(angle) * source.moonlet.angularSpeed * source.moonlet.orbitRadius;
+    projectile.moonlet = { ...source.moonlet, angle };
+    const distance = Math.hypot(projectile.x - source.x, projectile.y - source.y);
+    segments.push({
+      projectileId: projectile.id,
+      source: immutableProjectileSnapshot(source),
+      index: 0,
+      from: { x: source.x, y: source.y },
+      to: { x: projectile.x, y: projectile.y },
+      distance,
+      startTime: 0,
+      endTime: context.dt === 0 ? 0 : liveDuration / context.dt,
+      liveDuration,
+      expiresAfterMove: current.now >= source.moonlet.expiresAt,
+      startTravelled: source.travelled,
+      endTravelled: source.travelled + distance,
+      startRadius: source.radius,
+      endRadius: projectile.radius,
+      startDamage: source.damage,
+      endDamage: projectile.damage,
+      leg: source.returnLeg ?? "outbound",
+    });
   });
   return { ...current, projectiles, segments, events: [], emissionRequests: [] };
 }
@@ -997,6 +1119,9 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
   const segmentByKey = new Map(current.segments.map((segment) => [`${segment.projectileId}\0${segment.index}`, segment]));
   const removed = new Set<string>();
   const settled = new Set<string>();
+  const releasedMoonlets = new Set<string>();
+  const releasedMoonletAt = new Map<string, number>();
+  const terminalTimes = { ...current.terminalTimes };
   const emissionRequests: EmissionRequest[] = [];
   const vfxCommands = [...current.vfxCommands];
   const relayLedger = { ...(current.relayLedger ?? {}) };
@@ -1007,6 +1132,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
   let wantedBrand = current.wantedBrand;
   let hexCounter = current.hexCounter ?? 0;
   let snareRoots = { ...(current.snareRoots ?? {}) };
+  const bigIronPairHits = { ...(current.bigIronPairHits ?? {}) };
   let nextId = current.nextId;
   let metrics = current.metrics;
 
@@ -1014,6 +1140,29 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     const index = vfxCommands.findIndex(({ id }) => id === command.id);
     if (index >= 0) vfxCommands[index] = command;
     else vfxCommands.push(command);
+  };
+
+  const releaseMoonlet = (main: ProjectileState, event: CombatEvent): void => {
+    const moonlet = main.bigIronMain && projectileById.get(main.bigIronMain.moonletId);
+    if (!moonlet?.moonlet || moonlet.moonlet.parentId !== main.id || removed.has(moonlet.id)) return;
+    const motionStart = current.segments.find(({ projectileId }) => projectileId === moonlet.id)?.source.moonlet;
+    const angle = (motionStart?.angle ?? moonlet.moonlet.angle) + moonlet.moonlet.angularSpeed * context.dt * event.eventTime;
+    const tangent = angle + Math.sign(moonlet.moonlet.angularSpeed || 1) * Math.PI / 2;
+    const speed = Math.max(moonlet.speed, Math.abs(moonlet.moonlet.angularSpeed) * moonlet.moonlet.orbitRadius);
+    moonlet.x = event.point.x;
+    moonlet.y = event.point.y;
+    moonlet.vx = Math.cos(tangent) * speed;
+    moonlet.vy = Math.sin(tangent) * speed;
+    moonlet.speed = speed;
+    moonlet.moonlet = { ...moonlet.moonlet, parentId: undefined, angle };
+    moonlet.maxTravel = moonlet.travelled + moonlet.moonlet.remainingRange;
+    releasedMoonlets.add(moonlet.id);
+    releasedMoonletAt.set(moonlet.id, event.eventTime);
+  };
+
+  const stopProjectile = (projectile: ProjectileState, event: CombatEvent): void => {
+    terminalTimes[projectile.id] = event.eventTime;
+    releaseMoonlet(projectile, event);
   };
 
   const queueNaturalExpiry = (projectile: ProjectileState, point: Point): void => {
@@ -1029,6 +1178,8 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
 
   for (const event of current.events) {
     if (removed.has(event.projectileId) || settled.has(event.projectileId)) continue;
+    const releasedAt = releasedMoonletAt.get(event.projectileId);
+    if (releasedAt !== undefined && event.eventTime > releasedAt + EPSILON) continue;
     const projectile = projectileById.get(event.projectileId);
     const segment = segmentByKey.get(`${event.projectileId}\0${event.segmentIndex ?? 0}`)
       ?? current.segments.find(({ projectileId }) => projectileId === event.projectileId);
@@ -1081,6 +1232,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       if (event.distanceEffect === "return-expire") {
         queueNaturalExpiry(projectile, event.point);
         metrics = recordProjectileOutcome(metrics, projectile.everHit);
+        stopProjectile(projectile, event);
         removed.add(projectile.id);
         continue;
       }
@@ -1117,18 +1269,21 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
         if (rule.kind === "splitCone" && pendingTokens) pendingEffectTokens.push(...pendingTokens);
       }
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
+      stopProjectile(projectile, event);
       removed.add(projectile.id);
       continue;
     }
     if (event.kind === "range" || event.kind === "lifetime") {
       queueNaturalExpiry(projectile, event.point);
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
+      stopProjectile(projectile, event);
       removed.add(projectile.id);
       continue;
     }
     if (event.kind === "prop" || event.kind === "wall") {
       if (projectile.remainingBounces <= 0) {
         metrics = recordProjectileOutcome(metrics, projectile.everHit);
+        stopProjectile(projectile, event);
         removed.add(projectile.id);
       } else {
         if (event.kind === "prop") {
@@ -1171,8 +1326,12 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
         }
         if (segment.expiresAfterMove) {
           metrics = recordProjectileOutcome(metrics, projectile.everHit);
+          stopProjectile(projectile, event);
           removed.add(projectile.id);
-        } else settled.add(projectile.id);
+        } else {
+          terminalTimes[projectile.id] = event.eventTime;
+          settled.add(projectile.id);
+        }
       }
       continue;
     }
@@ -1209,13 +1368,87 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       y: target.y,
     };
     metrics = recordDamage(metrics, damageEvent);
+    const secondaryKills: KillContext[] = [];
+
+    const moonlet = projectile.moonlet
+      ?? (projectile.bigIronMain ? projectileById.get(projectile.bigIronMain.moonletId)?.moonlet : undefined);
+    const mainId = projectile.bigIronMain ? projectile.id : moonlet?.mainId;
+    const moonletId = projectile.bigIronMain?.moonletId ?? (moonlet ? projectile.id : undefined);
+    const heavy = context.build.triggers.find((rule) => rule.kind === "heavyMainAndMoonlet");
+    if (mainId && moonletId && moonlet && heavy?.kind === "heavyMainAndMoonlet") {
+      const pairId = canonicalPair(mainId, moonletId);
+      const key = `bigIron.kineticExplosion\0${pairId}\0${target.id}`;
+      const previous = bigIronPairHits[key];
+      if (!previous) bigIronPairHits[key] = {
+        rootTriggerId: projectile.rootTriggerId,
+        mainId,
+        moonletId,
+        targetId: target.id,
+        firstAt: damageEvent.time,
+        firstProjectileId: projectile.id,
+        mainDamage: moonlet.mainDamage,
+        heading: projectileById.get(mainId)?.bigIronMain?.heading ?? Math.atan2(projectile.vy, projectile.vx),
+        spent: false,
+      };
+      else if (!previous.spent && previous.firstProjectileId !== projectile.id
+        && damageEvent.time - previous.firstAt <= moonlet.pairWindow + EPSILON) {
+        bigIronPairHits[key] = { ...previous, spent: true };
+        const main = projectileById.get(mainId);
+        const explosionDamage = previous.mainDamage * moonlet.explosionDamageScale;
+        for (const nearby of targets) {
+          if ((!nearby.immortal && nearby.health <= 0)
+            || Math.hypot(nearby.x - event.point.x, nearby.y - event.point.y) > moonlet.explosionRadius + nearby.radius) continue;
+          const beforeExplosion = nearby.health;
+          if (!nearby.immortal) (nearby as { health: number }).health -= explosionDamage;
+          const dx = nearby.x - event.point.x;
+          const dy = nearby.y - event.point.y;
+          const distance = Math.hypot(dx, dy);
+          const direction = distance > EPSILON
+            ? { x: dx / distance, y: dy / distance }
+            : { x: Math.cos(previous.heading), y: Math.sin(previous.heading) };
+          (nearby as { x: number }).x = clamp(nearby.x + direction.x * moonlet.knockback, context.room.minX + nearby.radius, context.room.maxX - nearby.radius);
+          (nearby as { y: number }).y = clamp(nearby.y + direction.y * moonlet.knockback, context.room.minY + nearby.radius, context.room.maxY - nearby.radius);
+          const explosionEvent: DamageEvent = {
+            source: "area",
+            damage: explosionDamage,
+            time: damageEvent.time,
+            targetId: nearby.id,
+            artifactId: "bigIron",
+            effectId: "bigIron.kineticExplosion",
+            rootTriggerId: main?.rootTriggerId ?? projectile.rootTriggerId,
+            lineageId: main?.lineageId ?? projectile.lineageId,
+            projectileId: mainId,
+            killReactionDepth: 0,
+            originPower: main?.originPower ?? previous.mainDamage,
+            generation: 0,
+            reactiveEffectIds: main?.activatedEffectIds ?? [],
+            x: nearby.x,
+            y: nearby.y,
+          };
+          metrics = recordDamage(metrics, explosionEvent);
+          const killed = captureKillContext(nearby, beforeExplosion, explosionEvent, main);
+          if (killed) {
+            secondaryKills.push(killed);
+            metrics = recordKill(metrics, nearby.id);
+          }
+        }
+        vfxCommands.push({
+          id: `vfx-${nextId++}`,
+          kind: "bigIron.kineticExplosion",
+          artifactId: "bigIron",
+          bornAt: current.now,
+          expiresAt: current.now + 0.25,
+          x: event.point.x,
+          y: event.point.y,
+        });
+      }
+    }
 
     let charge = target.effects?.hollowPoint;
     if (charge && charge.expiresAt <= damageEvent.time) {
       (target as { effects: TargetEffects }).effects = { ...normalizeTargetEffects(target.effects), hollowPoint: undefined };
       charge = undefined;
     }
-    const secondaryKills: KillContext[] = [];
     if (charge) {
       (target as { effects: TargetEffects }).effects = { ...normalizeTargetEffects(target.effects), hollowPoint: undefined };
       for (const nearby of targets) {
@@ -1356,16 +1589,21 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       reflect(projectile, normal);
       if (segment.expiresAfterMove) {
         metrics = recordProjectileOutcome(metrics, projectile.everHit);
+        stopProjectile(projectile, event);
         removed.add(projectile.id);
-      } else settled.add(projectile.id);
+      } else {
+        terminalTimes[projectile.id] = event.eventTime;
+        settled.add(projectile.id);
+      }
     } else {
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
+      stopProjectile(projectile, event);
       removed.add(projectile.id);
     }
   }
 
   for (const projectile of projectiles) {
-    if (removed.has(projectile.id) || settled.has(projectile.id)) continue;
+    if (removed.has(projectile.id) || settled.has(projectile.id) || releasedMoonlets.has(projectile.id)) continue;
     const final = finalProjectiles.get(projectile.id);
     if (!final) continue;
     const outboundHitTargetIds = [...(projectile.outboundHitTargetIds ?? [])];
@@ -1382,6 +1620,23 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     projectile.emittedEffectIds = emittedEffectIds;
   }
 
+  const clippedSegments = current.segments.flatMap((segment) => {
+    const terminal = terminalTimes[segment.projectileId];
+    if (terminal === undefined || terminal >= segment.endTime - EPSILON) return [segment];
+    if (terminal <= segment.startTime + EPSILON) return [];
+    const local = (terminal - segment.startTime) / (segment.endTime - segment.startTime);
+    return [{
+      ...segment,
+      to: pointAt(segment, local),
+      distance: segment.distance * local,
+      endTime: terminal,
+      endTravelled: segment.startTravelled + (segment.endTravelled - segment.startTravelled) * local,
+      endRadius: segment.startRadius + (segment.endRadius - segment.startRadius) * local,
+      endDamage: segment.startDamage + (segment.endDamage - segment.startDamage) * local,
+      expiresAfterMove: true,
+    }];
+  });
+
   return {
     ...current,
     projectiles: projectiles.filter(({ id }) => !removed.has(id)),
@@ -1397,6 +1652,9 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     wantedBrand,
     hexCounter,
     snareRoots,
+    bigIronPairHits,
+    terminalTimes,
+    segments: clippedSegments,
     nextId,
   };
 }
@@ -1405,8 +1663,20 @@ export function resolveEmissionPhase(runtime: CombatRuntime | CombatPhaseState, 
   const current = phaseState(runtime, context);
   let nextId = current.nextId;
   const pending = [...current.pendingEmissions];
+  const descendantsByRoot = { ...(current.descendantsByRoot ?? {}) };
   for (const request of current.emissionRequests) {
     const count = request.specs?.length ?? (request.rule.kind === "splitCone" ? request.rule.count : 0);
+    const previousDescendants = descendantsByRoot[request.projectile.rootTriggerId];
+    const descendantCount = (previousDescendants?.count ?? 0) + count;
+    const limit = Math.min(294, previousDescendants?.limit ?? context.build.maxDescendants);
+    if (descendantCount > limit) {
+      throw new Error(`generation-one descendant overflow: ${request.projectile.rootTriggerId} exceeds ${limit} (generation-one descendant bound)`);
+    }
+    descendantsByRoot[request.projectile.rootTriggerId] = {
+      rootTriggerId: request.projectile.rootTriggerId,
+      count: descendantCount,
+      limit,
+    };
     const nextIds = Array.from({ length: count }, () => `projectile-${nextId++}`);
     pending.push(request.rule.kind === "splitCone"
       ? queueEmission(request.projectile, request.rule, {
@@ -1423,7 +1693,7 @@ export function resolveEmissionPhase(runtime: CombatRuntime | CombatPhaseState, 
         soulTargetIds: request.soulTargetIds,
       }));
   }
-  return { ...current, pendingEmissions: pending, nextId, emissionRequests: [] };
+  return { ...current, pendingEmissions: pending, nextId, emissionRequests: [], descendantsByRoot };
 }
 
 export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
@@ -1446,6 +1716,16 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
   const killContexts = [...current.killContexts];
   let nextId = current.nextId;
   let metrics = current.metrics;
+  let wakeTrails = Object.fromEntries(Object.entries(current.wakeTrails ?? {}).map(([lineageId, trail]) => [lineageId, {
+    ...trail,
+    segments: trail.segments.map((segment) => ({
+      ...segment,
+      sourceProjectile: immutableProjectileSnapshot(segment.sourceProjectile),
+    })),
+  }])) as Record<string, WakeTrailState>;
+  let wakeCooldowns = { ...(current.wakeCooldowns ?? {}) };
+  const crossfirePulses = [...(current.crossfirePulses ?? [])].filter(({ expiresAt }) => expiresAt > current.now);
+  const crossfireParticipation = { ...(current.crossfireParticipation ?? {}) };
   for (const request of statusUpdate.damages) {
     const index = targets.findIndex(({ id }) => id === request.event.targetId);
     const target = targets[index];
@@ -1515,7 +1795,7 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
     const b = projectileById.get(link.b)!;
     targets = targets.map((target) => {
       if ((!target.immortal && target.health <= 0) || segmentCircleHitTime(a, b, target, target.radius) === null) return target;
-      const key = `${link.id}:${target.id}`;
+      const key = `teslaBullets.link\0${link.id}\0${target.id}`;
       if (current.now < (cooldowns[key] ?? 0)) return target;
       const damage = Math.min(a.damage, b.damage) * link.damageScale;
       const source = a.damage < b.damage || (a.damage === b.damage && compareString(a.id, b.id) < 0) ? a : b;
@@ -1532,7 +1812,7 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
         lineageId: source.lineageId,
         projectileId: source.id,
         killReactionDepth: 0,
-        originPower: source.damage,
+        originPower: source.originPower,
         generation: source.generation,
         reactiveEffectIds: source.activatedEffectIds,
         x: target.x,
@@ -1548,11 +1828,231 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
       return damaged;
     });
   }
-  const activeKeys = new Set(links.flatMap((link) => targets
-    .filter((target) => target.immortal || target.health > 0)
-    .map((target) => `${link.id}:${target.id}`)));
-  cooldowns = Object.fromEntries(Object.entries(cooldowns)
-    .filter(([key, nextAllowedAt]) => nextAllowedAt > current.now || activeKeys.has(key)));
+  const liveProjectileIds = new Set(projectiles.map(({ id }) => id));
+  cooldowns = Object.fromEntries(Object.entries(cooldowns).filter(([key, nextAllowedAt]) => {
+    if (nextAllowedAt <= current.now) return false;
+    const pairId = key.split("\0")[1];
+    if (!pairId) return false;
+    const [a, b] = pairId.split(":");
+    return Boolean(a && b && liveProjectileIds.has(a) && liveProjectileIds.has(b));
+  }));
+
+  const wakeRule = context.build.areas.find((rule) => rule.kind === "trail");
+  if (wakeRule?.kind === "trail") {
+    for (const segment of current.segments) {
+      const source = segment.source;
+      if (source.generation !== 0 || !source.activatedEffectIds.includes(wakeRule.effectId)
+        || segment.distance <= EPSILON) continue;
+      const bornAt = current.now - context.dt + segment.startTime * context.dt;
+      const wakeSegment = {
+        id: `${source.lineageId}:${current.step}:${segment.index}`,
+        from: { ...segment.from },
+        to: { ...segment.to },
+        bornAt,
+        expiresAt: bornAt + wakeRule.duration,
+        width: wakeRule.width,
+        damage: segment.startDamage * wakeRule.damageScale,
+        sourceProjectile: immutableProjectileSnapshot(source),
+      };
+      const previous = wakeTrails[source.lineageId];
+      const segments = [
+        ...(previous?.segments ?? []),
+        wakeSegment,
+      ].sort((a, b) => a.bornAt - b.bornAt || a.id.localeCompare(b.id));
+      const simultaneousSegments = Math.max(...segments.map((candidate) => segments.filter((segment) =>
+        segment.bornAt < candidate.expiresAt - EPSILON
+        && segment.expiresAt > candidate.bornAt + EPSILON).length));
+      if (simultaneousSegments + 1 > 97) throw new Error(`Wake trail point bound exceeds 97 for ${source.lineageId}`);
+      wakeTrails[source.lineageId] = {
+        lineageId: source.lineageId,
+        rootTriggerId: source.rootTriggerId,
+        nextTickAt: previous?.nextTickAt ?? bornAt + 1 / wakeRule.tickRate,
+        tickInterval: 1 / wakeRule.tickRate,
+        cooldown: wakeRule.cooldown,
+        segments,
+      };
+    }
+    wakeTrails = Object.fromEntries(Object.entries(wakeTrails).flatMap(([lineageId, trail]) => {
+      const segments = trail.segments;
+      let nextTickAt = trail.nextTickAt;
+      while (nextTickAt <= current.now + EPSILON) {
+        const active = segments.filter(({ bornAt, expiresAt }) => bornAt <= nextTickAt + EPSILON && nextTickAt < expiresAt - EPSILON);
+        if (active.length > 0) targets = targets.map((target) => {
+          if (!target.immortal && target.health <= 0) return target;
+          const key = `${wakeRule.effectId}\0${lineageId}\0${target.id}`;
+          if (nextTickAt < (wakeCooldowns[key] ?? 0) - EPSILON) return target;
+          const segment = active.find((candidate) =>
+            segmentCircleHitTime(candidate.from, candidate.to, target, target.radius + candidate.width / 2) !== null);
+          if (!segment) return target;
+          const source = segment.sourceProjectile;
+          const healthBefore = target.health;
+          const damaged = target.immortal ? target : { ...target, health: target.health - segment.damage };
+          const event: DamageEvent = {
+            source: "area",
+            damage: segment.damage,
+            time: nextTickAt,
+            targetId: target.id,
+            artifactId: wakeRule.artifactId,
+            effectId: wakeRule.effectId,
+            rootTriggerId: source.rootTriggerId,
+            lineageId: source.lineageId,
+            projectileId: source.id,
+            killReactionDepth: 0,
+            originPower: source.originPower,
+            generation: source.generation,
+            reactiveEffectIds: source.activatedEffectIds,
+            x: target.x,
+            y: target.y,
+          };
+          metrics = recordDamage(metrics, event);
+          const killed = captureKillContext(damaged, healthBefore, event, source);
+          if (killed) {
+            killContexts.push(killed);
+            metrics = recordKill(metrics, damaged.id);
+          }
+          wakeCooldowns[key] = nextTickAt + trail.cooldown;
+          return damaged;
+        });
+        nextTickAt += trail.tickInterval;
+      }
+      const liveSegments = segments.filter(({ expiresAt }) => expiresAt > current.now);
+      if (liveSegments.length === 0) return [];
+      const expiresAt = Math.max(...liveSegments.map((segment) => segment.expiresAt));
+      const vfxId = `area:wake:${lineageId}`;
+      const prior = vfxCommands.find(({ id }) => id === vfxId);
+      const command: VfxCommand = {
+        id: vfxId,
+        kind: wakeRule.effectId,
+        artifactId: wakeRule.artifactId,
+        bornAt: prior?.bornAt ?? liveSegments[0]!.bornAt,
+        expiresAt,
+        x: liveSegments.at(-1)!.to.x,
+        y: liveSegments.at(-1)!.to.y,
+      };
+      const commandIndex = vfxCommands.findIndex(({ id }) => id === vfxId);
+      if (commandIndex >= 0) vfxCommands[commandIndex] = command;
+      else vfxCommands.push(command);
+      return [[lineageId, { ...trail, nextTickAt, segments: liveSegments }]];
+    }));
+    const activeLineages = new Set(Object.keys(wakeTrails));
+    wakeCooldowns = Object.fromEntries(Object.entries(wakeCooldowns).filter(([key, expiresAt]) => {
+      const lineageId = key.split("\0")[1];
+      return expiresAt > current.now && Boolean(lineageId && activeLineages.has(lineageId));
+    }));
+  } else {
+    wakeTrails = {};
+    wakeCooldowns = {};
+  }
+
+  const crossfireRule = context.build.areas.find((rule) => rule.kind === "pathCross");
+  if (crossfireRule?.kind === "pathCross") {
+    const paths = new Map<string, typeof current.segments>();
+    for (const segment of current.segments) {
+      if (segment.source.generation !== 0 || !segment.source.activatedEffectIds.includes(crossfireRule.effectId)) continue;
+      paths.set(segment.projectileId, [...(paths.get(segment.projectileId) ?? []), segment]);
+    }
+    const candidates = buildSpatialCandidates([...paths].map(([id, segments]) => ({ id, segments })));
+    const crossings = candidates.flatMap(({ id: pairId, a, b }) => {
+      const found = (paths.get(a) ?? []).flatMap((aSegment) => (paths.get(b) ?? []).flatMap((bSegment) => {
+        const crossing = crossingOf(aSegment, bSegment);
+        if (!crossing) return [];
+        const sharedBirth = crossing.aTime <= EPSILON && crossing.bTime <= EPSILON
+          && Math.hypot(aSegment.from.x - bSegment.from.x, aSegment.from.y - bSegment.from.y) <= EPSILON;
+        if (sharedBirth) return [];
+        const aTerminal = current.terminalTimes[a];
+        const bTerminal = current.terminalTimes[b];
+        if ((aTerminal !== undefined && tolerantDifference(crossing.crossingTime, aTerminal) >= 0)
+          || (bTerminal !== undefined && tolerantDifference(crossing.crossingTime, bTerminal) >= 0)) return [];
+        return [{ pairId, a, b, aSegment, bSegment, ...crossing }];
+      }));
+      return found.sort((first, second) => first.crossingTime - second.crossingTime)[0] ?? [];
+    }).sort((a, b) => a.crossingTime - b.crossingTime || a.pairId.localeCompare(b.pairId));
+
+    for (const crossing of crossings) {
+      if (crossfireParticipation[crossing.a] || crossfireParticipation[crossing.b]) continue;
+      crossfireParticipation[crossing.a] = { rootTriggerId: crossing.aSegment.source.rootTriggerId, pairId: crossing.pairId };
+      crossfireParticipation[crossing.b] = { rootTriggerId: crossing.bSegment.source.rootTriggerId, pairId: crossing.pairId };
+      const damageAt = (segment: SweptSegment, time: number) => {
+        const local = segment.endTime === segment.startTime ? 0 : (time - segment.startTime) / (segment.endTime - segment.startTime);
+        return segment.startDamage + (segment.endDamage - segment.startDamage) * clamp(local, 0, 1);
+      };
+      const aDamage = damageAt(crossing.aSegment, crossing.aTime);
+      const bDamage = damageAt(crossing.bSegment, crossing.bTime);
+      const source = aDamage < bDamage || (aDamage === bDamage && crossing.a < crossing.b)
+        ? crossing.aSegment.source : crossing.bSegment.source;
+      const damage = Math.min(aDamage, bDamage) * crossfireRule.damageScale;
+      const direction = (segment: SweptSegment) => {
+        const dx = segment.to.x - segment.from.x;
+        const dy = segment.to.y - segment.from.y;
+        const length = Math.hypot(dx, dy) || 1;
+        return { x: dx / length, y: dy / length };
+      };
+      const aDirection = direction(crossing.aSegment);
+      const bDirection = direction(crossing.bSegment);
+      const half = crossfireRule.length / 2;
+      targets = targets.map((target) => {
+        if (!target.immortal && target.health <= 0) return target;
+        const intersects = [aDirection, bDirection].some((axis) => segmentCircleHitTime(
+          { x: crossing.point.x - axis.x * half, y: crossing.point.y - axis.y * half },
+          { x: crossing.point.x + axis.x * half, y: crossing.point.y + axis.y * half },
+          target,
+          target.radius,
+        ) !== null);
+        if (!intersects) return target;
+        const healthBefore = target.health;
+        const damaged = target.immortal ? target : { ...target, health: target.health - damage };
+        const event: DamageEvent = {
+          source: "area",
+          damage,
+          time: current.now - context.dt + crossing.crossingTime * context.dt,
+          targetId: target.id,
+          artifactId: crossfireRule.artifactId,
+          effectId: crossfireRule.effectId,
+          rootTriggerId: source.rootTriggerId,
+          lineageId: source.lineageId,
+          projectileId: source.id,
+          killReactionDepth: 0,
+          originPower: source.originPower,
+          generation: 0,
+          reactiveEffectIds: source.activatedEffectIds,
+          x: target.x,
+          y: target.y,
+        };
+        metrics = recordDamage(metrics, event);
+        const killed = captureKillContext(damaged, healthBefore, event, source);
+        if (killed) {
+          killContexts.push(killed);
+          metrics = recordKill(metrics, damaged.id);
+        }
+        return damaged;
+      });
+      crossfirePulses.push({
+        id: `crossfire:${current.step}:${crossing.pairId}`,
+        pairId: crossing.pairId,
+        rootTriggerId: source.rootTriggerId,
+        bornAt: current.now,
+        expiresAt: current.now + crossfireRule.duration,
+        x: crossing.point.x,
+        y: crossing.point.y,
+        ax: aDirection.x,
+        ay: aDirection.y,
+        bx: bDirection.x,
+        by: bDirection.y,
+        length: crossfireRule.length,
+        damage,
+        projectileId: source.id,
+      });
+      vfxCommands.push({
+        id: `vfx-${nextId++}`,
+        kind: crossfireRule.effectId,
+        artifactId: crossfireRule.artifactId,
+        bornAt: current.now,
+        expiresAt: current.now + crossfireRule.duration,
+        x: crossing.point.x,
+        y: crossing.point.y,
+      });
+    }
+  }
   return {
     ...current,
     projectiles,
@@ -1564,6 +2064,10 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
     teslaLinks: links,
     teslaCooldowns: cooldowns,
     killContexts,
+    wakeTrails,
+    wakeCooldowns,
+    crossfirePulses,
+    crossfireParticipation,
   };
 }
 
@@ -1579,6 +2083,7 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
   let metrics = current.metrics;
   let vfxCommands = [...current.vfxCommands];
   let nextId = current.nextId;
+  const descendantsByRoot = { ...(current.descendantsByRoot ?? {}) };
 
   for (const killed of current.killContexts) {
     const burn = killed.targetEffects?.burn;
@@ -1661,6 +2166,17 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
       ? Math.atan2(target.y - killed.y, target.x - killed.x)
       : baseHeading + 2 * Math.PI * index / rule.count);
     const specs = emissionSpecs(source, rule, headings);
+    const previousDescendants = descendantsByRoot[killed.rootTriggerId];
+    const descendantCount = (previousDescendants?.count ?? 0) + specs.length;
+    const descendantLimit = Math.min(294, previousDescendants?.limit ?? context.build.maxDescendants);
+    if (descendantCount > descendantLimit) {
+      throw new Error(`generation-one descendant overflow: ${killed.rootTriggerId} exceeds ${descendantLimit} (generation-one descendant bound)`);
+    }
+    descendantsByRoot[killed.rootTriggerId] = {
+      rootTriggerId: killed.rootTriggerId,
+      count: descendantCount,
+      limit: descendantLimit,
+    };
     const childIds = Array.from({ length: rule.count }, () => `projectile-${nextId++}`);
     pendingEmissions.push(buildGenerationOneEmission(source, rule, specs, current.step, {
       childIds,
@@ -1708,6 +2224,8 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     ...current.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
     ...current.areas.map(({ rootTriggerId }) => rootTriggerId),
+    ...Object.values(current.wakeTrails ?? {}).map(({ rootTriggerId }) => rootTriggerId),
+    ...(current.crossfirePulses ?? []).map(({ rootTriggerId }) => rootTriggerId),
     ...statusRootIds(targets.map((target) => ({
       ...target,
       effects: normalizeTargetEffects(target.effects, current.now),
@@ -1724,6 +2242,7 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     segments: [],
     emissionRequests: [],
     killContexts: [],
+    terminalTimes: {},
     nextId,
     emittedEffects: Object.fromEntries(Object.entries(emittedEffects)
       .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
@@ -1735,6 +2254,13 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     pendingEffectTokens: (current.pendingEffectTokens ?? [])
       .filter(({ rootTriggerId }) => rootTriggerId === undefined || activeRoots.has(rootTriggerId)),
     relayLedger: Object.fromEntries(Object.entries(current.relayLedger ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    crossfirePulses: (current.crossfirePulses ?? []).filter(({ expiresAt }) => expiresAt > current.now),
+    crossfireParticipation: Object.fromEntries(Object.entries(current.crossfireParticipation ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    bigIronPairHits: Object.fromEntries(Object.entries(current.bigIronPairHits ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    descendantsByRoot: Object.fromEntries(Object.entries(descendantsByRoot)
       .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
   };
 }

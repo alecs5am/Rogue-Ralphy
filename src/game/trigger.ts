@@ -6,6 +6,29 @@ import type { Point } from "./room";
 import type { DerivedWeapon } from "./weapon";
 
 export type LocketState = Readonly<{ armed: boolean; cadence: number }>;
+export type PlayerSatelliteState = Readonly<{
+  id: string;
+  rootTriggerId: string;
+  bornAt: number;
+  expiresAt: number;
+  radius: number;
+  shotDamageScale: number;
+  phase: number;
+  x: number;
+  y: number;
+}>;
+
+export type ScheduledMoonlet = Readonly<{
+  parentLineageId: string;
+  orbitRadius: number;
+  angularSpeed: number;
+  pairWindow: number;
+  explosionRadius: number;
+  explosionDamageScale: number;
+  knockback: number;
+  mainDamage: number;
+  remainingRange: number;
+}>;
 
 export type TriggerContext = Readonly<{
   rootTriggerId: string;
@@ -22,6 +45,7 @@ export type TriggerContext = Readonly<{
   build: CombatBuild;
   weapon: DerivedWeapon;
   rng: () => number;
+  satellites?: readonly PlayerSatelliteState[];
 }>;
 
 export type ScheduledProjectile = Readonly<{
@@ -36,6 +60,8 @@ export type ScheduledProjectile = Readonly<{
   spec: Readonly<Omit<ProjectileSpec, "triggerId"> & { triggerId?: never }>;
   origin?: Point;
   aim?: number;
+  exactOrigin?: boolean;
+  moonlet?: ScheduledMoonlet;
 }>;
 
 type MutableRoot = {
@@ -96,6 +122,7 @@ export function expandTrigger(context: TriggerContext) {
   const lastRound = trigger("lastRound");
   const locket = trigger("lowHealthOrbital");
   const bigIron = trigger("heavyMainAndMoonlet");
+  const posse = trigger("playerSatellite");
   const grave = trigger("delayedVolley");
   const teslaProc = Boolean(tesla && context.rng() < tesla.chance);
   const logicalCount = twin ? 2 + Number(teslaProc) : 1 + Number(teslaProc);
@@ -232,8 +259,98 @@ export function expandTrigger(context: TriggerContext) {
     origin,
     aim: root.spec.heading,
   }));
+  const generationZeroScheduled = scheduled.slice();
 
   const emissionEffectIds = new Set(context.build.emissions.map(({ effectId }) => effectId));
+  const triggerEffectIds = new Set(context.build.triggers.map(({ effectId }) => effectId));
+  const generationOneEffects = (effectIds: readonly string[]) => orderedEffects(effectIds.filter((effectId) =>
+    !triggerEffectIds.has(effectId)
+    && !emissionEffectIds.has(effectId)
+    && effectId !== "lastBell.rings"
+    && effectId !== "bigIron.kineticExplosion"
+    && effectId !== "bigIron.moonletOrbit"
+    && effectId !== "ectoplasmicWake.trail"
+    && effectId !== "crossfireCovenant.cross"));
+
+  if (bigIron) for (const source of generationZeroScheduled) {
+    if (roots[source.localOrdinal]?.locket) continue;
+    const { split: _, ...compatibleBehaviors } = source.spec.behaviors;
+    scheduled.push(Object.freeze({
+      at: source.at,
+      generation: 1 as const,
+      rootTriggerId: source.rootTriggerId,
+      rootIndex: source.rootIndex,
+      localOrdinal: scheduled.length,
+      lineageId: source.lineageId,
+      effectIds: generationOneEffects(source.effectIds),
+      emission: Object.freeze({ artifactId: "bigIron", effectId: "bigIron.moonlet" }),
+      spec: freezeSpec({
+        ...source.spec,
+        damage: source.spec.damage * bigIron.moonDamage,
+        radius: source.spec.radius * bigIron.moonSize,
+        behaviors: compatibleBehaviors,
+        bell: undefined,
+      }),
+      origin,
+      aim: source.spec.heading,
+      exactOrigin: true,
+      moonlet: Object.freeze({
+        parentLineageId: source.lineageId,
+        orbitRadius: bigIron.moonRadius,
+        angularSpeed: bigIron.moonAngular,
+        pairWindow: bigIron.pairWindow,
+        explosionRadius: bigIron.explosionRadius,
+        explosionDamageScale: bigIron.explosionDamage,
+        knockback: bigIron.knockback,
+        mainDamage: source.spec.damage,
+        remainingRange: source.spec.speed * source.spec.lifetime,
+      }),
+    }));
+  }
+
+  let satellites = [...(context.satellites ?? [])]
+    .filter(({ expiresAt }) => expiresAt > context.now)
+    .sort((a, b) => a.bornAt - b.bornAt || a.id.localeCompare(b.id));
+  if (satellites.length > 0) {
+    const { split: _, ...compatibleBehaviors } = context.weapon.projectileBase.behaviors;
+    const effectIds = generationOneEffects(orderedEffects(inherited));
+    for (const satellite of satellites) scheduled.push(Object.freeze({
+      at: context.now,
+      generation: 1 as const,
+      rootTriggerId: context.rootTriggerId,
+      rootIndex: context.rootIndex,
+      localOrdinal: scheduled.length,
+      lineageId: `${context.rootTriggerId}:posse:${satellite.id}`,
+      effectIds,
+      emission: Object.freeze({ artifactId: "ghostPosse", effectId: "ghostPosse.shot" }),
+      spec: freezeSpec({
+        ...context.weapon.projectileBase,
+        heading: context.aim,
+        damage: context.weapon.projectileBase.damage * satellite.shotDamageScale,
+        behaviors: compatibleBehaviors,
+      }),
+      origin: Object.freeze({ x: satellite.x, y: satellite.y }),
+      aim: context.aim,
+      exactOrigin: true,
+    }));
+    satellites = [];
+  }
+  if (posse) {
+    const phase = context.rootIndex * Math.PI * (3 - Math.sqrt(5));
+    satellites.push(Object.freeze({
+      id: `satellite-${context.rootTriggerId}`,
+      rootTriggerId: context.rootTriggerId,
+      bornAt: context.now,
+      expiresAt: context.now + posse.duration,
+      radius: posse.radius,
+      shotDamageScale: posse.damageScale,
+      phase,
+      x: context.origin.x + Math.cos(phase) * posse.radius,
+      y: context.origin.y + Math.sin(phase) * posse.radius,
+    }));
+    if (satellites.length > posse.cap) satellites = satellites.slice(-posse.cap);
+  }
+
   const copy = (
     source: ScheduledProjectile,
     provenance: EmissionProvenance,
@@ -262,7 +379,7 @@ export function expandTrigger(context: TriggerContext) {
     });
   };
 
-  for (const source of scheduled.slice()) {
+  for (const source of generationZeroScheduled) {
     if (roots[source.localOrdinal]?.locket) continue;
     if (context.round.echo) scheduled.push(copy(
       source,
@@ -287,5 +404,6 @@ export function expandTrigger(context: TriggerContext) {
     dealerCounter,
     locketState: Object.freeze(locketState),
     projectiles: Object.freeze(scheduled),
+    satellites: Object.freeze(satellites),
   });
 }

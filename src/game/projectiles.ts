@@ -1,6 +1,7 @@
 import { segmentCircleHitTime, type Point } from "./room";
 import { applyMotionRules } from "./motions";
 import type { MotionRule } from "./combat-build";
+import { buildSpatialCandidates } from "./areas";
 
 export type SpiralBehavior = Readonly<{ initialRadius: number; radialSpeed: number; angularSpeed: number; lifetime: number }>;
 export type HomingBehavior = Readonly<{ radius: number; turnRate: number }>;
@@ -21,6 +22,21 @@ export type ReturnBehavior = Readonly<{ outbound: number; inbound: number; damag
 export type CometBehavior = Readonly<{ duration: number; speedScale: number; radiusScale: number; damageScale: number }>;
 export type BellDescriptor = Readonly<{ interval: number; count: number; radius: number; damageScale: number }>;
 export type BellPulseState = Readonly<Omit<BellDescriptor, "count"> & { nextAt: number; remaining: number }>;
+export type BigIronMainState = Readonly<{ moonletId: string; mainDamage: number; heading: number }>;
+export type MoonletState = Readonly<{
+  mainId: string;
+  parentId?: string;
+  orbitRadius: number;
+  angularSpeed: number;
+  angle: number;
+  expiresAt: number;
+  remainingRange: number;
+  mainDamage: number;
+  pairWindow: number;
+  explosionRadius: number;
+  explosionDamageScale: number;
+  knockback: number;
+}>;
 export type EmissionProvenance = Readonly<{ artifactId: string; effectId: string }>;
 export type PendingEffectToken = Readonly<{
   effectId: string;
@@ -100,6 +116,9 @@ export type ProjectileState = {
   soulTurnRate?: number;
   motionRules?: readonly MotionRule[];
   bellPulse?: BellPulseState;
+  moonletId?: string;
+  bigIronMain?: BigIronMainState;
+  moonlet?: MoonletState;
 };
 
 export type TrajectoryTarget = Readonly<{ id: string; x: number; y: number; health: number }>;
@@ -147,22 +166,23 @@ export function buildTeslaLinks(projectiles: readonly ProjectileState[]): TeslaL
       ? [{ projectile, tesla: projectile.behaviors.tesla }]
       : [])
     .sort((a, b) => a.projectile.id.localeCompare(b.projectile.id));
-  const candidates: TeslaLink[] = [];
-  for (let first = 0; first < teslaProjectiles.length; first += 1) {
-    for (let second = first + 1; second < teslaProjectiles.length; second += 1) {
-      const { projectile: a, tesla: aTesla } = teslaProjectiles[first]!;
-      const { projectile: b, tesla: bTesla } = teslaProjectiles[second]!;
-      const distance = Math.hypot(a.x - b.x, a.y - b.y);
-      if (distance <= Math.min(aTesla.radius, bTesla.radius)) candidates.push({
-        id: `${a.id}:${b.id}`,
-        a: a.id,
-        b: b.id,
-        distance,
-        damageScale: Math.min(aTesla.damageScale, bTesla.damageScale),
-        cooldown: Math.max(aTesla.cooldown, bTesla.cooldown),
-      });
-    }
-  }
+  const byId = new Map(teslaProjectiles.map((entry) => [entry.projectile.id, entry]));
+  const candidates: TeslaLink[] = buildSpatialCandidates(teslaProjectiles.map(({ projectile }) => ({
+    id: projectile.id,
+    segments: [{ from: projectile, to: projectile }],
+  }))).flatMap(({ id, a: aId, b: bId }) => {
+    const { projectile: a, tesla: aTesla } = byId.get(aId)!;
+    const { projectile: b, tesla: bTesla } = byId.get(bId)!;
+    const distance = Math.hypot(a.x - b.x, a.y - b.y);
+    return distance <= Math.min(aTesla.radius, bTesla.radius) ? [{
+      id,
+      a: a.id,
+      b: b.id,
+      distance,
+      damageScale: Math.min(aTesla.damageScale, bTesla.damageScale),
+      cooldown: Math.max(aTesla.cooldown, bTesla.cooldown),
+    }] : [];
+  });
   candidates.sort((a, b) => a.distance - b.distance || a.id.localeCompare(b.id));
 
   const caps = new Map(teslaProjectiles.map(({ projectile, tesla }) => [projectile.id, tesla.neighbors]));

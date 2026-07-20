@@ -13,7 +13,19 @@ type TriggerSpecs = {
   fan: { delays: readonly [number, number, number]; centers: readonly [number, number, number]; damageScale: number };
   numberedSidePair: { cadence: number; angle: number; damageScale: number };
   fractionalMultishot: { chance: number; spread: number };
-  heavyMainAndMoonlet: { radiusScale: number; damageScale: number; speedScale: number };
+  heavyMainAndMoonlet: {
+    radiusScale: number;
+    damageScale: number;
+    speedScale: number;
+    moonRadius: number;
+    moonAngular: number;
+    moonSize: number;
+    moonDamage: number;
+    pairWindow: number;
+    explosionRadius: number;
+    explosionDamage: number;
+    knockback: number;
+  };
   playerSatellite: { radius: number; duration: number; cap: number; damageScale: number };
   recoil: { impulse: number; duration: number };
   stationaryCharge: { speedThreshold: number; chargeTime: number; damageScale: number; radiusScale: number };
@@ -58,7 +70,7 @@ type AreaSpecs = {
   projectileLink: { radius: number; neighbors: number; damageScale: number; cooldown: number };
   explosion: { radius: number; damageScale: number };
   trail: { width: number; duration: number; tickRate: number; damageScale: number; cooldown: number };
-  pathCross: { length: number; damageScale: number; participationCap: number };
+  pathCross: { length: number; damageScale: number; participationCap: number; duration: number };
   decoyInfluence: { duration: number };
 };
 

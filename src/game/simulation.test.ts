@@ -1005,12 +1005,17 @@ test("the catalog composes every artifact effect on a projectile", () => {
   const loadout = Object.fromEntries(ARTIFACT_CATALOG.map(({ id }) => [id, true]));
   let game = setArtifactLoadout(createGame(() => 0.5), loadout as Parameters<typeof setArtifactLoadout>[1]);
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
-  expect(game.projectiles).toHaveLength(2);
-  expect(game.projectiles.every((projectile) =>
+  expect(game.projectiles).toHaveLength(4);
+  const roots = game.projectiles.filter(({ generation }) => generation === 0);
+  const moonlets = game.projectiles.filter(({ emission }) => emission?.effectId === "bigIron.moonlet");
+  expect(roots).toHaveLength(2);
+  expect(moonlets).toHaveLength(2);
+  expect(roots.every((projectile) =>
     projectile.damage === 27 * 0.7 * 0.45 * 1.2 && projectile.remainingBounces === 1 &&
     projectile.behaviors.tesla !== undefined && projectile.behaviors.split !== undefined &&
     projectile.penetration?.obstacles === true && projectile.penetration.targets === true,
   )).toBe(true);
+  expect(moonlets.every(({ moonlet, generation }) => generation === 1 && moonlet?.parentId)).toBe(true);
 });
 
 test("taking an owned artifact again cannot strengthen it", () => {
