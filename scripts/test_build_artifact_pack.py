@@ -5,6 +5,7 @@ from unittest import TestCase, main
 
 from PIL import Image, ImageDraw
 
+import build_artifact_pack as pack
 from build_artifact_pack import (
     EXPECTED,
     ICON_FAMILIES,
@@ -58,6 +59,27 @@ def build_synthetic_fixture_sheets(root: Path) -> list[Path]:
     return [make_family_sheet(root / f"row-{index + 1}.png", index) for index in range(6)]
 
 
+def make_declared_sheet(path: Path, declaration: object, first_index: int) -> Path:
+    columns = declaration.columns
+    rows = declaration.rows
+    image = Image.new("RGB", (columns * CELL, rows * CELL), declaration.chroma)
+    draw = ImageDraw.Draw(image)
+    for index in range(columns * rows):
+        column, row = index % columns, index // columns
+        inset = 12 + index % 4
+        draw.ellipse(
+            (
+                column * CELL + inset,
+                row * CELL + 10 + index % 3,
+                column * CELL + 51 - index % 2,
+                row * CELL + 51 - index % 4,
+            ),
+            fill=synthetic_color(first_index + index),
+        )
+    image.save(path)
+    return path
+
+
 def alpha_has_padding(image: Image.Image, padding: int = PADDING) -> bool:
     bounds = image.getchannel("A").getbbox()
     return bounds is not None and (
@@ -69,8 +91,126 @@ def alpha_has_padding(image: Image.Image, padding: int = PADDING) -> bool:
 
 
 class ArtifactPackTests(TestCase):
+    def test_locks_exact_vfx_and_hud_output_lists(self) -> None:
+        self.assertEqual(
+            getattr(pack, "VFX", None),
+            (
+                "echo-flash", "burst-flash", "side-shot-flash", "bell-ring",
+                "bone-fan", "grave-bloom", "soul-spirit", "coin-mint",
+                "chill-mark", "ice-shatter", "burn-mark", "ember-ring",
+                "wanted-mark", "ledger-mark", "hex-pulse", "hollow-explosion",
+                "wave-trail", "comet-tail", "return-loop", "pinball-relay",
+                "ectoplasm-pool", "ectoplasm-trail", "crossfire-pulse", "kinetic-explosion",
+                "iron-moonlet", "ghost-satellite", "recoil-skid", "stillwater-ward",
+                "dustline-afterimage", "gold-soul", "locket-orbital", "coat-decoy",
+                "twin-weave",
+            ),
+        )
+        self.assertEqual(
+            getattr(pack, "HUD", None),
+            ("ammo-echo", "dealer-cut-1", "dealer-cut-2", "dealer-cut-3"),
+        )
+
+    def test_effect_pack_is_complete_rgba_padded_and_globally_unique(self) -> None:
+        builder = getattr(pack, "build_effect_pack", None)
+        self.assertTrue(callable(builder), "effect pack builder must exist")
+        self.assertEqual(
+            [name for declaration in pack.VFX_SHEETS for name in declaration.names],
+            list(pack.VFX),
+        )
+        self.assertEqual(pack.HUD_SHEET.names, pack.HUD)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            vfx_sources: list[Path] = []
+            first_index = len(EXPECTED)
+            for index, declaration in enumerate(pack.VFX_SHEETS):
+                vfx_sources.append(
+                    make_declared_sheet(root / f"vfx-{index}.png", declaration, first_index)
+                )
+                first_index += len(declaration.names)
+            hud_source = make_declared_sheet(root / "hud.png", pack.HUD_SHEET, first_index)
+            artifact_output = root / "artifacts"
+            build_pack(build_synthetic_fixture_sheets(root), artifact_output)
+
+            vfx_paths, hud_paths = builder(
+                vfx_sources,
+                hud_source,
+                root / "effects",
+                root / "ui",
+            )
+            self.assertEqual([path.stem for path in vfx_paths], list(pack.VFX))
+            self.assertEqual([path.stem for path in hud_paths], list(pack.HUD))
+            for path in vfx_paths:
+                with Image.open(path) as image:
+                    image.load()
+                    self.assertEqual((image.mode, image.size), ("RGBA", (128, 128)))
+                    self.assertTrue(alpha_has_padding(image))
+            for path in hud_paths:
+                with Image.open(path) as image:
+                    image.load()
+                    self.assertEqual((image.mode, image.size), ("RGBA", (64, 64)))
+                    self.assertTrue(alpha_has_padding(image))
+            self.assertEqual(
+                pack.validate_production_effect_pack(
+                    root / "effects", root / "ui", artifact_output
+                ),
+                [],
+            )
+
+    def test_builds_separate_labeled_vfx_and_hud_contact_sheets(self) -> None:
+        contact_builder = getattr(pack, "build_effect_contact_sheets", None)
+        self.assertTrue(callable(contact_builder), "effect contact-sheet builder must exist")
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            vfx_sources = [
+                make_declared_sheet(root / f"vfx-{index}.png", declaration, 36 + index * 8)
+                for index, declaration in enumerate(pack.VFX_SHEETS)
+            ]
+            hud_source = make_declared_sheet(root / "hud.png", pack.HUD_SHEET, 69)
+            vfx_paths, hud_paths = pack.build_effect_pack(
+                vfx_sources, hud_source, root / "effects", root / "ui"
+            )
+            vfx_contact, hud_contact = root / "vfx-contact.png", root / "hud-contact.png"
+            contact_builder(vfx_paths, hud_paths, vfx_contact, hud_contact)
+            with Image.open(vfx_contact) as image:
+                image.load()
+                self.assertEqual(image.mode, "RGBA")
+                self.assertGreater(image.width, 6 * 128)
+                self.assertGreater(image.height, 5 * 128)
+            with Image.open(hud_contact) as image:
+                image.load()
+                self.assertEqual(image.mode, "RGBA")
+                self.assertGreater(image.width, 2 * 64)
+                self.assertGreater(image.height, 2 * 64)
+
+    def test_effect_validator_rejects_unexpected_deadeye_hud_outputs(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            vfx_sources = [
+                make_declared_sheet(root / f"vfx-{index}.png", declaration, 36 + index * 8)
+                for index, declaration in enumerate(pack.VFX_SHEETS)
+            ]
+            hud_source = make_declared_sheet(root / "hud.png", pack.HUD_SHEET, 69)
+            artifact_output = root / "artifacts"
+            build_pack(build_synthetic_fixture_sheets(root), artifact_output)
+            pack.build_effect_pack(vfx_sources, hud_source, root / "effects", root / "ui")
+            (root / "ui" / "dealer-cut-4.png").write_bytes(
+                (root / "ui" / "dealer-cut-3.png").read_bytes()
+            )
+
+            errors = pack.validate_production_effect_pack(
+                root / "effects", root / "ui", artifact_output
+            )
+            self.assertTrue(any("exact HUD filenames" in error for error in errors))
+
     def test_committed_production_pack_is_valid(self) -> None:
         self.assertEqual(validate_production_pack(PRODUCTION_OUTPUT), [])
+
+    def test_committed_production_effect_pack_is_valid(self) -> None:
+        validator = getattr(pack, "validate_production_effect_pack", None)
+        self.assertTrue(callable(validator))
+        self.assertEqual(validator(), [])
 
     def test_runtime_pack_is_complete_rgba_padded_and_unique(self) -> None:
         with TemporaryDirectory() as directory:
