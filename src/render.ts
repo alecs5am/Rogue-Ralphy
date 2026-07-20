@@ -1,4 +1,4 @@
-import type { AssetKey, Assets } from "./assets";
+import type { AssetKey, LoadedAssets } from "./assets";
 import {
 	RALPHY_ATLAS,
 	selectRalphyPose,
@@ -12,38 +12,25 @@ const round = (value: number) => Math.round(value);
 
 function imageAt(
 	context: CanvasRenderingContext2D,
-	assets: Assets,
+	assets: LoadedAssets,
 	key: AssetKey,
 	x: number,
 	y: number,
 	width: number,
 	height = width,
-	fallback = "#ffa630",
 ): void {
-	const image = assets.images[key];
-	if (image) {
-		context.drawImage(image, round(x), round(y), round(width), round(height));
-		return;
-	}
-	context.fillStyle = "#0a0a0b";
-	context.fillRect(round(x), round(y), round(width), round(height));
-	context.strokeStyle = fallback;
-	context.lineWidth = 3;
-	context.strokeRect(
-		round(x) + 2,
-		round(y) + 2,
-		round(width) - 4,
-		round(height) - 4,
+	context.drawImage(
+		assets[key],
+		round(x),
+		round(y),
+		round(width),
+		round(height),
 	);
-	context.beginPath();
-	context.moveTo(round(x) + 4, round(y) + 4);
-	context.lineTo(round(x + width) - 4, round(y + height) - 4);
-	context.stroke();
 }
 
 function centeredImage(
 	context: CanvasRenderingContext2D,
-	assets: Assets,
+	assets: LoadedAssets,
 	key: AssetKey,
 	point: Point,
 	size: number,
@@ -61,13 +48,12 @@ function centeredImage(
 
 function drawRalphyFrame(
 	context: CanvasRenderingContext2D,
-	assets: Assets,
+	assets: LoadedAssets,
 	pose: RalphyPose,
 	x: number,
 	y: number,
 ): void {
-	const atlas = assets.images.ralphyAtlas;
-	if (!atlas) return;
+	const atlas = assets.ralphyAtlas;
 	const { cellSize, destinationSize, anchorX, anchorY } = RALPHY_ATLAS;
 	context.save();
 	context.translate(round(x), round(y));
@@ -89,7 +75,7 @@ function drawRalphyFrame(
 function drawTargets(
 	context: CanvasRenderingContext2D,
 	state: GameState,
-	assets: Assets,
+	assets: LoadedAssets,
 ): void {
 	for (const target of state.targets) {
 		centeredImage(
@@ -142,7 +128,7 @@ function drawTargets(
 function drawProjectiles(
 	context: CanvasRenderingContext2D,
 	state: GameState,
-	assets: Assets,
+	assets: LoadedAssets,
 	reducedMotion: boolean,
 ): void {
 	const projectiles = new Map(state.projectiles.map((projectile) => [projectile.id, projectile]));
@@ -158,18 +144,9 @@ function drawProjectiles(
 		context.rect(0, -6, round(link.distance), 12);
 		context.clip();
 		context.globalAlpha = 0.7;
-		const texture = assets.images.teslaArc;
-		if (texture) {
-			const phase = reducedMotion ? 0 : (state.time * 72) % 24;
-			for (let x = -phase; x < link.distance; x += 24) context.drawImage(texture, round(x), -6, 24, 12);
-		} else {
-			context.strokeStyle = "#8fe9ff";
-			context.lineWidth = 4;
-			context.beginPath();
-			context.moveTo(0, 0);
-			context.lineTo(round(link.distance), 0);
-			context.stroke();
-		}
+		const phase = reducedMotion ? 0 : (state.time * 72) % 24;
+		for (let x = -phase; x < link.distance; x += 24)
+			context.drawImage(assets.teslaArc, round(x), -6, 24, 12);
 		context.restore();
 	}
 	const splitBursts = new Set<string>();
@@ -217,7 +194,7 @@ function drawProjectiles(
 function drawPlayer(
 	context: CanvasRenderingContext2D,
 	state: GameState,
-	assets: Assets,
+	assets: LoadedAssets,
 	options: RenderOptions,
 ): void {
 	const pose = selectRalphyPose(state, options.reducedMotion);
@@ -261,7 +238,7 @@ function drawPlayer(
 function drawDamage(
 	context: CanvasRenderingContext2D,
 	state: GameState,
-	assets: Assets,
+	assets: LoadedAssets,
 	reducedMotion: boolean,
 ): void {
 	context.textAlign = "center";
@@ -305,25 +282,12 @@ function drawAim(context: CanvasRenderingContext2D, state: GameState): void {
 export function renderGame(
 	context: CanvasRenderingContext2D,
 	state: GameState,
-	assets: Assets,
+	assets: LoadedAssets,
 	options: RenderOptions,
 ): void {
 	context.imageSmoothingEnabled = false;
 	context.clearRect(0, 0, state.room.width, state.room.height);
-	const room = assets.images.room;
-	if (room) context.drawImage(room, 0, 0, state.room.width, state.room.height);
-	else {
-		context.fillStyle = "#171719";
-		context.fillRect(0, 0, state.room.width, state.room.height);
-		context.strokeStyle = "#ffa630";
-		context.lineWidth = 8;
-		context.strokeRect(
-			state.room.minX,
-			state.room.minY,
-			state.room.maxX - state.room.minX,
-			state.room.maxY - state.room.minY,
-		);
-	}
+	context.drawImage(assets.room, 0, 0, state.room.width, state.room.height);
 	for (const prop of ROOM_PROPS)
 		centeredImage(
 			context,

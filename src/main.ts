@@ -1,5 +1,8 @@
 import "./styles.css";
-import { loadAssets, REQUIRED_ASSET_KEYS } from "./assets";
+import {
+	loadAssets as loadProductionAssets,
+	type LoadedAssets,
+} from "./assets";
 import { createGame, type GameState, updateGame } from "./game/simulation";
 import { mountHud, updateHud } from "./hud";
 import { mountLab } from "./lab";
@@ -11,29 +14,46 @@ function required<T extends Element>(root: ParentNode, selector: string): T {
 	return element;
 }
 
-const canvas = required<HTMLCanvasElement>(document, "#game");
-const hud = required<HTMLElement>(document, "#hud");
-const reloadBar = required<HTMLElement>(document, "#reload");
-const reloadFill = required<HTMLElement>(reloadBar, ".reload-fill");
-const reloadZone = required<HTMLElement>(reloadBar, ".reload-zone");
-const reloadLabel = required<HTMLElement>(reloadBar, "span");
-const pauseLabel = required<HTMLElement>(document, "#pause-label");
-const quickdraw = required<HTMLElement>(document, "#quickdraw");
-const context = (() => {
-	const value = canvas.getContext("2d");
-	if (!value) throw new Error("Canvas 2D is unavailable");
-	return value;
-})();
+function canvasContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
+	const context = canvas.getContext("2d");
+	if (!context) throw new Error("Canvas 2D is unavailable");
+	return context;
+}
 
-async function start(): Promise<void> {
-	const assets = await loadAssets();
-	const missingRequired = REQUIRED_ASSET_KEYS.filter((key) =>
-		assets.missing.includes(key),
-	);
-	if (missingRequired.length)
-		throw new Error(
-			`Required generated assets failed to load: ${missingRequired.join(", ")}`,
-		);
+type BootstrapOptions = Readonly<{
+	loadAssets: () => Promise<LoadedAssets>;
+	requestFrame: (callback: FrameRequestCallback) => number;
+}>;
+
+export async function bootstrap({
+	loadAssets,
+	requestFrame,
+}: BootstrapOptions): Promise<void> {
+	let assets: LoadedAssets;
+	try {
+		assets = await loadAssets();
+	} catch (error) {
+		const app = document.querySelector<HTMLElement>("#app");
+		if (!app) throw new Error("Game shell is missing #app");
+		const alert = document.createElement("p");
+		alert.className = "asset-failure";
+		alert.setAttribute("role", "alert");
+		alert.textContent = `Ralphy Combat Lab could not start: ${error instanceof Error ? error.message : String(error)}`;
+		app.replaceChildren(alert);
+		app.removeAttribute("aria-busy");
+		return;
+	}
+
+	const app = required<HTMLElement>(document, "#app");
+	const canvas = required<HTMLCanvasElement>(document, "#game");
+	const hud = required<HTMLElement>(document, "#hud");
+	const reloadBar = required<HTMLElement>(document, "#reload");
+	const reloadFill = required<HTMLElement>(reloadBar, ".reload-fill");
+	const reloadZone = required<HTMLElement>(reloadBar, ".reload-zone");
+	const reloadLabel = required<HTMLElement>(reloadBar, "span");
+	const pauseLabel = required<HTMLElement>(document, "#pause-label");
+	const quickdraw = required<HTMLElement>(document, "#quickdraw");
+	const context = canvasContext(canvas);
 	let state: GameState = createGame();
 	mountHud(hud);
 	updateHud(state);
@@ -41,15 +61,13 @@ async function start(): Promise<void> {
 	let firing = false;
 	const pressed = new Set<string>();
 	const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-	const updateLab = mountLab(
-		{
-			get: () => state,
-			set: (next) => {
-				state = next;
-			},
+	const updateLab = mountLab({
+		get: () => state,
+		set: (next) => {
+			state = next;
 		},
-		assets.missing,
-	);
+	});
+	app.removeAttribute("aria-busy");
 
 	function mapPointer(event: PointerEvent): void {
 		const bounds = canvas.getBoundingClientRect();
@@ -189,10 +207,15 @@ async function start(): Promise<void> {
 					state.time <= state.cylinder.sweetEnd,
 			);
 		}
-		requestAnimationFrame(frame);
+		requestFrame(frame);
 	}
 
-	requestAnimationFrame(frame);
+	requestFrame(frame);
 }
 
-void start();
+if (typeof window !== "undefined" && typeof document !== "undefined") {
+	void bootstrap({
+		loadAssets: loadProductionAssets,
+		requestFrame: window.requestAnimationFrame.bind(window),
+	});
+}

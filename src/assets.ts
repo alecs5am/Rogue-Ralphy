@@ -10,6 +10,40 @@ export const ASSET_PATHS = {
 	shotgunSplit: "/assets/generated/effects/shotgun-split.png",
 	spectralTrail: "/assets/generated/effects/spectral-trail.png",
 	homingMarker: "/assets/generated/effects/homing-marker.png",
+	echoFlash: "/assets/generated/effects/artifacts/echo-flash.png",
+	burstFlash: "/assets/generated/effects/artifacts/burst-flash.png",
+	sideShotFlash: "/assets/generated/effects/artifacts/side-shot-flash.png",
+	bellRing: "/assets/generated/effects/artifacts/bell-ring.png",
+	boneFan: "/assets/generated/effects/artifacts/bone-fan.png",
+	graveBloomVfx: "/assets/generated/effects/artifacts/grave-bloom.png",
+	soulSpirit: "/assets/generated/effects/artifacts/soul-spirit.png",
+	coinMint: "/assets/generated/effects/artifacts/coin-mint.png",
+	chillMark: "/assets/generated/effects/artifacts/chill-mark.png",
+	iceShatter: "/assets/generated/effects/artifacts/ice-shatter.png",
+	burnMark: "/assets/generated/effects/artifacts/burn-mark.png",
+	emberRing: "/assets/generated/effects/artifacts/ember-ring.png",
+	wantedMark: "/assets/generated/effects/artifacts/wanted-mark.png",
+	ledgerMark: "/assets/generated/effects/artifacts/ledger-mark.png",
+	hexPulse: "/assets/generated/effects/artifacts/hex-pulse.png",
+	hollowExplosion: "/assets/generated/effects/artifacts/hollow-explosion.png",
+	waveTrail: "/assets/generated/effects/artifacts/wave-trail.png",
+	cometTail: "/assets/generated/effects/artifacts/comet-tail.png",
+	returnLoop: "/assets/generated/effects/artifacts/return-loop.png",
+	pinballRelay: "/assets/generated/effects/artifacts/pinball-relay.png",
+	ectoplasmPool: "/assets/generated/effects/artifacts/ectoplasm-pool.png",
+	ectoplasmTrail: "/assets/generated/effects/artifacts/ectoplasm-trail.png",
+	crossfirePulse: "/assets/generated/effects/artifacts/crossfire-pulse.png",
+	kineticExplosion: "/assets/generated/effects/artifacts/kinetic-explosion.png",
+	ironMoonlet: "/assets/generated/effects/artifacts/iron-moonlet.png",
+	ghostSatellite: "/assets/generated/effects/artifacts/ghost-satellite.png",
+	recoilSkid: "/assets/generated/effects/artifacts/recoil-skid.png",
+	stillwaterWard: "/assets/generated/effects/artifacts/stillwater-ward.png",
+	dustlineAfterimage:
+		"/assets/generated/effects/artifacts/dustline-afterimage.png",
+	goldSoul: "/assets/generated/effects/artifacts/gold-soul.png",
+	locketOrbital: "/assets/generated/effects/artifacts/locket-orbital.png",
+	coatDecoy: "/assets/generated/effects/artifacts/coat-decoy.png",
+	twinWeave: "/assets/generated/effects/artifacts/twin-weave.png",
 	freezeBurst: "/assets/generated/effects/freeze-burst.png",
 	dummy: "/assets/generated/targets/dummy.png",
 	chaser: "/assets/generated/targets/chaser.png",
@@ -22,6 +56,9 @@ export const ASSET_PATHS = {
 	ammoLoaded: "/assets/generated/ui/ammo-loaded.png",
 	ammoEmpty: "/assets/generated/ui/ammo-empty.png",
 	ammoEcho: "/assets/generated/ui/ammo-echo.png",
+	dealerCut1: "/assets/generated/ui/dealer-cut-1.png",
+	dealerCut2: "/assets/generated/ui/dealer-cut-2.png",
+	dealerCut3: "/assets/generated/ui/dealer-cut-3.png",
 	coin: "/assets/generated/ui/coin.png",
 	bomb: "/assets/generated/ui/bomb.png",
 	key: "/assets/generated/ui/key.png",
@@ -68,32 +105,78 @@ export const ASSET_PATHS = {
 } as const;
 
 export type AssetKey = keyof typeof ASSET_PATHS;
+export const NEW_ARTIFACT_VFX = [
+	"echoFlash",
+	"burstFlash",
+	"sideShotFlash",
+	"bellRing",
+	"boneFan",
+	"graveBloomVfx",
+	"soulSpirit",
+	"coinMint",
+	"chillMark",
+	"iceShatter",
+	"burnMark",
+	"emberRing",
+	"wantedMark",
+	"ledgerMark",
+	"hexPulse",
+	"hollowExplosion",
+	"waveTrail",
+	"cometTail",
+	"returnLoop",
+	"pinballRelay",
+	"ectoplasmPool",
+	"ectoplasmTrail",
+	"crossfirePulse",
+	"kineticExplosion",
+	"ironMoonlet",
+	"ghostSatellite",
+	"recoilSkid",
+	"stillwaterWard",
+	"dustlineAfterimage",
+	"goldSoul",
+	"locketOrbital",
+	"coatDecoy",
+	"twinWeave",
+] as const satisfies readonly AssetKey[];
+export const RETAINED_ARTIFACT_VFX = [
+	"orbitTrail",
+	"homingMarker",
+	"shotgunSplit",
+	"spectralTrail",
+	"teslaArc",
+] as const satisfies readonly AssetKey[];
+export const ARTIFACT_PRESENTATION_ASSETS = [
+	...NEW_ARTIFACT_VFX,
+	...RETAINED_ARTIFACT_VFX,
+] as const satisfies readonly AssetKey[];
+export const ARTIFACT_HUD_ASSETS = [
+	"ammoEcho",
+	"dealerCut1",
+	"dealerCut2",
+	"dealerCut3",
+] as const satisfies readonly AssetKey[];
 export const REQUIRED_ASSET_KEYS = Object.keys(ASSET_PATHS) as AssetKey[];
-export type Assets = {
-	images: Partial<Record<AssetKey, HTMLImageElement>>;
-	missing: AssetKey[];
-};
+export type LoadedAssets = Record<AssetKey, HTMLImageElement>;
 
-export async function loadAssets(): Promise<Assets> {
-	const images: Partial<Record<AssetKey, HTMLImageElement>> = {};
-	const missing: AssetKey[] = [];
-	await Promise.all(
-		Object.entries(ASSET_PATHS).map(
-			([rawKey, path]) =>
-				new Promise<void>((resolve) => {
-					const key = rawKey as AssetKey;
+export async function loadAssets(): Promise<LoadedAssets> {
+	const entries = await Promise.all(
+		REQUIRED_ASSET_KEYS.map(
+			(key) =>
+				new Promise<readonly [AssetKey, HTMLImageElement]>((resolve, reject) => {
+					const path = ASSET_PATHS[key];
 					const image = new Image();
-					image.onload = () => {
-						images[key] = image;
-						resolve();
-					};
-					image.onerror = () => {
-						missing.push(key);
-						resolve();
-					};
+					image.onload = () => resolve([key, image]);
+					image.onerror = () =>
+						reject(
+							new Error(
+								`Required generated asset failed to load: ${key} (${path})`,
+							),
+						);
 					image.src = path;
 				}),
 		),
 	);
-	return { images, missing };
+	return Object.fromEntries(entries) as LoadedAssets;
 }

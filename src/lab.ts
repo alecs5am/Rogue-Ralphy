@@ -1,4 +1,4 @@
-import { ASSET_PATHS, type AssetKey } from "./assets";
+import { ASSET_PATHS } from "./assets";
 import { ARTIFACT_CATALOG } from "./game/artifacts";
 import { ammoCount } from "./game/cylinder";
 import { resetMetrics, summarizeMetrics } from "./game/metrics";
@@ -39,10 +39,7 @@ function required<T extends Element>(root: ParentNode, selector: string): T {
 	return element;
 }
 
-export function mountLab(
-	access: StateAccess,
-	missing: AssetKey[],
-): (state: GameState) => void {
+export function mountLab(access: StateAccess): (state: GameState) => void {
 	const artifactsRoot = document.querySelector<HTMLElement>("#artifacts");
 	const spawnerRoot = document.querySelector<HTMLElement>("#spawner");
 	const statsRoot = document.querySelector<HTMLElement>("#stats");
@@ -60,10 +57,7 @@ export function mountLab(
 		card.className = "artifact-card";
 		card.dataset.artifact = artifact.id;
 		const iconKey = artifact.icon;
-		const icon = missing.includes(iconKey)
-			? '<span class="missing-icon" aria-hidden="true"></span>'
-			: `<img src="${ASSET_PATHS[iconKey]}" alt="">`;
-		card.innerHTML = `${icon}<div class="artifact-copy"><h3>${artifact.name}</h3><p>${artifact.description}</p></div>`;
+		card.innerHTML = `<img src="${ASSET_PATHS[iconKey]}" alt=""><div class="artifact-copy"><h3>${artifact.name}</h3><p>${artifact.description}</p></div>`;
 		const artifactButton = button("Take", "artifact-toggle");
 		artifactButton.setAttribute("aria-label", `Take ${artifact.name}`);
 		artifactButton.addEventListener("click", () => {
@@ -166,9 +160,7 @@ export function mountLab(
 	}
 	const dummyStats = required<HTMLElement>(statsRoot, ".dummy-stats");
 	required<HTMLElement>(statsRoot, "#asset-diagnostics").textContent =
-		missing.length
-			? `MISSING ASSETS: ${missing.join(", ")}`
-			: `All generated assets loaded · ${Object.keys(ASSET_PATHS).length}/${Object.keys(ASSET_PATHS).length}`;
+		`All generated assets loaded · ${Object.keys(ASSET_PATHS).length}/${Object.keys(ASSET_PATHS).length}`;
 
 	return (state) => {
 		for (const artifact of ARTIFACT_CATALOG) {
