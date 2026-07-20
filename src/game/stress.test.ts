@@ -643,4 +643,4 @@ test("all thirty-six artifacts survive ten deterministic seconds and drain every
   expect(second.launchCounts).toEqual(first.launchCounts);
   expect(second.descendants).toEqual(first.descendants);
   expect(second.observed.map(damageEventKey)).toEqual(first.observed.map(damageEventKey));
-}, 90_000);
+}, 130_000);

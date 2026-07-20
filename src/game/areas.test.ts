@@ -5,7 +5,7 @@ import { createMetrics } from "./metrics";
 import { createCylinder } from "./cylinder";
 import type { ProjectileState } from "./projectiles";
 import { ROOM } from "./room";
-import { clearTargets, createGame, setArtifact, updateGame } from "./simulation";
+import { clearTargets, createGame, createRunGame, setArtifact, setArtifactLoadout, updateGame } from "./simulation";
 import {
   areaId,
   buildSpatialCandidates,
@@ -667,6 +667,28 @@ test("a sustained 120 Hz Ectoplasmic Wake stays within its valid 97-point bound"
   }
 
   expect(maximumPoints).toBe(97);
+});
+
+test("Pinball refreshes a sustained Wake VFX origin throughout three seconds of arena flight", () => {
+  const idle = {
+    moveX: 0, moveY: 0, aimX: 1500, aimY: 480,
+    firing: false, reloadPressed: false, paused: false,
+  } as const;
+  let game = setArtifactLoadout(createRunGame(() => 0.9), {
+    pinball: true,
+    ectoplasmicWake: true,
+  });
+  game = { ...game, roomProps: [], targets: [] };
+  game = updateGame(game, { ...idle, firing: true }, 0, 0);
+
+  for (let tick = 1; tick <= 361; tick += 1) {
+    game = updateGame(game, idle, 1 / 120, tick / 120);
+  }
+
+  const command = game.vfxCommands.find(({ kind }) => kind === "ectoplasmicWake.trail");
+  if (command?.geometry.type !== "polyline") throw new Error("expected a live Wake polyline");
+  expect(command.bornAt).toBe(Math.min(...command.geometry.segments.map(({ bornAt }) => bornAt)));
+  expect(command.expiresAt - command.bornAt).toBeLessThanOrEqual(3);
 });
 
 test("Crossfire creates one canonical pulse and consumes each projectile once", () => {

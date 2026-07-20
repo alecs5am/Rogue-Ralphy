@@ -73,6 +73,28 @@ test("Bonanza queues only the first eligible depth-zero generation-zero kill per
   expect(Object.keys(result.history)).toEqual(["bonanzaClip.refund\0trigger-3"]);
 });
 
+test("Bonanza reserves the seventh cylinder slot after six earlier deliveries", () => {
+  const existingRefunds = Array.from({ length: 6 }, (_, slot): PendingRefund => ({
+    effectId: "bonanzaClip.refund",
+    artifactId: "bonanzaClip",
+    rootTriggerId: `trigger-${slot + 1}`,
+    rootIndex: slot + 1,
+    arrivesAt: 1.25,
+    from: { x: 0, y: 0 },
+    slot,
+  }));
+  const kill: KillContext = {
+    victimId: "target-7", x: 10, y: 20, time: 1, source: "direct", generation: 0,
+    reactiveEffectIds: ["bonanzaClip.refund"], artifactId: "baseRevolver", effectId: "baseRevolver.direct",
+    rootTriggerId: "trigger-7", lineageId: "trigger-7:0", projectileId: "projectile-7",
+    originPower: 20, killReactionDepth: 0,
+  };
+
+  const result = queueBonanzaRefunds([kill], {}, 0.25, createCylinder(7, 7), existingRefunds);
+
+  expect(result.pendingRefunds).toEqual([expect.objectContaining({ slot: 6 })]);
+});
+
 test("due Bonanza and Recoil refunds use arrival, effect ID, and numeric root order", () => {
   const pending = (effectId: PendingRefund["effectId"], rootIndex: number, arrivesAt = 1): PendingRefund => {
     const common = { rootTriggerId: `trigger-${rootIndex}`, rootIndex, arrivesAt, from: { x: 0, y: 0 } };

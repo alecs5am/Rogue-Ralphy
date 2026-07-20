@@ -141,6 +141,35 @@ test("generation-one cannot queue another emission", () => {
     .toThrow("generation-one projectile cannot emit");
 });
 
+test("Bonanza pending delivery supports slot six in an expanded cylinder", () => {
+  const delivery: VfxCommand = {
+    id: "bonanza-slot-six",
+    kind: "bonanza.delivery",
+    artifactId: "bonanzaClip",
+    effectId: "bonanzaClip.refund",
+    rootTriggerId: "trigger-7",
+    destination: "hud",
+    bornAt: 1,
+    expiresAt: 2.2,
+    geometry: { type: "hudDelivery", from: { x: 500, y: 300 }, slot: 6, arrivesAt: 2 },
+  };
+  const resolved = resolveCombatPhases(runtime({
+    now: 1,
+    pendingRefunds: [{
+      effectId: "bonanzaClip.refund",
+      artifactId: "bonanzaClip",
+      rootTriggerId: "trigger-7",
+      rootIndex: 7,
+      arrivesAt: 2,
+      from: { x: 500, y: 300 },
+      slot: 6,
+    }],
+    vfxCommands: [delivery],
+  }), context({ cylinder: createCylinder(6, 7) }));
+
+  expect(resolved.vfxCommands).toContainEqual(delivery);
+});
+
 test("materialized Shotgun children reset live convergence before their first cone step", () => {
   const composed = compileCombatBuild({ shotgun: true, twinChamber: true });
   const split = composed.emissions.find(({ effectId }) => effectId === "shotgun.split")!;

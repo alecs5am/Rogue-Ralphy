@@ -12,8 +12,30 @@
       <section class="game-shell" aria-label="Ralphy combat room">
         <canvas id="game" width="960" height="576" tabindex="0" aria-label="Combat room. Move with W A S D, aim and fire with the mouse, reload with R, pause with Escape."></canvas>
         <div id="hud" aria-live="polite" aria-label="Health, ammunition, and resources"></div>
+        <nav id="main-menu" aria-label="Main menu">
+          <p>RALPHY THE GHOST</p>
+          <h1>Rogue Ralphy</h1>
+          <button type="button" data-action="play">Play</button>
+          <a href="https://www.alecs5am.com/ralphy" target="_blank" rel="noreferrer">Ralphy site</a>
+          <button type="button" data-action="lab">Test room</button>
+        </nav>
+        <section id="run-choice" hidden aria-live="polite"></section>
+        <div id="run-banner" hidden></div>
+        <section id="boss-hud" hidden aria-label="Boss health">
+          <div><strong>THE DEAD SHERIFF</strong><span>PHASE 1</span></div>
+          <div class="boss-track"><i></i></div>
+        </section>
+        <div id="pickup-toast" hidden aria-live="polite"></div>
+        <button id="menu-button" type="button" hidden>Main menu</button>
         <div id="quickdraw" hidden>QUICKDRAW</div>
-        <div id="pause-label" hidden>PAUSED</div>
+        <section id="pause-label" hidden aria-live="polite" aria-label="Game menu">
+          <h2>PAUSED</h2>
+          <div class="session-actions">
+            <button type="button" data-action="resume">Resume</button>
+            <button type="button" data-action="restart">Restart run</button>
+            <button type="button" data-action="menu">Main menu</button>
+          </div>
+        </section>
         <div id="reload" hidden aria-label="Reload progress">
           <div class="reload-zone"></div>
           <div class="reload-fill"></div>

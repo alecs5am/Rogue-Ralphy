@@ -201,7 +201,8 @@ export function queueBonanzaRefunds(
   const nextSlot = (): number => {
     const empty = [...cylinder.emptied].reverse().find((slot) => !reservedSlots.has(slot));
     if (empty !== undefined) return empty;
-    return Array.from({ length: 6 }, (_, offset) => (cylinder.nextSlot + offset) % 6)
+    return Array.from({ length: cylinder.slots.length }, (_, offset) =>
+      (cylinder.nextSlot + offset) % cylinder.slots.length)
       .find((slot) => !reservedSlots.has(slot)) ?? cylinder.nextSlot;
   };
   for (const kill of kills) {

@@ -3,7 +3,9 @@ import type { VfxCommand } from "./game/combat-effects";
 import { createCylinder, startReload } from "./game/cylinder";
 import type { ProjectileState } from "./game/projectiles";
 import {
+	chooseRunArtifact,
 	createGame,
+	createRunGame,
 	setArtifactLoadout,
 	type GameState,
 } from "./game/simulation";
@@ -256,6 +258,19 @@ export const E2E_FIXTURE_DESCRIPTIONS = {
 		ammo: 3,
 		reloadKind: "manual",
 	},
+	"demo-ready": {
+		kind: "demo",
+		time: 1,
+		wave: 10,
+		bossHealthRatio: 0.5,
+		pickup: "damage",
+	},
+	"complete-ready": {
+		kind: "complete",
+		time: 1,
+		wave: 10,
+		artifactsTaken: 10,
+	},
 } as const;
 
 type FixtureId = keyof typeof E2E_FIXTURE_DESCRIPTIONS;
@@ -477,11 +492,46 @@ function reloadFixture(): GameState {
 	};
 }
 
+function demoFixture(): GameState {
+	let state = createRunGame(() => 0.42);
+	state = {
+		...state,
+		run: { ...state.run!, wave: 10, phase: "choice" },
+	};
+	state = chooseRunArtifact(state, state.run!.choices[0]);
+	return {
+		...state,
+		time: 1,
+		targets: state.targets.map((target) => target.kind === "sheriffBoss"
+			? { ...target, health: target.maxHealth * 0.5, ai: { ...target.ai!, nextShotAt: 100 } }
+			: target),
+		pickups: [{ id: "fixture-pickup", kind: "damage", x: state.player.x + 130, y: state.player.y, radius: 16 }],
+		pickupNotice: { text: "+8% DAMAGE", expiresAt: 999 },
+	};
+}
+
+function completeFixture(): GameState {
+	let state = createRunGame(() => 0.42);
+	state = setArtifactLoadout(
+		state,
+		Object.fromEntries(ARTIFACT_IDS.slice(0, 10).map((id) => [id, true])),
+	);
+	return {
+		...state,
+		time: 1,
+		targets: [],
+		pickups: [],
+		run: { ...state.run!, phase: "complete", wave: 10, artifactsTaken: 10, choices: [] },
+	};
+}
+
 export function materializeFixture(id: string | null): GameState | undefined {
 	if (!id || !fixtureIds.has(id)) return undefined;
 	const fixtureId = id as FixtureId;
 	const kind = E2E_FIXTURE_DESCRIPTIONS[fixtureId].kind;
 	if (kind === "presentation") return presentationFixture();
 	if (kind === "death") return deathFixture();
-	return reloadFixture();
+	if (kind === "reload") return reloadFixture();
+	if (kind === "demo") return demoFixture();
+	return completeFixture();
 }

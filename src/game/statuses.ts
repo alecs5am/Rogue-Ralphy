@@ -1,4 +1,5 @@
 import type { CombatBuild, EmissionRule } from "./combat-build";
+import type { TargetKind } from "./combat-effects";
 import type { DamageEvent } from "./metrics";
 import type { ProjectileState } from "./projectiles";
 import type { Point } from "./room";
@@ -53,7 +54,7 @@ export type RootStatusRecord = Readonly<{ rootTriggerId: string }>;
 
 export type StatusTarget = Readonly<Point & {
   id: string;
-  kind: "dummy" | "chaser";
+  kind: TargetKind;
   radius: number;
   health: number;
   maxHealth: number;

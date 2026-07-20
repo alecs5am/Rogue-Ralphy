@@ -102,9 +102,10 @@ const WORLD_PRESENTATION_PATHS = PRESENTATION_PATHS.filter(
 	(path) => path !== "/assets/generated/effects/artifacts/gold-soul.png",
 );
 const EXPECTED_PRESENTATION_PATHS = [
-	...ICON_PATHS,
-	...PRESENTATION_PATHS,
-	...HUD_PATHS,
+    ...ICON_PATHS,
+    ...PRESENTATION_PATHS,
+    ...HUD_PATHS,
+    "/assets/generated/demo/arena-sprites.png",
 ];
 
 type DrawRecord = {
@@ -220,8 +221,10 @@ async function waitForReady(page: Page): Promise<void> {
 }
 
 async function gotoReady(page: Page, url = "/"): Promise<void> {
-	await page.goto(url);
-	await waitForReady(page);
+    await page.goto(url);
+    await waitForReady(page);
+    if (await page.locator("#main-menu").isVisible())
+        await page.getByRole("button", { name: "Test room" }).click();
 }
 
 async function aimAtDummy(page: Page): Promise<void> {
@@ -233,6 +236,89 @@ async function aimAtDummy(page: Page): Promise<void> {
 		box.y + box.height * 288 / 576,
 	);
 }
+
+test("main menu starts the arena demo with artifact choice and generated enemy atlas", async ({ page }) => {
+    const errors = monitorErrors(page);
+    await installDrawProbe(page);
+    await page.goto("/");
+    await waitForReady(page);
+
+    await expect(page.getByRole("navigation", { name: "Main menu" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Ralphy site" })).toHaveAttribute("href", "https://www.alecs5am.com/ralphy");
+    await page.getByRole("button", { name: "Play" }).click();
+    await expect(page.locator("#run-choice")).toBeVisible();
+    await expect(page.locator("#run-choice .choice-card")).toHaveCount(2);
+
+    await page.locator("#run-choice .choice-card").first().click();
+    await expect(page.locator("#run-choice")).toBeHidden();
+    await expect(page.locator("#run-banner")).toContainText("WAVE 1");
+    await waitTwoFrames(page);
+
+    const draws = await probe(page);
+    expect(draws.byPath[ASSET_PATHS.arenaSprites]?.length ?? 0).toBeGreaterThan(0);
+    expect(errors).toEqual([]);
+});
+
+for (const viewport of [
+	{ width: 3440, height: 1440 },
+	{ width: 900, height: 1200 },
+]) {
+	test(`arena shell stays inside a ${viewport.width}x${viewport.height} viewport`, async ({ page }) => {
+		await page.setViewportSize(viewport);
+		await page.goto("/");
+		await waitForReady(page);
+		await page.getByRole("button", { name: "Play" }).click();
+
+		const box = await page.locator("#game").boundingBox();
+		if (!box) throw new Error("game canvas is not visible");
+		expect(box.x).toBeGreaterThanOrEqual(0);
+		expect(box.y).toBeGreaterThanOrEqual(0);
+		expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
+		expect(box.y + box.height).toBeLessThanOrEqual(viewport.height + 1);
+		expect(box.width / box.height).toBeCloseTo(5 / 3, 2);
+	});
+}
+
+test("run and laboratory can navigate through pause and main menu", async ({ page }) => {
+	await page.goto("/");
+	await waitForReady(page);
+	await page.getByRole("button", { name: "Play" }).click();
+	await page.keyboard.press("Escape");
+	await expect(page.locator("#pause-label")).toContainText("PAUSED");
+	await page.getByRole("button", { name: "Resume" }).click();
+	await expect(page.locator("#pause-label")).toBeHidden();
+	await page.getByRole("button", { name: "Menu" }).click();
+	await expect(page.getByRole("navigation", { name: "Main menu" })).toBeVisible();
+
+	await page.getByRole("button", { name: "Test room" }).click();
+	await expect(page.locator("#lab")).toBeVisible();
+	await page.getByRole("button", { name: "Menu" }).click();
+	await expect(page.getByRole("navigation", { name: "Main menu" })).toBeVisible();
+});
+
+test("demo showcase makes crates, micro-upgrades, and the boss readable", async ({ page }) => {
+	await installDrawProbe(page);
+	await page.goto("/?fixture=demo-ready");
+	await waitForReady(page);
+	await expect(page.locator("#boss-hud")).toBeVisible();
+	await expect(page.locator("#boss-hud")).toContainText("THE DEAD SHERIFF");
+	await expect(page.locator("#boss-hud")).toContainText("PHASE 2");
+	await expect(page.locator("#pickup-toast")).toContainText("+8% DAMAGE");
+	await waitTwoFrames(page);
+
+	const draws = await probe(page);
+	expect(draws.byPath[ASSET_PATHS.crate]?.length ?? 0).toBeGreaterThanOrEqual(2);
+});
+
+test("completed run can play again or return to the main menu", async ({ page }) => {
+	await page.goto("/?fixture=complete-ready");
+	await waitForReady(page);
+	await expect(page.locator("#pause-label")).toContainText("RUN COMPLETE");
+	await page.getByRole("button", { name: "Play again" }).click();
+	await expect(page.locator("#run-choice .choice-card")).toHaveCount(2);
+	await page.getByRole("button", { name: "Main menu" }).click();
+	await expect(page.getByRole("navigation", { name: "Main menu" })).toBeVisible();
+});
 
 async function statNumber(page: Page, key: string): Promise<number> {
 	const text = (await page.locator(`[data-stat="${key}"]`).textContent()) ?? "";
@@ -337,8 +423,8 @@ test("all presentation PNGs respond and all icon images decode uniquely", async 
 	});
 
 	await gotoReady(page);
-	expect(EXPECTED_PRESENTATION_PATHS).toHaveLength(78);
-	expect(new Set(EXPECTED_PRESENTATION_PATHS).size).toBe(78);
+	expect(EXPECTED_PRESENTATION_PATHS).toHaveLength(79);
+	expect(new Set(EXPECTED_PRESENTATION_PATHS).size).toBe(79);
 	expect(EXPECTED_PRESENTATION_PATHS.every((path) => path.endsWith(".png"))).toBe(true);
 	expect(NEW_ARTIFACT_VFX).toHaveLength(33);
 	expect(RETAINED_ARTIFACT_VFX).toHaveLength(5);
@@ -596,10 +682,10 @@ test("death fixture locks movement fire and reload until Reset lab", async ({ pa
 	const canvas = page.locator("#game");
 	const box = await canvas.boundingBox();
 	if (!box) throw new Error("game canvas is not visible");
-	await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+	await canvas.dispatchEvent("pointermove", { clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 });
 	await page.keyboard.down("w");
 	await page.keyboard.down("d");
-	await page.mouse.down();
+	await canvas.dispatchEvent("pointerdown", { button: 0, clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 });
 	await page.keyboard.press("r");
 	try {
 		await page.waitForFunction((count) => {
@@ -608,7 +694,7 @@ test("death fixture locks movement fire and reload until Reset lab", async ({ pa
 			return (records?.length ?? 0) >= count + 5;
 		}, beforeDrawCount);
 	} finally {
-		await page.mouse.up();
+		await page.evaluate(() => window.dispatchEvent(new PointerEvent("pointerup", { button: 0 })));
 		await page.keyboard.up("w");
 		await page.keyboard.up("d");
 	}
@@ -624,7 +710,7 @@ test("death fixture locks movement fire and reload until Reset lab", async ({ pa
 		f: before.atlas?.f,
 	});
 
-	await page.getByRole("button", { name: "Reset lab" }).click();
+	await page.getByRole("button", { name: "Reset test room" }).click();
 	await expect(page.locator('[data-stat="health"]')).toHaveText("100/100");
 	await expect(page.locator('[data-stat="ammo"]')).toHaveText("6/6");
 	await expect(page.locator('.artifact-tile[aria-pressed="true"]')).toHaveCount(0);

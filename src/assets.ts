@@ -1,4 +1,4 @@
-export const ASSET_PATHS = {
+const ROOT_ASSET_PATHS = {
 	room: "/assets/generated/room.png",
 	ralphyAtlas: "/assets/generated/ralphy/ralphy-atlas.png",
 	ghostRevolver: "/assets/generated/ralphy/ghost-revolver.png",
@@ -66,6 +66,7 @@ export const ASSET_PATHS = {
 	reloadFill: "/assets/generated/ui/reload-fill.png",
 	reloadZone: "/assets/generated/ui/reload-zone.png",
 	reloadSuccess: "/assets/generated/ui/reload-success.png",
+	arenaSprites: "/assets/generated/demo/arena-sprites.png",
 	twinChamber: "/assets/generated/artifacts/twin-chamber.png",
 	lastBell: "/assets/generated/artifacts/last-bell.png",
 	graveEcho: "/assets/generated/artifacts/grave-echo.png",
@@ -103,6 +104,20 @@ export const ASSET_PATHS = {
 	lastGaspLocket: "/assets/generated/artifacts/last-gasp-locket.png",
 	undertakersCoat: "/assets/generated/artifacts/undertakers-coat.png",
 } as const;
+
+export function resolveAssetPath(
+	path: string,
+	base = import.meta.env?.BASE_URL ?? "/",
+): string {
+	return base === "/" ? path : `${base}${path.slice(1)}`;
+}
+
+export const ASSET_PATHS = Object.fromEntries(
+	Object.entries(ROOT_ASSET_PATHS).map(([key, path]) => [
+		key,
+		resolveAssetPath(path),
+	]),
+) as { readonly [K in keyof typeof ROOT_ASSET_PATHS]: string };
 
 export type AssetKey = keyof typeof ASSET_PATHS;
 export const NEW_ARTIFACT_VFX = [

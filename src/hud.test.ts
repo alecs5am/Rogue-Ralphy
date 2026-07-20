@@ -135,6 +135,29 @@ test("renders echo ammo as a separate generated overlay on a loaded cartridge", 
 	}
 });
 
+test("adds a visible heart slot when a health pickup raises max health", () => {
+	const previousDocument = globalThis.document;
+	Object.defineProperty(globalThis, "document", {
+		configurable: true,
+		value: { createElement: () => new FakeElement() },
+	});
+	try {
+		const root = new FakeElement();
+		mountHud(root as unknown as HTMLElement);
+		const state = createGame(() => 0.9);
+		state.player = { ...state.player, health: 120, maxHealth: 120 };
+		updateHud(state);
+
+		const health = findClass(root, "hearts")!;
+		expect(health.children).toHaveLength(6);
+		expect(health.children.map((slot) => slot.children[0]?.src)).toEqual(
+			Array.from({ length: 6 }, () => ASSET_PATHS.heartFull),
+		);
+	} finally {
+		Object.defineProperty(globalThis, "document", { configurable: true, value: previousDocument });
+	}
+});
+
 test("maps the pre-reset Dealer's Cut counter to three generated states", () => {
 	expect([0, 1, 2].map(dealerStateAt)).toEqual([
 		{ asset: "dealerCut1", src: ASSET_PATHS.dealerCut1, text: "1/3" },
@@ -206,9 +229,10 @@ test("projects Bonanza delivery from canvas world coordinates to either viewport
 		[rect(120, 80, 960, 576), rect(148, 104, 28, 28)],
 		[rect(10, 240, 768, 460.8), rect(26, 256, 22, 22)],
 	] as const) {
-		const start = projectHudDelivery(command, canvas, slot, command.bornAt);
-		const end = projectHudDelivery(command, canvas, slot, command.geometry.arrivesAt);
-		const middle = projectHudDelivery(command, canvas, slot, 1.5);
+		const viewport = { x: 0, y: 0, width: 960, height: 576 };
+		const start = projectHudDelivery(command, canvas, slot, command.bornAt, viewport);
+		const end = projectHudDelivery(command, canvas, slot, command.geometry.arrivesAt, viewport);
+		const middle = projectHudDelivery(command, canvas, slot, 1.5, viewport);
 
 		expect(start).toMatchObject({
 			id: "bonanza-1",
@@ -221,6 +245,23 @@ test("projects Bonanza delivery from canvas world coordinates to either viewport
 		expect(middle.x).toBeCloseTo((start.x + end.x) / 2);
 		expect(middle.y).toBeCloseTo((start.y + end.y) / 2);
 	}
+});
+
+test("projects an arena Bonanza delivery through the active camera viewport", () => {
+	const command = {
+		...hudDelivery(),
+		geometry: { ...hudDelivery().geometry, from: { x: 800, y: 480 } },
+	};
+	const canvas = rect(0, 0, 960, 576);
+	const slot = rect(20, 20, 28, 28);
+	const start = projectHudDelivery(command, canvas, slot, command.bornAt, {
+		x: 320,
+		y: 192,
+		width: 960,
+		height: 576,
+	});
+
+	expect(start).toMatchObject({ x: 480, y: 288 });
 });
 
 test("HUD projection skips unchanged DOM property writes", () => {

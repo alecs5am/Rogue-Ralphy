@@ -1,10 +1,11 @@
 import { ASSET_PATHS } from "./assets";
 import type { VfxCommand } from "./game/combat-effects";
 import type { CylinderSlot } from "./game/cylinder";
-import { ROOM } from "./game/room";
 import { clampResource, type GameState } from "./game/simulation";
+import { projectViewport, type Viewport } from "./render";
 
 let hearts: HTMLImageElement[] = [];
+let heartContainer: HTMLElement | undefined;
 let ammo: HTMLImageElement[] = [];
 let ammoTiles: HTMLElement[] = [];
 let ammoEchoes: Array<HTMLImageElement | undefined> = [];
@@ -50,12 +51,13 @@ export function projectHudDelivery(
 	canvasRect: DOMRect,
 	ammoSlotRect: DOMRect,
 	now: number,
+	viewport: Viewport,
 ): HudDeliveryProjection {
 	const duration = command.geometry.arrivesAt - command.bornAt;
 	const progress = duration <= 0 ? 1 : Math.max(0, Math.min(1, (now - command.bornAt) / duration));
 	const from = {
-		x: canvasRect.left + command.geometry.from.x / ROOM.width * canvasRect.width,
-		y: canvasRect.top + command.geometry.from.y / ROOM.height * canvasRect.height,
+		x: canvasRect.left + (command.geometry.from.x - viewport.x) / viewport.width * canvasRect.width,
+		y: canvasRect.top + (command.geometry.from.y - viewport.y) / viewport.height * canvasRect.height,
 	};
 	const to = {
 		x: ammoSlotRect.left + ammoSlotRect.width / 2,
@@ -84,36 +86,57 @@ export function setAttributeIfChanged(
 }
 
 const image = (src: string, alt: string): HTMLImageElement => {
-	const element = document.createElement("img");
-	element.src = src;
-	element.alt = alt;
-	return element;
+    const element = document.createElement("img");
+    element.src = src;
+    element.alt = alt;
+    return element;
 };
+
+function mountHeartSlots(container: HTMLElement, count: number): void {
+	hearts = Array.from({ length: count }, () => image(ASSET_PATHS.heartEmpty, "Empty heart"));
+	container.replaceChildren();
+	for (const icon of hearts) {
+		const slot = document.createElement("span");
+		slot.className = "heart";
+		slot.append(icon);
+		container.append(slot);
+	}
+}
+
+function ensureHeartSlots(count: number): void {
+	if (hearts.length !== count && heartContainer) mountHeartSlots(heartContainer, count);
+}
+
+function mountAmmoSlots(cylinder: HTMLElement, count: number): void {
+    ammo = Array.from({ length: count }, () => image(ASSET_PATHS.ammoEmpty, "Empty cartridge slot"));
+    ammoTiles = [];
+    ammoEchoes = Array.from({ length: count });
+    cylinder.replaceChildren();
+    for (const icon of ammo) {
+        const tile = document.createElement("span");
+        tile.className = "ammo-tile";
+        icon.className = "ammo-base";
+        tile.append(icon);
+        cylinder.append(tile);
+        ammoTiles.push(tile);
+    }
+}
+
+function ensureAmmoSlots(count: number): void {
+    if (ammo.length === count) return;
+    const cylinder = document.querySelector<HTMLElement>("#hud .ammo");
+    if (cylinder) mountAmmoSlots(cylinder, count);
+}
 
 export function mountHud(root: HTMLElement): void {
 	const health = document.createElement("div");
 	health.className = "hearts";
-	hearts = Array.from({ length: 5 }, () => image(ASSET_PATHS.heartEmpty, "Empty heart"));
-	for (const icon of hearts) {
-		const container = document.createElement("span");
-		container.className = "heart";
-		container.append(icon);
-		health.append(container);
-	}
+	heartContainer = health;
+	mountHeartSlots(health, 5);
 
-	const cylinder = document.createElement("div");
-	cylinder.className = "ammo";
-	ammo = Array.from({ length: 6 }, () => image(ASSET_PATHS.ammoEmpty, "Empty cartridge slot"));
-	ammoTiles = [];
-	ammoEchoes = Array.from({ length: 6 });
-	for (const icon of ammo) {
-		const tile = document.createElement("span");
-		tile.className = "ammo-tile";
-		icon.className = "ammo-base";
-		tile.append(icon);
-		cylinder.append(tile);
-		ammoTiles.push(tile);
-	}
+    const cylinder = document.createElement("div");
+    cylinder.className = "ammo";
+    mountAmmoSlots(cylinder, 6);
 
 	dealer = document.createElement("div");
 	dealer.className = "dealer-cut";
@@ -148,7 +171,9 @@ export function mountHud(root: HTMLElement): void {
 }
 
 export function updateHud(state: GameState, canvas?: HTMLCanvasElement): void {
-	for (const [index, icon] of hearts.entries()) {
+	ensureHeartSlots(Math.max(1, Math.ceil(state.player.maxHealth / 20)));
+    ensureAmmoSlots(state.cylinder.slots.length);
+    for (const [index, icon] of hearts.entries()) {
 		const heart = heartStateAt(state.player.health, index);
 		const [src, alt] = heart === "full"
 			? [ASSET_PATHS.heartFull, "Full heart"]
@@ -195,7 +220,13 @@ export function updateHud(state: GameState, canvas?: HTMLCanvasElement): void {
 			const slot = ammoTiles[command.geometry.slot];
 			if (!slot) continue;
 			active.add(command.id);
-			const projection = projectHudDelivery(command, canvasRect, slot.getBoundingClientRect(), state.time);
+			const projection = projectHudDelivery(
+				command,
+				canvasRect,
+				slot.getBoundingClientRect(),
+				state.time,
+				projectViewport(state),
+			);
 			const element = deliveries.get(command.id) ?? image(ASSET_PATHS.goldSoul, "Bonanza Clip ammo return");
 			element.className = `hud-delivery${projection.progress >= 1 ? " arrived" : ""}`;
 			element.style.transform = `translate(-50%, -50%) translate(${projection.x}px, ${projection.y}px)`;

@@ -219,9 +219,9 @@ function assertVfxGeometry(command: VfxCommand): void {
       }
       return;
     case "hudDelivery":
-      if (!Number.isInteger(geometry.slot) || geometry.slot < 0 || geometry.slot > 5
+      if (!Number.isSafeInteger(geometry.slot) || geometry.slot < 0
         || geometry.arrivesAt < command.bornAt || geometry.arrivesAt > command.expiresAt) {
-        throw new Error("HUD delivery requires slot zero through five and bounded arrival");
+        throw new Error("HUD delivery requires a nonnegative slot and bounded arrival");
       }
       return;
     default:
@@ -229,9 +229,15 @@ function assertVfxGeometry(command: VfxCommand): void {
   }
 }
 
+export type TargetKind =
+  | "dummy" | "chaser" | "skullRaider" | "candleShooter" | "batSpirit" | "tombBrute"
+  | "splitSlime" | "sniperEye" | "barrelBomber" | "healerLantern" | "fastBandit"
+  | "bellSummoner" | "sheriffBoss" | "destructibleCrate";
+export type EnemyStyle = "chase" | "ranged" | "zigzag" | "brute" | "splitter" | "sniper" | "bomber" | "healer" | "summoner" | "boss" | "bonus";
+
 export type CombatTargetState = Readonly<Point & {
   id: string;
-  kind: "dummy" | "chaser";
+  kind: TargetKind;
   radius: number;
   health: number;
   maxHealth: number;
@@ -239,6 +245,14 @@ export type CombatTargetState = Readonly<Point & {
   speed: number;
   frozenUntil: number;
   effects?: Partial<TargetEffects>;
+  ai?: Readonly<{
+    style: EnemyStyle;
+    nextShotAt: number;
+    phase: number;
+	attackIndex?: number;
+    dropsBonus?: boolean;
+    bonusKind?: "health" | "speed" | "damage" | "fireRate" | "reload" | "capacity";
+  }>;
 }>;
 
 export type CombatRuntime = Readonly<{
@@ -641,8 +655,8 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
       throw new Error("pending refund ordering and deadline must be nonnegative");
     }
     if (refund.effectId === "bonanzaClip.refund"
-      && (!Number.isInteger(refund.slot) || refund.slot < 0 || refund.slot > 5)) {
-      throw new Error("Bonanza pending refund requires slot zero through five");
+      && (!Number.isInteger(refund.slot) || refund.slot < 0 || refund.slot >= context.cylinder.slots.length)) {
+      throw new Error("Bonanza pending refund requires an active cylinder slot");
     }
     refundKeys.add(key);
   }
@@ -2357,7 +2371,6 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
     if (liveSegments.length + 1 > 97) throw new Error(`Wake trail point bound exceeds 97 for ${lineageId}`);
     const expiresAt = Math.max(...liveSegments.map((segment) => segment.expiresAt));
     const vfxId = `area:wake:${lineageId}`;
-    const prior = vfxCommands.find(({ id }) => id === vfxId);
     const command: VfxCommand = {
       id: vfxId,
       kind: "ectoplasmicWake.trail",
@@ -2366,7 +2379,7 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
       rootTriggerId: trail.rootTriggerId,
       lineageId,
       destination: "world",
-      bornAt: prior?.bornAt ?? liveSegments[0]!.bornAt,
+      bornAt: Math.min(...liveSegments.map((segment) => segment.bornAt)),
       expiresAt,
       geometry: Object.freeze({
         type: "polyline",

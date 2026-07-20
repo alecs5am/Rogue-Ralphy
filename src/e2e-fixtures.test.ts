@@ -112,3 +112,26 @@ test("reload fixture pauses an all-artifact manual reload at its timing midpoint
 	expect(state?.time).toBeGreaterThan(state?.cylinder.sweetStart ?? Number.POSITIVE_INFINITY);
 	expect(state?.time).toBeLessThan(state?.cylinder.sweetEnd ?? Number.NEGATIVE_INFINITY);
 });
+
+test("demo fixture exposes the boss, reward crates, and pickup feedback", async () => {
+	const fixtures = await import("./e2e-fixtures").catch(() => null);
+	expect(fixtures).not.toBeNull();
+	if (!fixtures) return;
+	const state = fixtures.materializeFixture("demo-ready");
+    expect(state?.run).toMatchObject({ mode: "run", phase: "combat", wave: 10 });
+    expect(state?.targets.find(({ kind }) => kind === "sheriffBoss")).toMatchObject({
+        health: 1_300,
+        maxHealth: 2_600,
+    });
+	expect(state?.targets.filter(({ kind }) => kind === "destructibleCrate")).toHaveLength(2);
+	expect(state?.pickupNotice?.text).toBe("+8% DAMAGE");
+});
+
+test("complete fixture exposes the final run state", async () => {
+	const fixtures = await import("./e2e-fixtures").catch(() => null);
+	expect(fixtures).not.toBeNull();
+	if (!fixtures) return;
+	const state = fixtures.materializeFixture("complete-ready");
+	expect(state?.run).toMatchObject({ phase: "complete", wave: 10, artifactsTaken: 10 });
+	expect(Object.keys(state?.artifacts ?? {})).toHaveLength(10);
+});

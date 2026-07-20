@@ -2,7 +2,7 @@ import type { DerivedWeapon, EchoCartridge } from "./weapon";
 
 export type CylinderSlot = Readonly<{ loaded: boolean; echo: EchoCartridge | null }>;
 export type CylinderState = Readonly<{
-  slots: readonly [CylinderSlot, CylinderSlot, CylinderSlot, CylinderSlot, CylinderSlot, CylinderSlot];
+  slots: readonly CylinderSlot[];
   nextSlot: number;
   emptied: readonly number[];
   reloading: boolean;
@@ -15,14 +15,14 @@ export type CylinderState = Readonly<{
   buffUntil: number;
 }>;
 
-const makeSlots = (loaded: number, echo: EchoCartridge | null = null): CylinderState["slots"] =>
-  Array.from({ length: 6 }, (_, index) => ({ loaded: index < loaded, echo: index < loaded ? echo : null })) as unknown as CylinderState["slots"];
+const makeSlots = (loaded: number, capacity = 6, echo: EchoCartridge | null = null): CylinderState["slots"] =>
+  Array.from({ length: capacity }, (_, index) => ({ loaded: index < loaded, echo: index < loaded ? echo : null }));
 
-export function createCylinder(ammo = 6): CylinderState {
+export function createCylinder(ammo = 6, capacity = 6): CylinderState {
   return {
-    slots: makeSlots(ammo),
+    slots: makeSlots(ammo, capacity),
     nextSlot: 0,
-    emptied: Array.from({ length: 6 - ammo }, (_, index) => ammo + index),
+    emptied: Array.from({ length: Math.max(0, capacity - ammo) }, (_, index) => ammo + index),
     reloading: false,
     reloadKind: null,
     startedAt: 0,
@@ -57,7 +57,7 @@ export function startReload(
 
 export function advanceReload(state: CylinderState, now: number): CylinderState {
   return state.reloading && now >= state.completesAt
-    ? { ...state, slots: makeSlots(6), nextSlot: 0, emptied: [], reloading: false, reloadKind: null }
+    ? { ...state, slots: makeSlots(state.slots.length, state.slots.length), nextSlot: 0, emptied: [], reloading: false, reloadKind: null }
     : state;
 }
 
@@ -65,7 +65,7 @@ export function attemptActiveReload(state: CylinderState, weapon: DerivedWeapon,
   if (!state.reloading || weapon.activeWindow <= 0 || !weapon.echo || now < state.sweetStart || now > state.sweetEnd) return state;
   return {
     ...state,
-    slots: makeSlots(6, weapon.echo),
+    slots: makeSlots(state.slots.length, state.slots.length, weapon.echo),
     nextSlot: 0,
     emptied: [],
     reloading: false,
@@ -78,18 +78,18 @@ export function attemptActiveReload(state: CylinderState, weapon: DerivedWeapon,
 export type ConsumedRound = Readonly<{ slot: number; echo: EchoCartridge | null; ammoBefore: number }>;
 
 export function consumeRound(state: CylinderState): Readonly<{ state: CylinderState; round: ConsumedRound | null }> {
-  const offset = Array.from({ length: 6 }, (_, index) => index)
-    .find((index) => state.slots[(state.nextSlot + index) % 6]?.loaded);
+  const offset = Array.from({ length: state.slots.length }, (_, index) => index)
+    .find((index) => state.slots[(state.nextSlot + index) % state.slots.length]?.loaded);
   if (offset === undefined) return { state, round: null };
-  const slot = (state.nextSlot + offset) % 6;
+  const slot = (state.nextSlot + offset) % state.slots.length;
   const consumed = state.slots[slot]!;
   const slots = state.slots.slice() as CylinderSlot[];
   slots[slot] = { loaded: false, echo: null };
   return {
     state: {
       ...state,
-      slots: slots as unknown as CylinderState["slots"],
-      nextSlot: (slot + 1) % 6,
+      slots,
+      nextSlot: (slot + 1) % state.slots.length,
       emptied: [...state.emptied, slot],
     },
     round: { slot, echo: consumed.echo, ammoBefore: ammoCount(state) },
@@ -104,9 +104,9 @@ export function refundRound(
 ): CylinderState {
   void effectId;
   void now;
-  if (ammoCount(state) === 6) return state;
+  if (ammoCount(state) === state.slots.length) return state;
   if (frozenSlot !== undefined && (!Number.isInteger(frozenSlot) || frozenSlot < 0 || frozenSlot >= state.slots.length)) {
-    throw new Error("frozen refund slot must be an integer from zero through five");
+    throw new Error("frozen refund slot must be inside the cylinder");
   }
   const slot = frozenSlot ?? state.emptied.at(-1);
   if (slot === undefined) return state;
@@ -116,7 +116,7 @@ export function refundRound(
   slots[slot] = { loaded: true, echo: null };
   return {
     ...state,
-    slots: slots as unknown as CylinderState["slots"],
+    slots,
     nextSlot: wasEmpty ? slot : state.nextSlot,
     emptied: state.emptied.filter((emptySlot) => emptySlot !== slot),
     reloading: false,

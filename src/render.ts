@@ -5,7 +5,7 @@ import {
 	type RalphyPose,
 } from "./game/presentation";
 import type { GameState, Point } from "./game/simulation";
-import { ROOM_PROPS } from "./game/room";
+import type { TargetKind } from "./game/combat-effects";
 import {
 	assertNever,
 	projectEffectDraws,
@@ -15,6 +15,47 @@ import {
 
 type RenderOptions = { reducedMotion: boolean };
 const round = (value: number) => Math.round(value);
+const SCREEN = { width: 960, height: 576 } as const;
+const DEMO_CELL = 1254 / 4;
+const DEMO_SPRITES = {
+    skullRaider: [0, 0],
+    candleShooter: [1, 0],
+    batSpirit: [2, 0],
+    tombBrute: [3, 0],
+    splitSlime: [0, 1],
+    sniperEye: [1, 1],
+    barrelBomber: [2, 1],
+    healerLantern: [3, 1],
+    fastBandit: [0, 2],
+    bellSummoner: [1, 2],
+    sheriffBoss: [2, 2],
+    health: [0, 3],
+    fireRate: [1, 3],
+    capacity: [1, 3],
+    damage: [2, 3],
+    reload: [2, 3],
+    speed: [2, 3],
+	destructibleCrate: [2, 3],
+    stoneBlock: [3, 3],
+} as const satisfies Record<string, readonly [number, number]>;
+const PICKUP_LABELS = {
+	health: "+HP",
+	speed: "+SPEED",
+	damage: "+DAMAGE",
+	fireRate: "+FIRE RATE",
+	reload: "+RELOAD",
+	capacity: "+CHAMBER",
+} as const;
+
+export type Viewport = Readonly<{ x: number; y: number; width: number; height: number }>;
+export function projectViewport(state: GameState): Viewport {
+    return {
+        x: Math.max(0, Math.min(state.room.width - SCREEN.width, state.player.x - SCREEN.width / 2)),
+        y: Math.max(0, Math.min(state.room.height - SCREEN.height, state.player.y - SCREEN.height / 2)),
+        width: SCREEN.width,
+        height: SCREEN.height,
+    };
+}
 
 function imageAt(
 	context: CanvasRenderingContext2D,
@@ -52,6 +93,27 @@ function centeredImage(
 	);
 }
 
+function atlasCell(
+    context: CanvasRenderingContext2D,
+    assets: LoadedAssets,
+    key: keyof typeof DEMO_SPRITES,
+    point: Point,
+    size: number,
+): void {
+    const [column, row] = DEMO_SPRITES[key];
+    context.drawImage(
+        assets.arenaSprites,
+        Math.floor(column * DEMO_CELL),
+        Math.floor(row * DEMO_CELL),
+        Math.floor(DEMO_CELL),
+        Math.floor(DEMO_CELL),
+        round(point.x - size / 2),
+        round(point.y - size / 2),
+        round(size),
+        round(size),
+    );
+}
+
 function drawRalphyFrame(
 	context: CanvasRenderingContext2D,
 	assets: LoadedAssets,
@@ -84,13 +146,34 @@ function drawTargets(
 	assets: LoadedAssets,
 ): void {
 	for (const target of state.targets) {
-		centeredImage(
-			context,
-			assets,
-			target.kind,
-			target,
-			target.kind === "dummy" ? 66 : 58,
-		);
+        if (target.kind === "dummy" || target.kind === "chaser")
+            centeredImage(context, assets, target.kind, target, target.kind === "dummy" ? 66 : 58);
+		else if (target.kind === "destructibleCrate")
+			centeredImage(context, assets, "crate", target, 62);
+        else atlasCell(context, assets, target.kind as keyof typeof DEMO_SPRITES, target, target.kind === "sheriffBoss" ? 112 : 62);
+		if (target.ai?.dropsBonus) {
+			const pulse = 3 + Math.sin(state.time * 8 + target.ai.phase) * 2;
+			context.strokeStyle = "#f7d774";
+			context.lineWidth = 3;
+			context.beginPath();
+			context.arc(round(target.x), round(target.y), target.radius + 8 + pulse, 0, Math.PI * 2);
+			context.stroke();
+			context.fillStyle = "#f7d774";
+			context.font = "bold 11px ui-monospace, monospace";
+			context.textAlign = "center";
+			context.fillText(target.kind === "destructibleCrate" ? "REWARD" : "BONUS", round(target.x), round(target.y - target.radius - 15));
+			context.textAlign = "start";
+		}
+		if (target.kind === "sheriffBoss" && target.ai) {
+			const windup = target.ai.nextShotAt - state.time;
+			if (windup >= 0 && windup < 0.35) {
+				context.strokeStyle = windup < 0.12 ? "#fff3b0" : "#ff6b3d";
+				context.lineWidth = 5;
+				context.beginPath();
+				context.arc(round(target.x), round(target.y), target.radius + 18 + windup * 30, 0, Math.PI * 2);
+				context.stroke();
+			}
+		}
 		if (target.frozenUntil > state.time) {
 			context.strokeStyle = "#8fe9ff";
 			context.lineWidth = 3;
@@ -112,7 +195,7 @@ function drawTargets(
 				32,
 			);
 		}
-		if (target.kind === "chaser") {
+		if (target.kind !== "dummy") {
 			context.fillStyle = "#0a0a0b";
 			context.fillRect(
 				round(target.x - 20),
@@ -120,7 +203,7 @@ function drawTargets(
 				40,
 				5,
 			);
-			context.fillStyle = "#ffa630";
+			context.fillStyle = target.kind === "destructibleCrate" ? "#f7d774" : "#ffa630";
 			context.fillRect(
 				round(target.x - 19),
 				round(target.y + target.radius + 9),
@@ -129,6 +212,34 @@ function drawTargets(
 			);
 		}
 	}
+}
+
+function drawPickupsAndHazards(context: CanvasRenderingContext2D, state: GameState, assets: LoadedAssets): void {
+	for (const pickup of state.pickups) {
+		const pulse = 3 + Math.sin(state.time * 9 + pickup.x) * 2;
+		context.fillStyle = "#f7d77433";
+		context.strokeStyle = "#f7d774";
+		context.lineWidth = 3;
+		context.beginPath();
+		context.arc(round(pickup.x), round(pickup.y), 25 + pulse, 0, Math.PI * 2);
+		context.fill();
+		context.stroke();
+		atlasCell(context, assets, pickup.kind, pickup, 50);
+		context.fillStyle = "#fff3b0";
+		context.font = "bold 10px ui-monospace, monospace";
+		context.textAlign = "center";
+		context.fillText(PICKUP_LABELS[pickup.kind], round(pickup.x), round(pickup.y - 31));
+	}
+	context.textAlign = "start";
+	context.lineWidth = 2;
+    for (const hazard of state.hazards) {
+		context.fillStyle = hazard.boss ? "#9d4edd" : "#ff6b3d";
+		context.strokeStyle = hazard.boss ? "#fff3b0" : "#f7d774";
+        context.beginPath();
+        context.arc(round(hazard.x), round(hazard.y), hazard.radius, 0, Math.PI * 2);
+        context.fill();
+        context.stroke();
+    }
 }
 
 function drawBaseProjectiles(
@@ -294,33 +405,70 @@ function drawAim(context: CanvasRenderingContext2D, state: GameState): void {
 	context.stroke();
 }
 
+function drawMinimap(context: CanvasRenderingContext2D, state: GameState, viewport: Viewport): void {
+    if (!state.run) return;
+    const width = 150;
+    const height = 90;
+    const x = SCREEN.width - width - 18;
+    const y = 18;
+    const sx = width / state.room.width;
+    const sy = height / state.room.height;
+    context.save();
+    context.globalAlpha = 0.86;
+    context.fillStyle = "#0a0a0b";
+    context.fillRect(x - 4, y - 4, width + 8, height + 8);
+    context.strokeStyle = "#f7d774";
+    context.strokeRect(x - 4, y - 4, width + 8, height + 8);
+    context.fillStyle = "#2b221c";
+    context.fillRect(x, y, width, height);
+    context.strokeStyle = "#9ca3af";
+    context.strokeRect(x + viewport.x * sx, y + viewport.y * sy, viewport.width * sx, viewport.height * sy);
+    context.fillStyle = "#e7f7ff";
+    context.fillRect(x + state.player.x * sx - 2, y + state.player.y * sy - 2, 4, 4);
+    context.fillStyle = "#ff6b3d";
+	for (const target of state.targets) {
+		if (target.kind === "destructibleCrate") {
+			context.fillStyle = "#c38b45";
+			context.fillRect(x + target.x * sx - 2, y + target.y * sy - 2, 4, 4);
+		} else {
+			context.fillStyle = target.ai?.dropsBonus ? "#f7d774" : "#ff6b3d";
+			context.fillRect(x + target.x * sx - 1.5, y + target.y * sy - 1.5, 3, 3);
+		}
+	}
+    context.fillStyle = "#f7d774";
+	for (const pickup of state.pickups) context.fillRect(x + pickup.x * sx - 2, y + pickup.y * sy - 2, 4, 4);
+    context.restore();
+}
+
 export function renderGame(
 	context: CanvasRenderingContext2D,
 	state: GameState,
 	assets: LoadedAssets,
 	options: RenderOptions,
 ): void {
-	context.imageSmoothingEnabled = false;
-	context.clearRect(0, 0, state.room.width, state.room.height);
-	context.drawImage(assets.room, 0, 0, state.room.width, state.room.height);
-	for (const prop of ROOM_PROPS)
-		centeredImage(
-			context,
-			assets,
-			prop.kind,
-			{ x: prop.x, y: prop.y },
-			prop.size,
-		);
-	const effectDraws = projectEffectDraws(state, options.reducedMotion);
-	drawEffectLayer(context, assets, effectDraws, "areas-trails");
-	drawTargets(context, state, assets);
-	drawEffectLayer(context, assets, effectDraws, "target-cues");
+    context.imageSmoothingEnabled = false;
+    const viewport = projectViewport(state);
+    context.clearRect(0, 0, SCREEN.width, SCREEN.height);
+    context.save();
+    context.translate(-viewport.x, -viewport.y);
+    context.drawImage(assets.room, 0, 0, state.room.width, state.room.height);
+    for (const prop of state.roomProps) {
+        if (prop.kind === "stoneBlock") atlasCell(context, assets, "stoneBlock", prop, prop.size);
+        else centeredImage(context, assets, prop.kind, { x: prop.x, y: prop.y }, prop.size);
+    }
+    const effectDraws = projectEffectDraws(state, options.reducedMotion);
+    drawEffectLayer(context, assets, effectDraws, "areas-trails");
+    drawTargets(context, state, assets);
+    drawPickupsAndHazards(context, state, assets);
+    drawEffectLayer(context, assets, effectDraws, "target-cues");
 	drawEffectLayer(context, assets, effectDraws, "links");
 	drawEffectLayer(context, assets, effectDraws, "projectiles");
 	drawBaseProjectiles(context, state, assets);
 	drawEffectLayer(context, assets, effectDraws, "emission-cues");
 	drawEffectLayer(context, assets, effectDraws, "satellites-orbitals-decoy");
-	drawPlayer(context, state, assets, options);
-	drawDamage(context, state, assets, options.reducedMotion);
-	drawAim(context, state);
+    drawPlayer(context, state, assets, options);
+    drawDamage(context, state, assets, options.reducedMotion);
+    drawAim(context, state);
+    context.restore();
+    drawMinimap(context, state, viewport);
 }

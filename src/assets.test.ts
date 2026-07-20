@@ -8,6 +8,7 @@ import {
 	NEW_ARTIFACT_VFX,
 	REQUIRED_ASSET_KEYS,
 	RETAINED_ARTIFACT_VFX,
+	resolveAssetPath,
 } from "./assets";
 import { ARTIFACT_CATALOG } from "./game/artifacts";
 
@@ -45,6 +46,15 @@ test("requires the animated Ralphy combat pack and no static predecessors", asyn
 	)) {
 		expect(await Bun.file(`public${path}`).exists()).toBe(true);
 	}
+});
+
+test("prefixes public assets with the GitHub Pages project base", () => {
+	expect(resolveAssetPath("/assets/generated/room.png", "/Rogue-Ralphy/")).toBe(
+		"/Rogue-Ralphy/assets/generated/room.png",
+	);
+	expect(resolveAssetPath("/assets/generated/room.png", "/")).toBe(
+		"/assets/generated/room.png",
+	);
 });
 
 test("all artifact icons are unique required PNG assets", () => {

@@ -5,8 +5,10 @@ import { ARTIFACT_CATALOG } from "../src/game/artifacts";
 const byId = new Map(ARTIFACT_CATALOG.map((artifact) => [artifact.id, artifact]));
 
 async function openGrid(page: import("@playwright/test").Page): Promise<void> {
-	await page.goto("/");
-	await expect(page.locator(".artifact-tile")).toHaveCount(36);
+    await page.goto("/");
+    if (await page.locator("#main-menu").isVisible())
+        await page.getByRole("button", { name: "Test room" }).click();
+    await expect(page.locator(".artifact-tile")).toHaveCount(36);
 }
 
 test("artifact grid is a direct accessible catalog with unique loaded icons", async ({

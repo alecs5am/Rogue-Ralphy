@@ -1,9 +1,10 @@
 import { createMetrics, recordDamage, recordKill, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
+import { ARTIFACT_IDS } from "./artifacts";
 import { advanceReload, ammoCount, attemptActiveReload, consumeRound, createCylinder, fireRateBuffAt, startReload, type CylinderState } from "./cylinder";
 import { compileCombatBuild, type CombatBuild } from "./combat-build";
 import { deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon } from "./weapon";
 import { type PendingEffectToken, type ProjectileState, type TeslaLink } from "./projectiles";
-import { ROOM, ROOM_PROPS, TILE_SIZE, type Point } from "./room";
+import { ARENA_PROPS, ARENA_ROOM, ROOM, ROOM_PROPS, TILE_SIZE, type Point, type RoomProp } from "./room";
 import { expandTrigger, type LocketState, type PlayerSatelliteState, type ScheduledProjectile } from "./trigger";
 import {
   resolveCombatPhases,
@@ -11,6 +12,7 @@ import {
   resolveRootCleanupPhase,
   type AreaState,
   type CombatTargetState,
+  type EnemyStyle,
   type KillContext,
   type PendingEmission,
   type VfxCommand,
@@ -62,15 +64,33 @@ export type Resources = { coins: number; bombs: number; keys: number };
 export const clampResource = (value: number): number => Math.max(0, Math.min(99, Math.trunc(value)));
 
 export type TargetState = CombatTargetState;
+export type PickupKind = "health" | "speed" | "damage" | "fireRate" | "reload" | "capacity";
+export type PickupState = Point & { id: string; kind: PickupKind; radius: number };
+export type PickupNotice = Readonly<{ text: string; expiresAt: number }>;
+export type HazardState = Point & { id: string; vx: number; vy: number; radius: number; damage: number; expiresAt: number; boss?: boolean };
+export type StatBonuses = { damage: number; fireRate: number; reload: number; capacity: number };
+export type RunState = Readonly<{
+  mode: "run";
+  phase: "choice" | "combat" | "complete";
+  wave: number;
+  artifactsTaken: number;
+  maxArtifacts: 10;
+  choices: readonly ArtifactId[];
+  bonusDrops: number;
+}>;
 
 export type { ProjectileState } from "./projectiles";
 
 export type GameState = {
   room: { width: number; height: number; minX: number; maxX: number; minY: number; maxY: number };
+  roomProps: readonly RoomProp[];
   player: PlayerState; aim: Point; artifacts: ArtifactLoadout; build: CombatBuild; weapon: DerivedWeapon;
+  statBonuses: StatBonuses;
   resources: Resources;
   cylinder: CylinderState; scheduledProjectiles: ScheduledProjectile[]; pendingEmissions: PendingEmission[];
   projectiles: ProjectileState[]; targets: TargetState[]; areas: AreaState[]; vfxCommands: VfxCommand[];
+  pickups: PickupState[]; hazards: HazardState[];
+	pickupNotice?: PickupNotice;
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
   satellites: PlayerSatelliteState[];
   wakeTrails: Record<string, WakeTrailState>; wakeCooldowns: Record<string, number>;
@@ -93,6 +113,7 @@ export type GameState = {
   locketOrbitals: ProtectiveOrbital[];
   decoy?: DecoyState;
   lastShotAt: number | null; lastHurtAt: number | null; diedAt: number | null;
+  run?: RunState;
 };
 
 const tileCenter = (column: number, row: number): Point => ({
@@ -123,6 +144,24 @@ const EDGE_POINTS: Point[] = [
   tileCenter(12, 3), tileCenter(11, 6), tileCenter(8, 6), tileCenter(4, 6),
   tileCenter(1, 6), tileCenter(0, 3),
 ];
+const ENEMY_KINDS = [
+  "skullRaider", "candleShooter", "batSpirit", "tombBrute", "splitSlime",
+  "sniperEye", "barrelBomber", "healerLantern", "fastBandit", "bellSummoner",
+] as const satisfies readonly TargetState["kind"][];
+const PICKUP_KINDS = ["health", "speed", "damage", "fireRate", "reload", "capacity"] as const;
+const PICKUP_NOTICES: Record<PickupKind, string> = {
+  health: "+1 HEART · +1 COIN",
+  speed: "+12 MOVE SPEED",
+  damage: "+8% DAMAGE",
+  fireRate: "+8% FIRE RATE",
+  reload: "+10% RELOAD",
+  capacity: "+1 CHAMBER",
+};
+const FINAL_WAVE = 10;
+const CRATE_POINTS: readonly Point[] = [
+  { x: 650, y: 330 },
+  { x: 950, y: 630 },
+];
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const exceeds = (value: number, limit: number): boolean =>
@@ -144,25 +183,70 @@ function moveVelocityToward(
 }
 const distanceSquared = (a: Point, b: Point) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
 const overlaps = (a: Point & { radius: number }, b: Point & { radius: number }) => distanceSquared(a, b) < (a.radius + b.radius) ** 2;
+const isEnemy = (target: TargetState): boolean => !target.immortal && target.kind !== "destructibleCrate";
+const isWaveObjective = (target: TargetState): boolean =>
+  isEnemy(target) || (target.kind === "destructibleCrate" && target.ai?.dropsBonus === true);
+
+function applyStatBonuses(weapon: DerivedWeapon, bonuses: StatBonuses): DerivedWeapon {
+  const capacity = weapon.capacity + bonuses.capacity;
+  const damage = weapon.damage * (1 + bonuses.damage * 0.08);
+  const fireRate = weapon.fireRate * (1 + bonuses.fireRate * 0.08);
+  const reloadDuration = weapon.reloadDuration / (1 + bonuses.reload * 0.1);
+  const projectileBase = Object.freeze({ ...weapon.projectileBase, damage });
+  return { ...weapon, capacity, damage, fireRate, reloadDuration, projectileBase };
+}
+
+function ensureCylinderCapacity(cylinder: CylinderState, capacity: number): CylinderState {
+  if (cylinder.slots.length === capacity) return cylinder;
+  const slots = cylinder.slots.slice(0, capacity) as { loaded: boolean; echo: null }[];
+  while (slots.length < capacity) slots.push({ loaded: true, echo: null });
+  return {
+    ...cylinder,
+    slots,
+    nextSlot: Math.min(cylinder.nextSlot, Math.max(0, capacity - 1)),
+    emptied: cylinder.emptied.filter((slot) => slot < capacity),
+  };
+}
+
+function arenaPoint(state: GameState, index: number): Point {
+  const angle = (index * 2.399963 + state.rng() * 0.7) % (Math.PI * 2);
+  const radius = Math.min(state.room.width, state.room.height) * (0.28 + state.rng() * 0.18);
+  return {
+    x: clamp(state.player.x + Math.cos(angle) * radius, state.room.minX + 40, state.room.maxX - 40),
+    y: clamp(state.player.y + Math.sin(angle) * radius, state.room.minY + 40, state.room.maxY - 40),
+  };
+}
+
+function artifactChoices(state: GameState): readonly ArtifactId[] {
+  const available = ARTIFACT_IDS.filter((id) => state.artifacts[id] !== true);
+  if (available.length <= 2) return available;
+  const offset = Math.floor(state.rng() * available.length) % available.length;
+  return [available[offset]!, available[(offset + 1) % available.length]!];
+}
 
 export function createGame(rng: () => number = Math.random): GameState {
   const artifacts: ArtifactLoadout = {};
   const build = compileCombatBuild(artifacts);
-  const weapon = deriveWeapon(build, 0);
+  const statBonuses = { damage: 0, fireRate: 0, reload: 0, capacity: 0 };
+  const weapon = applyStatBonuses(deriveWeapon(build, 0), statBonuses);
   const metrics = createMetrics();
   return {
     room: ROOM,
+    roomProps: ROOM_PROPS,
     player: { ...PLAYER },
     aim: { x: 900, y: 270 },
     artifacts,
     build,
+    statBonuses,
     resources: { coins: 0, bombs: 0, keys: 0 },
     weapon,
-    cylinder: createCylinder(weapon.capacity),
+    cylinder: createCylinder(weapon.capacity, weapon.capacity),
     scheduledProjectiles: [],
     pendingEmissions: [],
     projectiles: [],
     targets: [],
+    pickups: [],
+    hazards: [],
     areas: [],
     vfxCommands: [],
     teslaLinks: [],
@@ -202,6 +286,21 @@ export function createGame(rng: () => number = Math.random): GameState {
   };
 }
 
+export function createRunGame(rng: () => number = Math.random): GameState {
+  const base = createGame(rng);
+  const player = { ...base.player, x: ARENA_ROOM.width / 2, y: ARENA_ROOM.height / 2 };
+  const runBase: GameState = {
+    ...base,
+    room: ARENA_ROOM,
+    roomProps: ARENA_PROPS,
+    player,
+    aim: { x: player.x + 220, y: player.y },
+    resources: { coins: 0, bombs: 0, keys: 0 },
+    run: { mode: "run", phase: "choice", wave: 1, artifactsTaken: 0, maxArtifacts: 10, choices: [], bonusDrops: 0 },
+  };
+  return { ...runBase, run: { ...runBase.run!, choices: artifactChoices(runBase) } };
+}
+
 export function setArtifact(state: GameState, id: ArtifactId, enabled: boolean): GameState {
   if (typeof enabled !== "boolean") throw new Error("artifact enabled must be boolean");
   const artifacts = { ...state.artifacts };
@@ -217,17 +316,179 @@ export function setArtifactLoadout(state: GameState, loadout: ArtifactLoadout): 
     ...state,
     artifacts,
     build,
-    weapon: deriveWeapon(build, fireRateBuffAt(state.cylinder, state.time)),
+    weapon: applyStatBonuses(deriveWeapon(build, fireRateBuffAt(state.cylinder, state.time)), state.statBonuses),
     stillwater: artifacts.stillwater ? state.stillwater : { progress: 0, charged: false },
     locketState: artifacts.lastGaspLocket ? state.locketState : { armed: false, cadence: 0 },
   };
+}
+
+function enemyProfile(kind: TargetState["kind"], wave: number): Readonly<{
+  style: EnemyStyle;
+  radius: number;
+  health: number;
+  speed: number;
+}> {
+  const scale = 1 + Math.max(0, wave - 1) * 0.18;
+  switch (kind) {
+    case "candleShooter": return { style: "ranged", radius: 18, health: 52 * scale, speed: 62 };
+    case "batSpirit": return { style: "zigzag", radius: 16, health: 46 * scale, speed: 128 };
+    case "tombBrute": return { style: "brute", radius: 24, health: 145 * scale, speed: 48 };
+    case "splitSlime": return { style: "splitter", radius: 20, health: 88 * scale, speed: 72 };
+    case "sniperEye": return { style: "sniper", radius: 17, health: 62 * scale, speed: 46 };
+    case "barrelBomber": return { style: "bomber", radius: 21, health: 76 * scale, speed: 92 };
+    case "healerLantern": return { style: "healer", radius: 18, health: 68 * scale, speed: 68 };
+    case "fastBandit": return { style: "bonus", radius: 16, health: 42 * scale, speed: 152 };
+    case "bellSummoner": return { style: "summoner", radius: 19, health: 82 * scale, speed: 58 };
+    case "sheriffBoss": return { style: "boss", radius: 42, health: 2_600, speed: 70 };
+    default: return { style: "chase", radius: 18, health: 64 * scale, speed: 92 };
+  }
+}
+
+function spawnRunTarget(state: GameState, kind: TargetState["kind"], position: Point, dropsBonus = false): GameState {
+  const profile = enemyProfile(kind, state.run?.wave ?? 1);
+  if (!canSpawn(state, position, profile.radius)) return state;
+  const target: TargetState = {
+    ...position,
+    id: `${kind}-${state.nextId}`,
+    kind,
+    radius: profile.radius,
+    health: profile.health,
+    maxHealth: profile.health,
+    immortal: false,
+    speed: profile.speed,
+    frozenUntil: 0,
+    effects: createTargetEffects(),
+    ai: {
+      style: profile.style,
+      nextShotAt: state.time + 0.8 + state.rng(),
+      phase: state.rng() * Math.PI * 2,
+		attackIndex: 0,
+      ...(dropsBonus ? { dropsBonus: true, bonusKind: PICKUP_KINDS[Math.floor(state.rng() * PICKUP_KINDS.length) % PICKUP_KINDS.length] } : {}),
+    },
+  };
+  return { ...state, targets: [...state.targets, target], nextId: state.nextId + 1 };
+}
+
+function spawnDestructibleCrate(state: GameState, position: Point, bonusKind: PickupKind): GameState {
+  if (!canSpawn(state, position, 24)) return state;
+  const target: TargetState = {
+    ...position,
+    id: `destructible-crate-${state.nextId}`,
+    kind: "destructibleCrate",
+    radius: 24,
+    health: 70,
+    maxHealth: 70,
+    immortal: false,
+    speed: 0,
+    frozenUntil: 0,
+    effects: createTargetEffects(),
+	ai: { style: "bonus", nextShotAt: Number.MAX_SAFE_INTEGER, phase: 0, dropsBonus: true, bonusKind },
+  };
+  return { ...state, targets: [...state.targets, target], nextId: state.nextId + 1 };
+}
+
+function spawnRunTargetWithRetries(
+  state: GameState,
+  kind: TargetState["kind"],
+  index: number,
+  dropsBonus: boolean,
+): GameState {
+  for (let attempt = 0; attempt < (dropsBonus ? 8 : 1); attempt += 1) {
+    const spawned = spawnRunTarget(state, kind, arenaPoint(state, index + attempt), dropsBonus);
+    if (spawned !== state) return spawned;
+  }
+  return state;
+}
+
+function spawnRunWave(state: GameState): GameState {
+  if (!state.run) return state;
+  let next: GameState = { ...state, targets: [], projectiles: [], hazards: [], pickups: [], pendingEmissions: [], scheduledProjectiles: [] };
+	for (let index = 0; index < CRATE_POINTS.length; index += 1) {
+		const kind = PICKUP_KINDS[(state.run.wave + index) % PICKUP_KINDS.length]!;
+		next = spawnDestructibleCrate(next, CRATE_POINTS[index]!, kind);
+	}
+  if (state.run.wave >= FINAL_WAVE) {
+    next = spawnRunTarget(next, "sheriffBoss", { x: state.room.maxX - 180, y: state.room.height / 2 }, false);
+    for (let index = 0; index < 4; index += 1) next = spawnRunTargetWithRetries(next, ENEMY_KINDS[index]!, index, index === 2);
+  } else {
+    const count = Math.min(8, 3 + state.run.wave);
+    for (let index = 0; index < count; index += 1) {
+      const kind = index === count - 1
+		? "fastBandit"
+		: ENEMY_KINDS[(index + state.run.wave - 1) % ENEMY_KINDS.length]!;
+      next = spawnRunTargetWithRetries(next, kind, index, index === count - 1);
+    }
+  }
+  return next;
+}
+
+export function chooseRunArtifact(state: GameState, id?: ArtifactId): GameState {
+  if (!state.run || state.run.phase !== "choice") return state;
+  const choices = state.run.choices.length > 0 ? state.run.choices : artifactChoices(state);
+  const selected = choices.includes(id as ArtifactId) ? id : choices[0];
+  const canTake = selected !== undefined && state.run.artifactsTaken < state.run.maxArtifacts && state.artifacts[selected] !== true;
+  const withArtifact = canTake && selected ? setArtifact(state, selected, true) : state;
+  return spawnRunWave({
+    ...withArtifact,
+    run: {
+      ...state.run,
+      phase: "combat",
+      artifactsTaken: state.run.artifactsTaken + Number(canTake),
+      choices: [],
+    },
+  });
+}
+
+export function collectPickup(state: GameState, id: string): GameState {
+  const pickup = state.pickups.find((candidate) => candidate.id === id);
+  if (!pickup) return state;
+  const pickups = state.pickups.filter((candidate) => candidate.id !== id);
+  let player = state.player;
+  let statBonuses = state.statBonuses;
+  let resources = state.resources;
+  switch (pickup.kind) {
+    case "health":
+		player = { ...player, maxHealth: player.maxHealth + 20, health: player.health + 20 };
+      resources = { ...resources, coins: clampResource(resources.coins + 1) };
+      break;
+    case "speed":
+      player = { ...player, speed: player.speed + 12 };
+      break;
+    case "damage":
+      statBonuses = { ...statBonuses, damage: statBonuses.damage + 1 };
+      break;
+    case "fireRate":
+      statBonuses = { ...statBonuses, fireRate: statBonuses.fireRate + 1 };
+      break;
+    case "reload":
+      statBonuses = { ...statBonuses, reload: statBonuses.reload + 1 };
+      break;
+    case "capacity":
+      statBonuses = { ...statBonuses, capacity: statBonuses.capacity + 1 };
+      break;
+  }
+  const weapon = applyStatBonuses(deriveWeapon(state.build, fireRateBuffAt(state.cylinder, state.time)), statBonuses);
+	const run = state.run ? { ...state.run, bonusDrops: state.run.bonusDrops + 1 } : undefined;
+  return {
+		...state,
+		pickups,
+		player,
+		statBonuses,
+		resources,
+		weapon,
+		cylinder: ensureCylinderCapacity(state.cylinder, weapon.capacity),
+		pickupNotice: { text: PICKUP_NOTICES[pickup.kind], expiresAt: state.time + 1.4 },
+		...(run ? { run } : {}),
+	};
 }
 
 function canSpawn(state: GameState, point: Point, radius: number): boolean {
   if (point.x - radius < state.room.minX || point.x + radius > state.room.maxX ||
       point.y - radius < state.room.minY || point.y + radius > state.room.maxY) return false;
   const body = { ...point, radius };
-  return !overlaps(body, state.player) && state.targets.every((target) => !overlaps(body, target));
+  return !overlaps(body, state.player)
+    && state.targets.every((target) => !overlaps(body, target))
+    && state.roomProps.every((prop) => !overlaps(body, { ...prop, radius: prop.collisionRadius }));
 }
 
 export function spawnDummy(state: GameState, position?: Point): GameState {
@@ -279,6 +540,8 @@ export function clearTargets(state: GameState): GameState {
   return {
     ...state,
     targets: [],
+    hazards: [],
+    pickups: [],
     pendingEmissions: [],
     areas: [],
     vfxCommands: state.vfxCommands.filter(({ kind, expiresAt }) => kind === "bonanza.delivery" && expiresAt > state.time),
@@ -320,6 +583,124 @@ export function clearTargets(state: GameState): GameState {
 }
 export const resetLab = (state: GameState): GameState => createGame(state.rng);
 
+function steerTarget(target: TargetState, player: PlayerState, dt: number, now: number): TargetState {
+  if (!target.ai || target.kind === "destructibleCrate" || now < target.frozenUntil) return target;
+  const dx = player.x - target.x;
+  const dy = player.y - target.y;
+  const distance = Math.hypot(dx, dy) || 1;
+  let nx = dx / distance;
+  let ny = dy / distance;
+  if (target.ai.style === "ranged" || target.ai.style === "sniper" || target.ai.style === "healer") {
+    const preferred = target.ai.style === "sniper" ? 420 : 300;
+    const direction = distance < preferred ? -1 : 0.45;
+    nx *= direction;
+    ny *= direction;
+  } else if (target.ai.style === "zigzag" || target.ai.style === "bomber") {
+    const wave = Math.sin(now * 5 + target.ai.phase) * 0.85;
+    const px = -ny;
+    const py = nx;
+    nx = nx * 0.75 + px * wave;
+    ny = ny * 0.75 + py * wave;
+	} else if (target.ai.style === "boss") {
+		const healthRatio = target.health / target.maxHealth;
+		const strafe = Math.sin(now * (healthRatio < 0.34 ? 3.8 : 2.5) + target.ai.phase);
+		const px = -ny;
+		const py = nx;
+		nx = nx * 0.72 + px * strafe * 0.55;
+		ny = ny * 0.72 + py * strafe * 0.55;
+  }
+  const length = Math.hypot(nx, ny) || 1;
+	const aggression = target.ai.style === "boss"
+		? target.health / target.maxHealth < 0.34 ? 1.7 : target.health / target.maxHealth < 0.67 ? 1.3 : 1
+		: 1;
+  return {
+    ...target,
+		x: clamp(target.x + nx / length * target.speed * aggression * dt, ROOM.minX + target.radius, ARENA_ROOM.maxX - target.radius),
+		y: clamp(target.y + ny / length * target.speed * aggression * dt, ROOM.minY + target.radius, ARENA_ROOM.maxY - target.radius),
+  };
+}
+
+function fireEnemyHazards(state: GameState, target: TargetState, now: number): Readonly<{ target: TargetState; hazards: HazardState[]; nextId: number }> {
+	if (!target.ai || !["ranged", "sniper", "bomber", "boss"].includes(target.ai.style)) {
+		return { target, hazards: [], nextId: state.nextId };
+  }
+  const dx = state.player.x - target.x;
+  const dy = state.player.y - target.y;
+	if (target.ai.style === "boss" && (Math.abs(dx) > 440 || Math.abs(dy) > 250)) {
+		return {
+			target: { ...target, ai: { ...target.ai, nextShotAt: Math.max(target.ai.nextShotAt, now + 0.45) } },
+			hazards: [],
+			nextId: state.nextId,
+		};
+	}
+	if (now < target.ai.nextShotAt) return { target, hazards: [], nextId: state.nextId };
+	const aimedAngle = Math.atan2(dy, dx);
+	const healthRatio = target.health / target.maxHealth;
+	const attackIndex = target.ai.attackIndex ?? 0;
+	const bossCount = healthRatio > 0.67
+		? 3
+		: healthRatio > 0.34
+			? attackIndex % 2 === 0 ? 8 : 5
+			: attackIndex % 2 === 0 ? 12 : 7;
+	const count = target.ai.style === "boss" ? bossCount : 1;
+	const speed = target.ai.style === "sniper" ? 310 : target.ai.style === "boss" ? healthRatio > 0.67 ? 250 : 205 : 210;
+	const cooldown = target.ai.style === "sniper"
+		? 2.2
+		: target.ai.style === "boss"
+			? healthRatio > 0.67 ? 1.15 : healthRatio > 0.34 ? 0.9 : 0.62
+			: 1.4;
+	const hazards: HazardState[] = [];
+	for (let index = 0; index < count; index += 1) {
+		const radial = count === 8 || count === 12;
+		const angle = target.ai.style !== "boss"
+			? aimedAngle
+			: radial
+				? target.ai.phase + index * Math.PI * 2 / count
+				: aimedAngle + (index - (count - 1) / 2) * (count === 3 ? 0.24 : 0.16);
+		hazards.push({
+			id: `hazard-${state.nextId + index}`,
+			x: target.x,
+			y: target.y,
+			vx: Math.cos(angle) * speed,
+			vy: Math.sin(angle) * speed,
+			radius: target.ai.style === "boss" ? 11 : 8,
+			damage: target.ai.style === "boss" ? 10 : 8,
+			expiresAt: now + 4,
+			...(target.ai.style === "boss" ? { boss: true } : {}),
+		});
+	}
+  return {
+		target: {
+			...target,
+			ai: {
+				...target.ai,
+				nextShotAt: now + cooldown + state.rng() * 0.2,
+				phase: target.ai.phase + 0.28,
+				attackIndex: attackIndex + 1,
+			},
+		},
+		hazards,
+		nextId: state.nextId + hazards.length,
+  };
+}
+
+function advanceHazards(state: GameState, hazards: readonly HazardState[], player: PlayerState, dt: number, now: number): Readonly<{ hazards: HazardState[]; player: PlayerState; hurt: boolean }> {
+  let hurt = false;
+  let nextPlayer = player;
+  const nextHazards: HazardState[] = [];
+  for (const hazard of hazards) {
+    const moved = { ...hazard, x: hazard.x + hazard.vx * dt, y: hazard.y + hazard.vy * dt };
+    if (moved.expiresAt <= now || moved.x < state.room.minX || moved.x > state.room.maxX || moved.y < state.room.minY || moved.y > state.room.maxY) continue;
+    if (nextPlayer.health > 0 && now >= nextPlayer.invulnerableUntil && overlaps(nextPlayer, moved)) {
+      nextPlayer = { ...nextPlayer, health: Math.max(0, nextPlayer.health - moved.damage), invulnerableUntil: now + 0.45 };
+      hurt = true;
+      continue;
+    }
+    nextHazards.push(moved);
+  }
+  return { hazards: nextHazards, player: nextPlayer, hurt };
+}
+
 export function updateGame(state: GameState, input: InputIntent, dt: number, now: number): GameState {
   if (input.paused) return state.paused ? state : { ...state, paused: true };
 
@@ -340,11 +721,11 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   let locketOrbitals = state.locketOrbitals.filter(({ expiresAt }) => expiresAt > now);
   let cylinder = advanceReload(state.cylinder, now);
   if (now >= cylinder.buffUntil && cylinder.fireRateBuff !== 0) cylinder = { ...cylinder, fireRateBuff: 0, buffUntil: 0 };
-  let weapon = deriveWeapon(state.build, fireRateBuffAt(cylinder, now));
+  let weapon = applyStatBonuses(deriveWeapon(state.build, fireRateBuffAt(cylinder, now)), state.statBonuses);
   if (canAct && input.reloadPressed) {
     if (cylinder.reloading && weapon.activeWindow > 0) cylinder = attemptActiveReload(cylinder, weapon, now);
     else if (!cylinder.reloading && ammoCount(cylinder) < weapon.capacity) cylinder = startReload(cylinder, weapon, now, "manual");
-    weapon = deriveWeapon(state.build, fireRateBuffAt(cylinder, now));
+    weapon = applyStatBonuses(deriveWeapon(state.build, fireRateBuffAt(cylinder, now)), state.statBonuses);
   }
 
   const magnitude = Math.hypot(input.moveX, input.moveY);
@@ -360,8 +741,20 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     : { vx: 0, vy: 0 };
   const nextX = state.player.x + velocity.vx * dt;
   const nextY = state.player.y + velocity.vy * dt;
-  const x = clamp(nextX, state.room.minX + state.player.radius, state.room.maxX - state.player.radius);
-  const y = clamp(nextY, state.room.minY + state.player.radius, state.room.maxY - state.player.radius);
+  let x = clamp(nextX, state.room.minX + state.player.radius, state.room.maxX - state.player.radius);
+  let y = clamp(nextY, state.room.minY + state.player.radius, state.room.maxY - state.player.radius);
+  for (const prop of [
+    ...state.roomProps.map((prop) => ({ ...prop, radius: prop.collisionRadius })),
+    ...state.targets.filter(({ kind }) => kind === "destructibleCrate"),
+  ]) {
+    const dx = x - prop.x;
+    const dy = y - prop.y;
+    const distance = Math.hypot(dx, dy) || 1;
+    const minimum = state.player.radius + prop.radius;
+    if (distance >= minimum) continue;
+    x = clamp(prop.x + dx / distance * minimum, state.room.minX + state.player.radius, state.room.maxX - state.player.radius);
+    y = clamp(prop.y + dy / distance * minimum, state.room.minY + state.player.radius, state.room.maxY - state.player.radius);
+  }
   let player: PlayerState = {
     ...state.player,
     x,
@@ -459,11 +852,28 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     if (ammoCount(cylinder) === 0) cylinder = startReload(cylinder, weapon, now, "automatic");
   }
 
+  let hazards = [...state.hazards];
+  const advancedHazards = advanceHazards(state, hazards, player, dt, now);
+  hazards = advancedHazards.hazards;
+  player = advancedHazards.player;
+  if (advancedHazards.hurt) {
+    lastHurtAt = now;
+    if (player.health === 0) diedAt = now;
+  }
+
   const snares = state.areas.filter((area): area is SnareAreaState => "kind" in area && area.kind === "snare");
   const chasePoint = decoy ?? player;
+  let nextId = state.nextId;
   let targets = state.targets.map((target) => {
     const effects = normalizeTargetEffects(target.effects, now);
     const normalized = { ...target, frozenUntil: now < target.frozenUntil ? target.frozenUntil : 0, effects };
+    if (target.ai) {
+      const steered = steerTarget(normalized, player, dt, now);
+		const fired = fireEnemyHazards({ ...state, player, nextId }, steered, now);
+      nextId = fired.nextId;
+		hazards.push(...fired.hazards);
+      return fired.target;
+    }
     if (target.kind !== "chaser" || now < target.frozenUntil) return normalized;
     const dx = chasePoint.x - target.x;
     const dy = chasePoint.y - target.y;
@@ -479,9 +889,9 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   let acceptedDamage = false;
   const coat = state.build.triggers.find((rule) => rule.kind === "hurtDecoy");
   for (const target of [...targets].sort((a, b) => a.id.localeCompare(b.id))) {
-    if (target.kind === "chaser" && diedAt === null && overlaps(player, target) && now >= player.invulnerableUntil) {
+    if (isEnemy(target) && diedAt === null && overlaps(player, target) && now >= player.invulnerableUntil) {
       const preHit = { x: player.x, y: player.y };
-      const health = Math.max(0, player.health - 10);
+		const health = Math.max(0, player.health - (target.kind === "sheriffBoss" ? 18 : 10));
       acceptedDamage = true;
       lastHurtAt = now;
       if (health === 0) diedAt = now;
@@ -502,7 +912,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   const combatContext = {
     dt,
     room: state.room,
-    props: ROOM_PROPS,
+    props: state.roomProps,
     build: state.build,
     rng: state.rng,
     player,
@@ -520,7 +930,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     areas: state.areas,
     vfxCommands: state.vfxCommands,
     metrics,
-    nextId: state.nextId,
+    nextId,
     step: state.step + 1,
     now,
     relayLedger: state.relayLedger,
@@ -543,13 +953,13 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   }, combatContext);
   metrics = combat.metrics;
   let finalTargets = [...combat.targets];
-  let nextId = combat.nextId;
+  nextId = combat.nextId;
   let vfxCommands = [...combat.vfxCommands];
   const orbitalKills: KillContext[] = [];
   const orbitalResult = advanceLocketOrbitals(
     locketOrbitals,
     player,
-    finalTargets.filter(({ kind }) => kind === "chaser"),
+    finalTargets.filter(isEnemy),
     dt,
     now,
   );
@@ -620,6 +1030,9 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       }),
     });
   }
+  let pickups = [...state.pickups];
+  let killedTargets = targets.filter((target) =>
+    !target.immortal && target.health > 0 && !finalTargets.some((candidate) => candidate.id === target.id && candidate.health > 0));
   finalTargets = finalTargets.filter((target) => target.immortal || target.health > 0);
   if (orbitalKills.length > 0) {
     combat = resolveReactiveKillPhase({
@@ -630,10 +1043,18 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       nextId,
     }, combatContext, orbitalKills);
     metrics = combat.metrics;
+    killedTargets = [...killedTargets, ...finalTargets.filter((target) =>
+      !target.immortal && target.health > 0 && !combat.targets.some((candidate) => candidate.id === target.id && candidate.health > 0))];
     finalTargets = [...combat.targets];
     nextId = combat.nextId;
     vfxCommands = [...combat.vfxCommands];
   }
+	const rewardedTargets = new Set<string>();
+	for (const killed of killedTargets) if (killed.ai?.dropsBonus && !rewardedTargets.has(killed.id)) {
+		rewardedTargets.add(killed.id);
+		const kind = killed.ai.bonusKind ?? PICKUP_KINDS[Math.floor(state.rng() * PICKUP_KINDS.length) % PICKUP_KINDS.length]!;
+		pickups = [...pickups, { id: `pickup-${nextId++}`, kind, x: killed.x, y: killed.y, radius: 16 }];
+	}
 
   const resolvedRefunds = resolvePendingRefunds(cylinder, combat.pendingRefunds ?? pendingRefunds, now);
   cylinder = resolvedRefunds.cylinder;
@@ -734,6 +1155,8 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     pendingEmissions: [...combat.pendingEmissions],
     projectiles: [...combat.projectiles],
     targets: finalTargets,
+    pickups,
+    hazards,
     areas: [...combat.areas],
     vfxCommands: withoutReactiveState,
     teslaLinks: [...combat.teslaLinks],
@@ -774,5 +1197,31 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   };
   if (next.wantedBrand === undefined) delete next.wantedBrand;
   if (next.decoy === undefined) delete next.decoy;
-  return next;
+  let advanced = next;
+    const combatCleared = advanced.run?.phase === "combat" && !advanced.targets.some(isWaveObjective);
+	if (combatCleared && advanced.pickups.length > 0 && dt > 0) {
+		const pull = 520 * dt;
+		advanced = {
+			...advanced,
+			pickups: advanced.pickups.map((pickup) => {
+				const dx = advanced.player.x - pickup.x;
+				const dy = advanced.player.y - pickup.y;
+				const distance = Math.hypot(dx, dy);
+				if (distance === 0 || distance <= pull) return { ...pickup, x: advanced.player.x, y: advanced.player.y };
+				return { ...pickup, x: pickup.x + dx / distance * pull, y: pickup.y + dy / distance * pull };
+			}),
+		};
+	}
+  for (const pickup of [...advanced.pickups]) {
+    if (overlaps(advanced.player, pickup)) advanced = collectPickup(advanced, pickup.id);
+  }
+    if (advanced.run?.phase === "combat" && !advanced.targets.some(isWaveObjective) && advanced.pickups.length === 0) {
+		if (advanced.run.wave >= FINAL_WAVE) {
+      advanced = { ...advanced, run: { ...advanced.run, phase: "complete", choices: [] } };
+    } else {
+      const nextWave = { ...advanced, run: { ...advanced.run, phase: "choice" as const, wave: advanced.run.wave + 1 } };
+      advanced = { ...nextWave, run: { ...nextWave.run, choices: artifactChoices(nextWave) } };
+    }
+  }
+  return advanced;
 }

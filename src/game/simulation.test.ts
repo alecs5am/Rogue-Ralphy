@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { ammoCount, createCylinder } from "./cylinder";
 import { ARTIFACT_CATALOG } from "./artifacts";
-import { clampResource, clearTargets, createGame, resetLab, setArtifact, setArtifactLoadout, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
+import { chooseRunArtifact, clampResource, clearTargets, collectPickup, createGame, createRunGame, resetLab, setArtifact, setArtifactLoadout, spawnChaser, spawnDummy, spawnWave, updateGame } from "./simulation";
 import { ROOM_PROPS } from "./room";
 import type { ScheduledProjectile } from "./trigger";
 import { buildShot } from "./weapon";
@@ -13,6 +13,10 @@ const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPr
 const heading = (velocity: { vx: number; vy: number }) => Math.atan2(velocity.vy, velocity.vx);
 const playerSpeed = (game: ReturnType<typeof createGame>) => Math.hypot(game.player.vx, game.player.vy);
 const STEP = 1 / 120;
+const seededRng = (seed: number): (() => number) => {
+  let state = seed >>> 0;
+  return () => ((state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0) / 0x1_0000_0000);
+};
 const moveForTicks = (
   game: ReturnType<typeof createGame>,
   input: Parameters<typeof updateGame>[1],
@@ -24,6 +28,179 @@ const moveForTicks = (
 
 test("starts HUD resources at zero", () => {
   expect(createGame().resources).toEqual({ coins: 0, bombs: 0, keys: 0 });
+});
+
+test("demo run starts with two unique artifact choices and launches wave combat", () => {
+  const game = createRunGame(() => 0);
+
+  expect(game.run).toMatchObject({ mode: "run", phase: "choice", wave: 1, artifactsTaken: 0, maxArtifacts: 10 });
+  expect(game.run?.choices).toHaveLength(2);
+  expect(new Set(game.run?.choices).size).toBe(2);
+
+  const chosen = game.run!.choices[0]!;
+  const wave = chooseRunArtifact(game, chosen);
+
+  expect(wave.artifacts[chosen]).toBe(true);
+  expect(wave.run).toMatchObject({ phase: "combat", wave: 1, artifactsTaken: 1 });
+  expect(wave.targets.filter(({ kind }) => kind !== "destructibleCrate")).toHaveLength(4);
+});
+
+test("demo run caps artifact rewards at ten unique artifacts", () => {
+  let game = createRunGame(() => 0);
+  for (let index = 0; index < 12; index += 1) {
+    const choice = game.run!.choices[0]!;
+    game = chooseRunArtifact(game, choice);
+    game = { ...game, targets: [], run: { ...game.run!, phase: "choice", choices: game.run!.choices } };
+  }
+
+  expect(Object.keys(game.artifacts)).toHaveLength(10);
+  expect(game.run).toMatchObject({ artifactsTaken: 10 });
+});
+
+test("demo wave includes ranged enemies, bonus carriers, obstacles, and a boss by the final wave", () => {
+  let game = createRunGame(() => 0.42);
+  game = chooseRunArtifact(game, game.run!.choices[0]!);
+
+  expect(game.targets.some(({ ai }) => ai?.style === "ranged")).toBe(true);
+  expect(game.targets.some(({ ai }) => ai?.dropsBonus)).toBe(true);
+  const crates = game.targets.filter(({ kind }) => kind === "destructibleCrate");
+  expect(crates).toHaveLength(2);
+  expect(crates.every(({ ai }) => ai?.dropsBonus && ai.bonusKind)).toBe(true);
+  expect(game.roomProps.some(({ destructible }) => destructible !== true)).toBe(true);
+
+  game = { ...game, run: { ...game.run!, wave: 10, phase: "choice", choices: game.run!.choices } };
+  game = chooseRunArtifact(game, game.run!.choices[0]!);
+
+  expect(game.targets.some(({ kind }) => kind === "sheriffBoss")).toBe(true);
+});
+
+test("every non-boss wave retries a blocked guaranteed bonus carrier spawn", () => {
+  for (let wave = 1; wave < 10; wave += 1) {
+    let game = createRunGame(seededRng(241));
+    game = { ...game, run: { ...game.run!, wave, phase: "choice" } };
+    game = chooseRunArtifact(game, game.run!.choices[0]!);
+
+    expect(game.targets.filter(({ kind, ai }) => kind !== "destructibleCrate" && ai?.dropsBonus)).toHaveLength(1);
+  }
+});
+
+test("wave waits for living reward crates before offering the next artifact", () => {
+  let game = createRunGame(() => 0.42);
+  game = chooseRunArtifact(game, game.run!.choices[0]!);
+  const crate = game.targets.find(({ kind }) => kind === "destructibleCrate")!;
+
+  game = updateGame({ ...game, targets: [crate] }, idle, 0, 1);
+
+  expect(game.run?.phase).toBe("combat");
+});
+
+test("destroying a reward crate keeps its micro-upgrade in combat until collection", () => {
+  let game = createRunGame(() => 0.42);
+  game = chooseRunArtifact(game, game.run!.choices[0]!);
+  const crate = game.targets.find(({ kind }) => kind === "destructibleCrate")!;
+	const enemy = game.targets.find(({ kind }) => kind !== "destructibleCrate")!;
+  game = { ...game, roomProps: [], targets: [{ ...crate, health: 1 }, { ...enemy, x: 1_400, y: 800, speed: 0 }] };
+  game = updateGame(game, { ...idle, aimX: crate.x, aimY: crate.y, firing: true }, 0, 1);
+  game = {
+    ...game,
+    projectiles: game.projectiles.map((projectile) => ({ ...projectile, x: crate.x, y: crate.y, vx: 0, vy: 0 })),
+  };
+  game = updateGame(game, { ...idle, aimX: crate.x, aimY: crate.y }, 0, 1.01);
+	game = updateGame({ ...game, targets: [] }, idle, 0, 1.02);
+
+  expect(game.pickups).toHaveLength(1);
+  expect(game.pickups[0]?.kind).toBe(crate.ai?.bonusKind);
+  expect(game.run?.phase).toBe("combat");
+});
+
+test("demo pickups apply small stat bonuses to the live build", () => {
+  let game = createRunGame(() => 0);
+  const baseSpeed = game.player.speed;
+	const baseMaxHealth = game.player.maxHealth;
+  const baseDamage = game.weapon.damage;
+  const baseFireRate = game.weapon.fireRate;
+  const baseReload = game.weapon.reloadDuration;
+  const baseCapacity = game.weapon.capacity;
+
+  game = collectPickup({ ...game, pickups: [
+    { id: "p1", kind: "health", x: game.player.x, y: game.player.y, radius: 16 },
+    { id: "p2", kind: "speed", x: game.player.x, y: game.player.y, radius: 16 },
+    { id: "p3", kind: "damage", x: game.player.x, y: game.player.y, radius: 16 },
+    { id: "p4", kind: "fireRate", x: game.player.x, y: game.player.y, radius: 16 },
+    { id: "p5", kind: "reload", x: game.player.x, y: game.player.y, radius: 16 },
+    { id: "p6", kind: "capacity", x: game.player.x, y: game.player.y, radius: 16 },
+  ] }, "p1");
+  for (const id of ["p2", "p3", "p4", "p5", "p6"]) game = collectPickup(game, id);
+
+	expect(game.player.maxHealth).toBe(baseMaxHealth + 20);
+  expect(game.player.health).toBe(game.player.maxHealth);
+  expect(game.player.speed).toBeGreaterThan(baseSpeed);
+  expect(game.weapon.damage).toBeGreaterThan(baseDamage);
+  expect(game.weapon.fireRate).toBeGreaterThan(baseFireRate);
+  expect(game.weapon.reloadDuration).toBeLessThan(baseReload);
+  expect(game.weapon.capacity).toBe(baseCapacity + 1);
+  expect(game.cylinder.slots).toHaveLength(baseCapacity + 1);
+  expect(game.pickupNotice).toMatchObject({ text: "+1 CHAMBER", expiresAt: 1.4 });
+  expect(game.run?.bonusDrops).toBe(6);
+});
+
+test("boss uses stronger health-driven volleys", () => {
+  const volley = (healthRatio: number) => {
+    let game = createRunGame(() => 0.42);
+    game = { ...game, run: { ...game.run!, wave: 10, phase: "choice" } };
+    game = chooseRunArtifact(game, game.run!.choices[0]!);
+    const boss = game.targets.find(({ kind }) => kind === "sheriffBoss")!;
+    game = {
+      ...game,
+		targets: [{
+			...boss,
+			x: game.player.x + 300,
+			y: game.player.y,
+			health: boss.maxHealth * healthRatio,
+			ai: { ...boss.ai!, nextShotAt: 0 },
+		}],
+    };
+    return updateGame(game, idle, 0, 1);
+  };
+
+  const phaseOne = volley(1);
+  const phaseTwo = volley(0.5);
+  const phaseThree = volley(0.2);
+	const fireAgain = (game: typeof phaseOne) => updateGame({
+		...game,
+		hazards: [],
+		targets: game.targets.map((target) => target.kind === "sheriffBoss"
+			? { ...target, ai: { ...target.ai!, nextShotAt: 0 } }
+			: target),
+	}, idle, 0, game.time + 2);
+  expect(phaseOne.targets[0]?.maxHealth).toBe(2_600);
+  expect(phaseOne.hazards).toHaveLength(3);
+  expect(phaseTwo.hazards).toHaveLength(8);
+	expect(fireAgain(phaseTwo).hazards).toHaveLength(5);
+  expect(phaseThree.hazards).toHaveLength(12);
+	expect(fireAgain(phaseThree).hazards).toHaveLength(7);
+  expect(phaseThree.hazards.every(({ boss }) => boss)).toBe(true);
+});
+
+test("boss waits for an on-screen windup instead of firing from outside the camera", () => {
+	let game = createRunGame(() => 0.42);
+	game = { ...game, run: { ...game.run!, wave: 10, phase: "choice" } };
+	game = chooseRunArtifact(game, game.run!.choices[0]!);
+	const boss = game.targets.find(({ kind }) => kind === "sheriffBoss")!;
+	game = {
+		...game,
+		targets: [{ ...boss, x: game.player.x + 560, y: game.player.y, ai: { ...boss.ai!, nextShotAt: 0 } }],
+	};
+	const outside = updateGame(game, idle, 0, 1);
+	expect(outside.hazards).toHaveLength(0);
+	expect(outside.targets[0]?.ai?.nextShotAt).toBeCloseTo(1.45, 10);
+
+	const inside = {
+		...outside,
+		targets: outside.targets.map((target) => ({ ...target, x: outside.player.x + 300 })),
+	};
+	expect(updateGame(inside, idle, 0, 1.2).hazards).toHaveLength(0);
+	expect(updateGame(inside, idle, 0, 1.46).hazards).toHaveLength(3);
 });
 
 test("clamps HUD resources to integer values from zero through 99", () => {

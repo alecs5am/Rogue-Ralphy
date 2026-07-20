@@ -1,12 +1,14 @@
 import "./styles.css";
 import {
-	loadAssets as loadProductionAssets,
-	type LoadedAssets,
+    ASSET_PATHS,
+    loadAssets as loadProductionAssets,
+    type LoadedAssets,
 } from "./assets";
-import { createGame, type GameState, updateGame } from "./game/simulation";
+import { ARTIFACT_CATALOG } from "./game/artifacts";
+import { chooseRunArtifact, createGame, createRunGame, type GameState, updateGame } from "./game/simulation";
 import { mountHud, updateHud } from "./hud";
 import { mountLab } from "./lab";
-import { renderGame } from "./render";
+import { projectViewport, renderGame } from "./render";
 
 function required<T extends Element>(root: ParentNode, selector: string): T {
 	const element = root.querySelector<T>(selector);
@@ -49,44 +51,153 @@ export async function bootstrap({
 
 	const app = required<HTMLElement>(document, "#app");
 	const canvas = required<HTMLCanvasElement>(document, "#game");
-	const hud = required<HTMLElement>(document, "#hud");
+    const hud = required<HTMLElement>(document, "#hud");
+    const mainMenu = required<HTMLElement>(document, "#main-menu");
+    const runChoice = required<HTMLElement>(document, "#run-choice");
+    const runBanner = required<HTMLElement>(document, "#run-banner");
+	const bossHud = required<HTMLElement>(document, "#boss-hud");
+	const bossPhase = required<HTMLElement>(bossHud, "span");
+	const bossFill = required<HTMLElement>(bossHud, ".boss-track i");
+	const pickupToast = required<HTMLElement>(document, "#pickup-toast");
+	const menuButton = required<HTMLButtonElement>(document, "#menu-button");
 	const reloadBar = required<HTMLElement>(document, "#reload");
 	const reloadFill = required<HTMLElement>(reloadBar, ".reload-fill");
 	const reloadZone = required<HTMLElement>(reloadBar, ".reload-zone");
 	const reloadLabel = required<HTMLElement>(reloadBar, "span");
 	const pauseLabel = required<HTMLElement>(document, "#pause-label");
+	const pauseTitle = required<HTMLElement>(pauseLabel, "h2");
+	const resumeButton = required<HTMLButtonElement>(pauseLabel, '[data-action="resume"]');
+	const restartButton = required<HTMLButtonElement>(pauseLabel, '[data-action="restart"]');
+	const pauseMenuButton = required<HTMLButtonElement>(pauseLabel, '[data-action="menu"]');
 	const quickdraw = required<HTMLElement>(document, "#quickdraw");
 	const context = canvasContext(canvas);
 	const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-	mountHud(hud);
-	updateHud(state, canvas);
-	let reloadPressed = false;
-	let firing = false;
-	const pressed = new Set<string>();
+    mountHud(hud);
+    updateHud(state, canvas);
+    let reloadPressed = false;
+    let firing = false;
+    const startsFromFixture = new URLSearchParams(location.search).has("fixture");
+    let mode: "menu" | "run" | "lab" = state.run ? "run" : startsFromFixture ? "lab" : "menu";
+    const pressed = new Set<string>();
 	const updateLab = mountLab({
 		get: () => state,
 		set: (next) => {
 			state = next;
 		},
 	});
-	app.removeAttribute("aria-busy");
+    app.removeAttribute("aria-busy");
+    app.dataset.mode = mode;
+	menuButton.hidden = mode === "menu";
+
+    function setMode(nextMode: typeof mode): void {
+        mode = nextMode;
+        app.dataset.mode = mode;
+		menuButton.hidden = mode === "menu";
+        firing = false;
+        pressed.clear();
+    }
+
+	function returnToMenu(): void {
+		state = { ...state, paused: false };
+		setMode("menu");
+		canvas.blur();
+	}
+
+	function restartSession(): void {
+		state = mode === "run" ? createRunGame(state.rng) : createGame(state.rng);
+		setMode(mode);
+		canvas.focus();
+	}
+
+    function updateRunChoice(): void {
+        const run = state.run;
+        runBanner.hidden = mode !== "run";
+        if (mode === "run" && run) {
+			const enemiesCleared = !state.targets.some((target) => !target.immortal && target.kind !== "destructibleCrate");
+            runBanner.textContent = run.phase === "complete"
+                ? "RUN COMPLETE"
+				: run.phase === "combat" && enemiesCleared && state.pickups.length > 0
+					? `COLLECT BONUS · ${state.pickups.length} LEFT`
+					: `WAVE ${run.wave} · ARTIFACTS ${run.artifactsTaken}/${run.maxArtifacts} · BONUSES ${run.bonusDrops}`;
+        }
+        if (mode !== "run" || !run || run.phase !== "choice") {
+            runChoice.hidden = true;
+            runChoice.replaceChildren();
+            return;
+        }
+        runChoice.hidden = false;
+        const title = document.createElement("h2");
+        title.textContent = `Wave ${run.wave}`;
+        const row = document.createElement("div");
+        row.className = "choice-row";
+        const choices = run.choices.length > 0 ? run.choices : [];
+        if (choices.length === 0) {
+            const start = document.createElement("button");
+            start.type = "button";
+            start.textContent = "Start wave";
+            start.addEventListener("click", () => { state = chooseRunArtifact(state); });
+            row.append(start);
+        } else {
+            for (const id of choices) {
+                const artifact = ARTIFACT_CATALOG.find((candidate) => candidate.id === id)!;
+                const option = document.createElement("button");
+                option.type = "button";
+                option.className = "choice-card";
+                const image = document.createElement("img");
+                image.src = ASSET_PATHS[artifact.icon];
+                image.alt = "";
+                const label = document.createElement("strong");
+                label.textContent = artifact.name;
+                const description = document.createElement("span");
+                description.textContent = artifact.description;
+                option.append(image, label, description);
+                option.addEventListener("click", () => { state = chooseRunArtifact(state, id); });
+                row.append(option);
+            }
+        }
+        const current = runChoice.dataset.signature;
+        const signature = `${run.wave}:${choices.join(",")}:${run.artifactsTaken}`;
+        if (current !== signature) {
+            runChoice.dataset.signature = signature;
+            runChoice.replaceChildren(title, row);
+        }
+    }
+
+    required<HTMLButtonElement>(mainMenu, '[data-action="play"]').addEventListener("click", () => {
+        state = createRunGame(state.rng);
+        setMode("run");
+        canvas.focus();
+    });
+    required<HTMLButtonElement>(mainMenu, '[data-action="lab"]').addEventListener("click", () => {
+        state = createGame(state.rng);
+        setMode("lab");
+        canvas.focus();
+    });
+	menuButton.addEventListener("click", returnToMenu);
+	pauseMenuButton.addEventListener("click", returnToMenu);
+	resumeButton.addEventListener("click", () => {
+		state = { ...state, paused: false };
+		canvas.focus();
+	});
+	restartButton.addEventListener("click", restartSession);
 
 	function mapPointer(event: PointerEvent): void {
-		const bounds = canvas.getBoundingClientRect();
-		state = {
-			...state,
-			aim: {
-				x: Math.max(
-					0,
-					Math.min(
-						canvas.width,
+        const bounds = canvas.getBoundingClientRect();
+        const viewport = projectViewport(state);
+        state = {
+            ...state,
+            aim: {
+                x: viewport.x + Math.max(
+                    0,
+                    Math.min(
+                        canvas.width,
 						((event.clientX - bounds.left) * canvas.width) / bounds.width,
 					),
 				),
-				y: Math.max(
-					0,
-					Math.min(
-						canvas.height,
+                y: viewport.y + Math.max(
+                    0,
+                    Math.min(
+                        canvas.height,
 						((event.clientY - bounds.top) * canvas.height) / bounds.height,
 					),
 				),
@@ -95,8 +206,8 @@ export async function bootstrap({
 	}
 
 	canvas.addEventListener("pointermove", mapPointer);
-	canvas.addEventListener("pointerdown", (event) => {
-		if (event.button !== 0 || state.paused) return;
+    canvas.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || state.paused || mode === "menu" || state.run?.phase === "choice" || state.run?.phase === "complete") return;
 		mapPointer(event);
 		firing = true;
 		canvas.focus();
@@ -108,9 +219,10 @@ export async function bootstrap({
 
 	window.addEventListener("keydown", (event) => {
 		const key = event.key.toLowerCase();
-		if (["w", "a", "s", "d", "r", "escape"].includes(key))
-			event.preventDefault();
-		if (key === "escape" && !event.repeat) {
+        if (["w", "a", "s", "d", "r", "escape"].includes(key))
+            event.preventDefault();
+        if (mode === "menu") return;
+        if (key === "escape" && !event.repeat) {
 			firing = false;
 			reloadPressed = false;
 			state = { ...state, paused: !state.paused };
@@ -146,7 +258,7 @@ export async function bootstrap({
 			? 0
 			: Math.min(0.25, Math.max(0, (timestamp - lastFrame) / 1000));
 		lastFrame = timestamp;
-		if (!state.paused) {
+		if (mode !== "menu" && !state.paused && state.run?.phase !== "choice" && state.run?.phase !== "complete") {
 			accumulator += elapsed;
 			while (accumulator >= STEP) {
 				state = updateGame(
@@ -170,10 +282,30 @@ export async function bootstrap({
 			accumulator = 0;
 		}
 
-		renderGame(context, state, assets, { reducedMotion });
-		updateLab(state);
-		updateHud(state, canvas);
-		pauseLabel.hidden = !state.paused;
+        renderGame(context, state, assets, { reducedMotion });
+        updateLab(state);
+        updateRunChoice();
+        updateHud(state, canvas);
+		const boss = state.targets.find((target) => target.kind === "sheriffBoss");
+		bossHud.hidden = mode !== "run" || !boss;
+		if (boss) {
+			const ratio = Math.max(0, Math.min(1, boss.health / boss.maxHealth));
+			const phase = ratio > 0.67 ? 1 : ratio > 0.34 ? 2 : 3;
+			bossPhase.textContent = `PHASE ${phase}`;
+			bossFill.style.width = `${ratio * 100}%`;
+		}
+		const notice = state.pickupNotice;
+		pickupToast.hidden = mode === "menu" || !notice || notice.expiresAt <= state.time;
+		if (notice) pickupToast.textContent = notice.text;
+		const runComplete = state.run?.phase === "complete";
+		const playerDied = state.player.health <= 0;
+		const sessionPanelVisible = mode !== "menu" && (state.paused || runComplete || playerDied);
+		pauseLabel.hidden = !sessionPanelVisible;
+		pauseTitle.textContent = runComplete ? "RUN COMPLETE" : playerDied ? "RALPHY FELL" : "PAUSED";
+		resumeButton.hidden = runComplete || playerDied;
+		restartButton.textContent = mode === "run"
+			? runComplete || playerDied ? "Play again" : "Restart run"
+			: "Reset test room";
 		quickdraw.hidden = state.time >= state.cylinder.buffUntil;
 		const activeReloadStartedAt =
 			state.cylinder.buffUntil - state.weapon.activeBuffDuration;
