@@ -290,6 +290,8 @@ function assertFinite(value: unknown, path = "combat runtime", seen = new Set<ob
   for (const [key, child] of Object.entries(value)) assertFinite(child, `${path}.${key}`, seen);
 }
 
+const rootEmissionKey = (effectId: string, rootTriggerId: string): string => `root\0${effectId}\0${rootTriggerId}`;
+
 function generationZeroProjectileBound(build: CombatBuild): number {
   const twin = build.triggers.some(({ kind }) => kind === "twin");
   const tesla = build.triggers.some(({ kind }) => kind === "fractionalMultishot");
@@ -297,6 +299,17 @@ function generationZeroProjectileBound(build: CombatBuild): number {
   const dealer = build.triggers.some(({ kind }) => kind === "numberedSidePair");
   return ((twin ? 2 : 1) + Number(tesla)) * (fan?.kind === "fan" ? fan.delays.length : 1)
     + (dealer ? 2 : 0);
+}
+
+function vfxProviderWeight(build: CombatBuild): number {
+  const statusProviders = build.impacts.filter(({ kind }) =>
+    kind === "chill" || kind === "burn" || kind === "brand" || kind === "hitCounter"
+    || kind === "poolOnHit" || kind === "statusPulse").length;
+  const relayProviders = build.motions.filter(({ kind }) => kind === "relay").length;
+  const pulseProviders = build.emissions.reduce((total, rule) =>
+    total + (rule.kind === "pulseRing" ? rule.count : 0), 0);
+  const reactionProviders = build.areas.filter(({ effectId }) => effectId === "cinderGospel.emberRing").length;
+  return Math.max(1, statusProviders + relayProviders + pulseProviders + reactionProviders);
 }
 
 function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
@@ -413,7 +426,8 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
   const reactionLimit = liveRootIds.size * Math.max(1, context.build.areas.filter(({ effectId }) => effectId === "cinderGospel.emberRing").length);
   if (reactionEntries.length > reactionLimit) throw new Error(`kill-reaction ledger live count exceeds derived bound ${reactionLimit}`);
   for (const [key, record] of reactionEntries) {
-    if (!record.rootTriggerId || key !== `cinderGospel.emberRing\0${record.rootTriggerId}` || !liveRootIds.has(record.rootTriggerId)) {
+    if (!record.rootTriggerId || key !== rootEmissionKey("cinderGospel.emberRing", record.rootTriggerId)
+      || !liveRootIds.has(record.rootTriggerId)) {
       throw new Error("invalid kill-reaction ledger record");
     }
   }
@@ -426,7 +440,9 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
     if (vfxIds.has(command.id)) throw new Error("duplicate VFX id");
     vfxIds.add(command.id);
   }
-  const vfxLimit = Math.max(1, Math.ceil(context.fireRate * 3 * sourceBound));
+  const referencedTargets = new Set(runtime.vfxCommands.flatMap(({ targetId }) => targetId ? [targetId] : [])).size;
+  const targetBound = Math.max(1, runtime.targets.length, referencedTargets);
+  const vfxLimit = Math.max(1, Math.ceil(context.fireRate * 3 * sourceBound * vfxProviderWeight(context.build) * targetBound));
   if (runtime.vfxCommands.length > vfxLimit) throw new Error(`VFX live count exceeds derived bound ${vfxLimit}`);
 }
 
@@ -904,7 +920,6 @@ function synchronizeImpactSpiral(projectile: ProjectileState, segment: SweptSegm
 }
 
 const lineageEmissionKey = (effectId: string, lineageId: string): string => `lineage\0${effectId}\0${lineageId}`;
-const rootEmissionKey = (effectId: string, rootTriggerId: string): string => `root\0${effectId}\0${rootTriggerId}`;
 
 function emissionSpecs(source: ProjectileState, rule: EmissionRule, headings: readonly number[]): ProjectileSpec[] {
   const damageScale = "damageScale" in rule ? rule.damageScale : 1;

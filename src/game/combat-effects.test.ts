@@ -601,6 +601,27 @@ test("VFX commands are finite unique bounded and expire deterministically", () =
   expect(() => resolveCombatPhases(runtime({ vfxCommands: overBound }), context())).toThrow("derived bound");
 });
 
+test("VFX bound accepts a valid Cinder Ledger and Snare command composition", () => {
+  const composed = compileCombatBuild({ cinderGospel: true, widowsLedger: true, ectoplasmSnare: true });
+  const kinds = [
+    "cinderGospel.burn", "cinderGospel.burn", "cinderGospel.burn",
+    "widowsLedger.notch", "widowsLedger.notch", "widowsLedger.line",
+    "ectoplasmSnare.pool", "ectoplasmSnare.pool", "ectoplasmSnare.pool",
+    "cinderGospel.emberRing",
+  ];
+  const commands = kinds.map((kind, index) => ({
+    id: `valid-composed-${index}`,
+    kind,
+    artifactId: kind.split(".")[0]!,
+    bornAt: 0,
+    expiresAt: 0.2,
+    x: index,
+    y: index,
+  }));
+
+  expect(() => resolveCombatPhases(runtime({ vfxCommands: commands }), context({ build: composed }))).not.toThrow();
+});
+
 test("a later equal-sweep impact skips a target killed by an earlier projectile", () => {
   const target = {
     id: "chaser-1",
@@ -710,6 +731,26 @@ test("a Hollow kill snapshots Cinder burn after the lethal direct hit refresh", 
     projectileId: "current",
     originPower: 50,
   });
+});
+
+test("Cinder history retains its canonical key while a Snare keeps the root live", () => {
+  const composed = compileCombatBuild({ cinderGospel: true, ectoplasmSnare: true });
+  const effectIds = [
+    "baseRevolver.direct", "cinderGospel.burn", "cinderGospel.emberRing", "ectoplasmSnare.pool",
+  ];
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.2,
+    projectiles: [projectile({ x: 500, vx: 600, activatedEffectIds: effectIds })],
+    targets: [
+      { id: "victim", kind: "chaser", immortal: false, x: 600, y: 300, radius: 22, health: 20, maxHealth: 20, speed: 0, frozenUntil: 0 },
+      { id: "nearby", kind: "chaser", immortal: false, x: 630, y: 300, radius: 18, health: 100, maxHealth: 100, speed: 0, frozenUntil: 0 },
+    ],
+  }), context({ dt: 0.2, build: composed }));
+
+  expect(resolved.areas).toHaveLength(1);
+  expect(Object.keys(resolved.killReactionHistory ?? {})).toEqual([
+    "root\0cinderGospel.emberRing\0trigger-1",
+  ]);
 });
 
 test("live Wanted Brand is injected before generation-zero projectile motion", () => {
