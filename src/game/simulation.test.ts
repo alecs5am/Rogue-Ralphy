@@ -7,6 +7,7 @@ import type { ScheduledProjectile } from "./trigger";
 import { buildShot } from "./weapon";
 import { resetMetrics, summarizeMetrics } from "./metrics";
 import { applyMotionRules } from "./motions";
+import { createTargetEffects } from "./statuses";
 
 const idle = { moveX: 0, moveY: 0, aimX: 900, aimY: 270, firing: false, reloadPressed: false, paused: false } as const;
 const heading = (velocity: { vx: number; vy: number }) => Math.atan2(velocity.vy, velocity.vx);
@@ -804,18 +805,44 @@ test("a fatal hit keeps its coordinates after the chaser is removed", () => {
 });
 
 test("freeze stops a chaser until its status expires", () => {
-  let game = spawnChaser(createGame(() => 0), { x: 600, y: 270 });
+  let rngCalls = 0;
+  let game = spawnChaser(createGame(() => { rngCalls += 1; return 0; }), { x: 600, y: 270 });
   game = setArtifact(game, "coldcaster", true);
-  game = updateGame(game, { ...idle, firing: true }, 0, 1);
-  game = { ...game, projectiles: game.projectiles.map((projectile) => ({ ...projectile, x: 577, y: 270, vx: 620, vy: 0 })) };
-  game = updateGame(game, idle, 0.001, 1.001);
+  game = { ...game, targets: game.targets.map((target) => ({ ...target, speed: 0 })) };
+  for (const firedAt of [1, 1.34, 1.68]) {
+    game = updateGame(game, { ...idle, firing: true }, 0, firedAt);
+    game = { ...game, projectiles: game.projectiles.map((shot) => ({ ...shot, x: 577, y: 270, vx: 620, vy: 0 })) };
+    game = updateGame(game, idle, 0.001, firedAt + 0.001);
+  }
 
-  const frozen = game.targets[0]!;
-  expect(frozen.frozenUntil).toBeGreaterThan(1.001);
-  game = updateGame(game, idle, 0.5, 1.5);
+  const frozen = { ...game.targets[0]!, speed: 85 };
+  game = { ...game, targets: [frozen] };
+  expect(frozen.frozenUntil).toBeCloseTo(1.68 + 1.05, 8);
+  expect(rngCalls).toBe(0);
+  game = updateGame(game, idle, 0.4, 2.081);
   expect(game.targets[0]!.x).toBeCloseTo(frozen.x, 10);
   game = updateGame(game, idle, 0.1, frozen.frozenUntil + 0.01);
   expect(game.targets[0]!.x).toBeLessThan(frozen.x);
+});
+
+test("chaser movement takes the strongest active Hex or Snare slow", () => {
+  let game = spawnChaser(createGame(() => 0), { x: 600, y: 270 });
+  game = {
+    ...game,
+    targets: game.targets.map((target) => ({
+      ...target,
+      effects: { ...createTargetEffects(), slows: [{ effectId: "hexBell.pulse", multiplier: 0.6, until: 2 }] },
+    })),
+    areas: [{
+      id: "snare", kind: "snare", effectId: "ectoplasmSnare.pool", artifactId: "ectoplasmSnare",
+      rootTriggerId: "trigger-1", instanceKey: "root", bornAt: 0, expiresAt: 1.5,
+      tickInterval: 0.1, nextTickAt: 0.1, x: 600, y: 270, radius: 40, damage: 0.8, slow: 0.5,
+      originPower: 20, generation: 0, reactiveEligible: true, reactiveEffectIds: [],
+    }],
+  };
+
+  game = updateGame(game, idle, 0.1, 1);
+  expect(Math.hypot(game.targets[0]!.x - 600, game.targets[0]!.y - 270)).toBeCloseTo(85 * 0.5 * 0.1, 10);
 });
 
 test("wave uses one RNG sample and creates five non-overlapping chasers", () => {

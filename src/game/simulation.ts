@@ -12,6 +12,15 @@ import {
   type PendingEmission,
   type VfxCommand,
 } from "./combat-effects";
+import {
+  createTargetEffects,
+  effectiveSlow,
+  normalizeTargetEffects,
+  snareSlowAt,
+  type RootStatusRecord,
+  type SnareAreaState,
+  type WantedBrand,
+} from "./statuses";
 
 export { ROOM, TILE_SIZE } from "./room";
 export type { Point } from "./room";
@@ -43,6 +52,10 @@ export type GameState = {
   relayLedger: Record<string, Readonly<{ rootTriggerId: string }>>;
   emittedEffects: Record<string, Readonly<{ rootTriggerId: string; lineageId?: string }>>;
   pendingEffectTokens: PendingEffectToken[];
+  wantedBrand?: WantedBrand;
+  hexCounter: number;
+  snareRoots: Record<string, RootStatusRecord>;
+  killReactionHistory: Record<string, RootStatusRecord>;
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; step: number; nextShotAt: number; nextId: number; rootSequence: number; paused: boolean; rng: () => number;
   dealerCounter: number; locketState: LocketState;
@@ -122,6 +135,9 @@ export function createGame(rng: () => number = Math.random): GameState {
     relayLedger: {},
     emittedEffects: {},
     pendingEffectTokens: [],
+    hexCounter: 0,
+    snareRoots: {},
+    killReactionHistory: {},
     metrics,
     telemetry: summarizeMetrics(metrics, 0),
     time: 0,
@@ -170,7 +186,7 @@ export function spawnDummy(state: GameState, position?: Point): GameState {
   if (!point || !canSpawn(state, point, 22)) return state;
   const target: TargetState = {
     ...point, id: `dummy-${state.nextId}`, kind: "dummy", radius: 22,
-    health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0, effects: {},
+    health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0, effects: createTargetEffects(),
   };
   return { ...state, targets: [...state.targets, target], nextId: state.nextId + 1 };
 }
@@ -184,7 +200,7 @@ export function spawnChaser(state: GameState, position?: Point): GameState {
   if (!point || !canSpawn(state, point, 18)) return state;
   const target: TargetState = {
     ...point, id: `chaser-${state.nextId}`, kind: "chaser", radius: 18,
-    health: 80, maxHealth: 80, immortal: false, speed: 85, frozenUntil: 0, effects: {},
+    health: 80, maxHealth: 80, immortal: false, speed: 85, frozenUntil: 0, effects: createTargetEffects(),
   };
   return { ...state, targets: [...state.targets, target], nextId: state.nextId + 1 };
 }
@@ -219,6 +235,11 @@ export function clearTargets(state: GameState): GameState {
       .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
     pendingEffectTokens: state.pendingEffectTokens
       .filter(({ rootTriggerId }) => rootTriggerId === undefined || activeRoots.has(rootTriggerId)),
+    wantedBrand: undefined,
+    snareRoots: Object.fromEntries(Object.entries(state.snareRoots)
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    killReactionHistory: Object.fromEntries(Object.entries(state.killReactionHistory)
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
     metrics,
     telemetry: summarizeMetrics(metrics, state.time),
   };
@@ -301,15 +322,19 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     if (ammoCount(cylinder) === 0) cylinder = startReload(cylinder, weapon, now, "automatic");
   }
 
+  const snares = state.areas.filter((area): area is SnareAreaState => "kind" in area && area.kind === "snare");
   let targets = state.targets.map((target) => {
-    if (target.kind !== "chaser" || now < target.frozenUntil) return { ...target };
+    const effects = normalizeTargetEffects(target.effects, now);
+    const normalized = { ...target, frozenUntil: now < target.frozenUntil ? target.frozenUntil : 0, effects };
+    if (target.kind !== "chaser" || now < target.frozenUntil) return normalized;
     const dx = player.x - target.x;
     const dy = player.y - target.y;
     const distance = Math.hypot(dx, dy) || 1;
+    const slow = effectiveSlow(effects.slows, now, snareSlowAt(target, snares, now));
     return {
-      ...target,
-      x: clamp(target.x + dx / distance * target.speed * dt, state.room.minX + target.radius, state.room.maxX - target.radius),
-      y: clamp(target.y + dy / distance * target.speed * dt, state.room.minY + target.radius, state.room.maxY - target.radius),
+      ...normalized,
+      x: clamp(target.x + dx / distance * target.speed * slow * dt, state.room.minX + target.radius, state.room.maxX - target.radius),
+      y: clamp(target.y + dy / distance * target.speed * slow * dt, state.room.minY + target.radius, state.room.maxY - target.radius),
     };
   });
 
@@ -343,6 +368,10 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     relayLedger: state.relayLedger,
     emittedEffects: state.emittedEffects,
     pendingEffectTokens: state.pendingEffectTokens,
+    wantedBrand: state.wantedBrand,
+    hexCounter: state.hexCounter,
+    snareRoots: state.snareRoots,
+    killReactionHistory: state.killReactionHistory,
   }, {
     dt,
     room: state.room,
@@ -374,6 +403,10 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     relayLedger: { ...(combat.relayLedger ?? {}) },
     emittedEffects: { ...(combat.emittedEffects ?? {}) },
     pendingEffectTokens: [...(combat.pendingEffectTokens ?? [])],
+    wantedBrand: combat.wantedBrand,
+    hexCounter: combat.hexCounter ?? 0,
+    snareRoots: { ...(combat.snareRoots ?? {}) },
+    killReactionHistory: { ...(combat.killReactionHistory ?? {}) },
     metrics,
     telemetry,
     time: now,

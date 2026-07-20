@@ -16,7 +16,6 @@ import {
   type EmittedEffectRecord,
   type KillContext,
   type PendingEmission,
-  type TargetEffects,
 } from "./emissions";
 import {
   buildTeslaLinks,
@@ -30,6 +29,19 @@ import {
 import { applyMotionRules, type MotionDistanceEffect, type MotionLeg } from "./motions";
 import { segmentCircleHitTime, type Point } from "./room";
 import { compareScheduledProjectiles, type ScheduledProjectile } from "./trigger";
+import {
+  advanceStatuses,
+  applyDirectStatuses,
+  jumpWantedBrand,
+  normalizeTargetEffects,
+  statusRootIds,
+  type BurnStatus,
+  type RootStatusRecord,
+  type SnareAreaState,
+  type StatusTarget,
+  type TargetEffects,
+  type WantedBrand,
+} from "./statuses";
 
 export type CombatEvent = Readonly<{
   eventTime: number;
@@ -50,7 +62,7 @@ export type CombatEvent = Readonly<{
 
 export type { KillContext, PendingEmission } from "./emissions";
 
-export type AreaState = Readonly<{
+type GenericAreaState = Readonly<{
   id: string;
   effectId: string;
   artifactId: string;
@@ -60,6 +72,8 @@ export type AreaState = Readonly<{
   expiresAt: number;
   tickInterval: number;
 }>;
+
+export type AreaState = GenericAreaState | SnareAreaState;
 
 export type VfxCommand = Readonly<{
   id: string;
@@ -81,7 +95,7 @@ export type CombatTargetState = Readonly<Point & {
   immortal: boolean;
   speed: number;
   frozenUntil: number;
-  effects?: TargetEffects;
+  effects?: Partial<TargetEffects>;
 }>;
 
 export type CombatRuntime = Readonly<{
@@ -98,6 +112,10 @@ export type CombatRuntime = Readonly<{
   relayLedger?: Readonly<Record<string, Readonly<{ rootTriggerId: string }>>>;
   emittedEffects?: Readonly<Record<string, EmittedEffectRecord>>;
   pendingEffectTokens?: readonly PendingEffectToken[];
+  wantedBrand?: WantedBrand;
+  hexCounter?: number;
+  snareRoots?: Readonly<Record<string, RootStatusRecord>>;
+  killReactionHistory?: Readonly<Record<string, RootStatusRecord>>;
 }>;
 
 type RoomGeometry = Readonly<{
@@ -221,16 +239,27 @@ const immutableProjectileSnapshot = (projectile: ProjectileState): ProjectileSta
 };
 
 const cloneTarget = (target: CombatTargetState, now = -Infinity): CombatTargetState => {
-  const hollowPoint = target.effects?.hollowPoint;
+  const effects = normalizeTargetEffects(target.effects, now);
+  const hollowPoint = effects.hollowPoint;
   return {
     ...target,
-    effects: hollowPoint && hollowPoint.expiresAt > now ? {
-      hollowPoint: Object.freeze({
+    frozenUntil: now < target.frozenUntil ? target.frozenUntil : 0,
+    effects: {
+      ...effects,
+      ...(effects.burn ? {
+        burn: Object.freeze({
+          ...effects.burn,
+          reactiveEffectIds: Object.freeze([...effects.burn.reactiveEffectIds]),
+          sourceProjectile: effects.burn.sourceProjectile && immutableProjectileSnapshot(effects.burn.sourceProjectile),
+        }),
+      } : {}),
+      ...(hollowPoint ? { hollowPoint: Object.freeze({
         ...hollowPoint,
         reactiveEffectIds: Object.freeze([...hollowPoint.reactiveEffectIds]),
         sourceProjectile: immutableProjectileSnapshot(hollowPoint.sourceProjectile),
-      }),
-    } : {},
+      }) } : {}),
+      slows: Object.freeze(effects.slows.map((slow) => Object.freeze({ ...slow }))),
+    },
   };
 };
 
@@ -247,6 +276,10 @@ function phaseState(runtime: CombatRuntime | CombatPhaseState, context: CombatCo
     emittedEffects: runtime.emittedEffects ?? {},
     pendingEffectTokens: runtime.pendingEffectTokens ?? [],
     killContexts: previous.killContexts ?? [],
+    wantedBrand: runtime.wantedBrand && runtime.now < runtime.wantedBrand.expiresAt ? runtime.wantedBrand : undefined,
+    hexCounter: runtime.hexCounter ?? 0,
+    snareRoots: runtime.snareRoots ?? {},
+    killReactionHistory: runtime.killReactionHistory ?? {},
   };
 }
 
@@ -307,7 +340,39 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
     const key = `${area.effectId}\0${area.rootTriggerId}\0${area.instanceKey}`;
     if (areaInstances.has(key)) throw new Error("duplicate area instance");
     areaInstances.add(key);
+    if ("kind" in area && area.kind === "snare" && (
+      area.radius !== 40 || Math.abs(area.expiresAt - area.bornAt - 1.5) > Number.EPSILON
+      || Math.abs(area.tickInterval - 0.1) > Number.EPSILON || area.slow !== 0.5
+    )) throw new Error("Snare runtime geometry must remain 40 px for 1.5 seconds at 10 Hz with 0.50 slow");
+    if ("kind" in area && area.kind === "snare" && (area.damage <= 0 || area.nextTickAt < area.bornAt)) {
+      throw new Error("Snare runtime damage and tick deadline must be positive");
+    }
   }
+
+  for (const target of runtime.targets) {
+    const effects = normalizeTargetEffects(target.effects);
+    if (target.frozenUntil < 0 || effects.chill.expiresAt < 0 || effects.ledger.expiresAt < 0) {
+      throw new Error("status deadlines must be nonnegative");
+    }
+    if (!Number.isInteger(effects.chill.count) || effects.chill.count < 0 || effects.chill.count > 2) {
+      throw new Error("chill counter must be an integer from zero through two");
+    }
+    if (!Number.isInteger(effects.ledger.count) || effects.ledger.count < 0 || effects.ledger.count > 4) {
+      throw new Error("Ledger counter must be an integer from zero through four");
+    }
+    if (effects.burn && (!Number.isInteger(effects.burn.remainingTicks) || effects.burn.remainingTicks < 1 || effects.burn.remainingTicks > 4)) {
+      throw new Error("burn remaining ticks must be an integer from one through four");
+    }
+    if (effects.burn && (effects.burn.potency <= 0 || effects.burn.nextTickAt < 0 || effects.burn.originPower <= 0)) {
+      throw new Error("burn potency, origin power, and tick deadline must be positive");
+    }
+    if (effects.slows.some(({ multiplier }) => multiplier <= 0 || multiplier > 1)) throw new Error("slow multiplier must be in (0, 1]");
+    if (effects.slows.some(({ until }) => until < 0)) throw new Error("slow deadlines must be nonnegative");
+  }
+  if (!Number.isInteger(runtime.hexCounter ?? 0) || (runtime.hexCounter ?? 0) < 0 || (runtime.hexCounter ?? 0) > 3) {
+    throw new Error("Hex counter must be an integer from zero through three");
+  }
+  if (runtime.wantedBrand && runtime.wantedBrand.expiresAt < 0) throw new Error("Wanted Brand deadline must be nonnegative");
 
   const vfxIds = new Set<string>();
   for (const command of runtime.vfxCommands) {
@@ -529,8 +594,16 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
 export function resolveMotionPhase(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const current = phaseState(runtime, context);
   const segments: SweptSegment[] = [];
+  const brandRule = context.build.impacts.find((rule) => rule.kind === "brand");
   const projectiles = current.projectiles.map((source) => {
     const projectile = cloneProjectile(source);
+    if (projectile.generation === 0 && current.wantedBrand && current.now < current.wantedBrand.expiresAt && brandRule?.kind === "brand") {
+      projectile.wantedTargetId = current.wantedBrand.targetId;
+      projectile.wantedTurnRate = brandRule.steering;
+    } else {
+      projectile.wantedTargetId = undefined;
+      projectile.wantedTurnRate = undefined;
+    }
     const liveDuration = Math.max(0, Math.min(
       context.dt,
       projectile.lifetime - Math.max(0, current.now - context.dt - projectile.bornAt),
@@ -807,13 +880,16 @@ function captureKillContext(
   healthBefore: number,
   event: DamageEvent,
   projectile?: ProjectileState,
+  burn?: BurnStatus,
 ): KillContext | undefined {
   if (target.immortal || healthBefore <= 0 || target.health > 0) return undefined;
   const sourceProjectile = projectile && immutableProjectileSnapshot(projectile);
+  const targetEffects = normalizeTargetEffects(target.effects, event.time);
   return Object.freeze({
     victimId: target.id,
     x: target.x,
     y: target.y,
+    time: event.time,
     source: event.source,
     generation: event.generation ?? projectile?.generation ?? 0,
     reactiveEffectIds: Object.freeze([...(event.reactiveEffectIds ?? projectile?.activatedEffectIds ?? [])]),
@@ -825,6 +901,7 @@ function captureKillContext(
     originPower: event.originPower,
     killReactionDepth: event.killReactionDepth,
     sourceProjectile: sourceProjectile && Object.freeze(sourceProjectile),
+    targetEffects: Object.freeze({ ...targetEffects, ...(burn ? { burn: Object.freeze({ ...burn }) } : {}) }),
   });
 }
 
@@ -850,8 +927,18 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
   const emittedEffects = { ...(current.emittedEffects ?? {}) };
   const pendingEffectTokens = [...(current.pendingEffectTokens ?? [])];
   const killContexts = [...current.killContexts];
+  const areas = [...current.areas];
+  let wantedBrand = current.wantedBrand;
+  let hexCounter = current.hexCounter ?? 0;
+  let snareRoots = { ...(current.snareRoots ?? {}) };
   let nextId = current.nextId;
   let metrics = current.metrics;
+
+  const upsertVfx = (command: VfxCommand): void => {
+    const index = vfxCommands.findIndex(({ id }) => id === command.id);
+    if (index >= 0) vfxCommands[index] = command;
+    else vfxCommands.push(command);
+  };
 
   const queueNaturalExpiry = (projectile: ProjectileState, point: Point): void => {
     for (const rule of resolveImpactRules({ source: projectile, build: context.build, kind: "range" }).emissions) {
@@ -1014,7 +1101,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       continue;
     }
 
-    const target = targetById.get(event.targetId!)!;
+    let target = targetById.get(event.targetId!)!;
     const firstHit = !projectile.everHit;
     projectile.everHit = true;
     const history = event.leg === "return"
@@ -1026,9 +1113,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     const originPower = projectile.damage;
     projectile.originPower = originPower;
     if (!target.immortal) (target as { health: number }).health -= projectile.damage;
-    if (projectile.freezeChance > 0 && context.rng() < projectile.freezeChance) {
-      (target as { frozenUntil: number }).frozenUntil = Math.max(target.frozenUntil, current.now + projectile.freezeDuration);
-    }
+    const healthAfterDirect = target.health;
     const provenance = directProvenance(projectile);
     const damageEvent: DamageEvent = {
       source: "direct",
@@ -1048,19 +1133,15 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       y: target.y,
     };
     metrics = recordDamage(metrics, damageEvent);
-    const directKill = captureKillContext(target, healthBefore, damageEvent, projectile);
-    if (directKill) {
-      killContexts.push(directKill);
-      metrics = recordKill(metrics, target.id);
-    }
 
     let charge = target.effects?.hollowPoint;
     if (charge && charge.expiresAt <= damageEvent.time) {
-      (target as { effects: TargetEffects }).effects = {};
+      (target as { effects: TargetEffects }).effects = { ...normalizeTargetEffects(target.effects), hollowPoint: undefined };
       charge = undefined;
     }
+    const secondaryKills: KillContext[] = [];
     if (charge) {
-      (target as { effects: TargetEffects }).effects = {};
+      (target as { effects: TargetEffects }).effects = { ...normalizeTargetEffects(target.effects), hollowPoint: undefined };
       for (const nearby of targets) {
         if ((!nearby.immortal && nearby.health <= 0)
           || (nearby.x - target.x) ** 2 + (nearby.y - target.y) ** 2 > 64 ** 2) continue;
@@ -1086,7 +1167,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
         metrics = recordDamage(metrics, explosionEvent);
         const explosionKill = captureKillContext(nearby, beforeExplosion, explosionEvent, charge.sourceProjectile);
         if (explosionKill) {
-          killContexts.push(explosionKill);
+          secondaryKills.push(explosionKill);
           metrics = recordKill(metrics, nearby.id);
         }
       }
@@ -1095,6 +1176,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
         && projectile.activatedEffectIds.includes(rule.effectId));
       if (hollow?.kind === "embeddedCharge" && (target.immortal || target.health > 0)) {
         (target as { effects: TargetEffects }).effects = {
+          ...normalizeTargetEffects(target.effects),
           hollowPoint: Object.freeze({
             damage: originPower * hollow.storedDamageScale,
             expiresAt: damageEvent.time + hollow.duration,
@@ -1107,6 +1189,73 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
             sourceProjectile: immutableProjectileSnapshot(projectile),
           }),
         };
+      }
+    }
+
+    const applied = applyDirectStatuses({
+      runtime: {
+        targets: targets.map((candidate) => ({
+          ...candidate,
+          effects: normalizeTargetEffects(candidate.effects, damageEvent.time),
+        })) as StatusTarget[],
+        wantedBrand,
+        hexCounter,
+        snareRoots,
+      },
+      targetId: target.id,
+      targetWasAlive: target.immortal || healthBefore > 0,
+      projectile,
+      build: context.build,
+      now: damageEvent.time,
+      impactPoint: event.point,
+      player: context.player,
+    });
+    targets.splice(0, targets.length, ...applied.targets.map((candidate) => cloneTarget(candidate, damageEvent.time)));
+    targetById.clear();
+    for (const candidate of targets) targetById.set(candidate.id, candidate);
+    target = targetById.get(event.targetId!)!;
+    wantedBrand = applied.wantedBrand;
+    hexCounter = applied.hexCounter;
+    snareRoots = { ...applied.snareRoots };
+    for (const area of applied.areas) areas.push({
+      ...area,
+      id: `area-${nextId++}`,
+      sourceProjectile: area.sourceProjectile && immutableProjectileSnapshot(area.sourceProjectile),
+    });
+    for (const command of applied.vfx) upsertVfx(command);
+
+    if (applied.shatter) {
+      const key = lineageEmissionKey(applied.shatter.rule.effectId, projectile.lineageId);
+      if (!emittedEffects[key]) {
+        const source = cloneProjectile(projectile);
+        emissionRequests.push({
+          projectile: source,
+          rule: applied.shatter.rule,
+          specs: emissionSpecs(source, applied.shatter.rule, applied.shatter.headings),
+          origin: event.point,
+        });
+        projectile.emittedEffectIds = [...projectile.emittedEffectIds, applied.shatter.rule.effectId];
+        emittedEffects[key] = { rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId };
+      }
+    }
+
+    const directKill = captureKillContext({ ...target, health: healthAfterDirect }, healthBefore, damageEvent, projectile);
+    if (directKill) {
+      killContexts.push(directKill);
+      metrics = recordKill(metrics, target.id);
+    }
+    killContexts.push(...secondaryKills);
+
+    for (const request of applied.damages) {
+      const marked = targetById.get(request.event.targetId);
+      if (!marked || (!marked.immortal && marked.health <= 0)) continue;
+      const before = marked.health;
+      if (!marked.immortal) (marked as { health: number }).health -= request.event.damage;
+      metrics = recordDamage(metrics, request.event);
+      const killed = captureKillContext(marked, before, request.event, request.sourceProjectile, request.burn);
+      if (killed) {
+        killContexts.push(killed);
+        metrics = recordKill(metrics, marked.id);
       }
     }
 
@@ -1156,6 +1305,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     ...current,
     projectiles: projectiles.filter(({ id }) => !removed.has(id)),
     targets,
+    areas,
     metrics,
     emissionRequests,
     vfxCommands,
@@ -1163,6 +1313,9 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     emittedEffects,
     pendingEffectTokens,
     killContexts,
+    wantedBrand,
+    hexCounter,
+    snareRoots,
     nextId,
   };
 }
@@ -1195,11 +1348,37 @@ export function resolveEmissionPhase(runtime: CombatRuntime | CombatPhaseState, 
 export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const current = phaseState(runtime, context);
   const projectiles = current.projectiles.map(cloneProjectile);
-  let targets = current.targets.map((target) => cloneTarget(target, current.now));
+  const statusUpdate = advanceStatuses({
+    targets: current.targets.map((target) => ({
+      ...target,
+      effects: normalizeTargetEffects(target.effects),
+    })) as StatusTarget[],
+    areas: current.areas.filter((area): area is SnareAreaState => "kind" in area && area.kind === "snare"),
+    now: current.now,
+  });
+  let targets = statusUpdate.targets.map((target) => cloneTarget(target, current.now));
+  const areas: AreaState[] = [
+    ...current.areas.filter((area) => !("kind" in area) && area.expiresAt > current.now),
+    ...statusUpdate.areas,
+  ];
   const vfxCommands = [...current.vfxCommands];
   const killContexts = [...current.killContexts];
   let nextId = current.nextId;
   let metrics = current.metrics;
+  for (const request of statusUpdate.damages) {
+    const index = targets.findIndex(({ id }) => id === request.event.targetId);
+    const target = targets[index];
+    if (!target || (!target.immortal && target.health <= 0)) continue;
+    const healthBefore = target.health;
+    const damaged = target.immortal ? target : { ...target, health: target.health - request.event.damage };
+    targets[index] = damaged;
+    metrics = recordDamage(metrics, request.event);
+    const killed = captureKillContext(damaged, healthBefore, request.event, request.sourceProjectile, request.burn);
+    if (killed) {
+      killContexts.push(killed);
+      metrics = recordKill(metrics, damaged.id);
+    }
+  }
   for (const projectile of projectiles) {
     let pulse = projectile.bellPulse;
     while (pulse && pulse.remaining > 0 && pulse.nextAt <= current.now) {
@@ -1288,15 +1467,16 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
       return damaged;
     });
   }
-  targets = targets.filter((target) => target.immortal || target.health > 0);
-  const activeKeys = new Set(links.flatMap((link) => targets.map((target) => `${link.id}:${target.id}`)));
+  const activeKeys = new Set(links.flatMap((link) => targets
+    .filter((target) => target.immortal || target.health > 0)
+    .map((target) => `${link.id}:${target.id}`)));
   cooldowns = Object.fromEntries(Object.entries(cooldowns)
     .filter(([key, nextAllowedAt]) => nextAllowedAt > current.now || activeKeys.has(key)));
   return {
     ...current,
     projectiles,
     targets,
-    areas: current.areas.filter(({ expiresAt }) => expiresAt > current.now),
+    areas,
     vfxCommands,
     metrics,
     nextId,
@@ -1308,13 +1488,68 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
 
 export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const current = phaseState(runtime, context);
-  const targets = current.targets
-    .filter((target) => target.immortal || target.health > 0)
-    .map((target) => cloneTarget(target, current.now));
+  let targets = current.targets.map((target) => cloneTarget(target, current.now));
   const pendingEmissions = [...current.pendingEmissions];
   const emittedEffects = { ...(current.emittedEffects ?? {}) };
+  const killReactionHistory = { ...(current.killReactionHistory ?? {}) };
+  const deaths: Readonly<{ id: string; x: number; y: number }>[] = current.killContexts.map(({ victimId: id, x, y }) => ({ id, x, y }));
+  const reactionDeaths: Readonly<{ id: string; x: number; y: number }>[] = [];
+  let wantedBrand = current.wantedBrand;
+  let metrics = current.metrics;
+  let vfxCommands = [...current.vfxCommands];
   let nextId = current.nextId;
+
   for (const killed of current.killContexts) {
+    const burn = killed.targetEffects?.burn;
+    const cinder = context.build.areas.find((candidate) => candidate.kind === "explosion"
+      && candidate.effectId === "cinderGospel.emberRing");
+    if (killed.generation === 0 && killed.killReactionDepth === 0 && burn?.reactiveEligible
+      && cinder?.kind === "explosion") {
+      const key = rootEmissionKey(cinder.effectId, burn.rootTriggerId);
+      if (!killReactionHistory[key]) {
+        killReactionHistory[key] = { rootTriggerId: burn.rootTriggerId };
+        targets = targets.map((target) => {
+          if ((!target.immortal && target.health <= 0)
+            || (target.x - killed.x) ** 2 + (target.y - killed.y) ** 2 > cinder.radius ** 2) return target;
+          const damage = burn.originPower * cinder.damageScale;
+          const healthBefore = target.health;
+          const damaged = target.immortal ? target : { ...target, health: target.health - damage };
+          const event: DamageEvent = {
+            source: "reactive",
+            damage,
+            time: killed.time,
+            targetId: target.id,
+            artifactId: cinder.artifactId,
+            effectId: cinder.effectId,
+            rootTriggerId: burn.rootTriggerId,
+            lineageId: burn.lineageId,
+            projectileId: burn.projectileId,
+            killReactionDepth: 1,
+            originPower: burn.originPower,
+            generation: 0,
+            reactiveEffectIds: [],
+            x: target.x,
+            y: target.y,
+          };
+          metrics = recordDamage(metrics, event);
+          if (!damaged.immortal && healthBefore > 0 && damaged.health <= 0) {
+            metrics = recordKill(metrics, damaged.id);
+            reactionDeaths.push({ id: damaged.id, x: damaged.x, y: damaged.y });
+          }
+          return damaged;
+        });
+        vfxCommands.push({
+          id: `vfx-${nextId++}`,
+          kind: cinder.effectId,
+          artifactId: cinder.artifactId,
+          bornAt: current.now,
+          expiresAt: current.now + 0.25,
+          x: killed.x,
+          y: killed.y,
+        });
+      }
+    }
+
     if (killed.generation !== 0 || killed.killReactionDepth !== 0 || !killed.sourceProjectile) continue;
     const rule = context.build.emissions.find((candidate) => candidate.kind === "killSpirits"
       && killed.reactiveEffectIds.includes(candidate.effectId));
@@ -1354,20 +1589,56 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     }));
     emittedEffects[key] = { rootTriggerId: killed.rootTriggerId };
   }
+
+  const brandRule = context.build.impacts.find((rule) => rule.kind === "brand");
+  if (brandRule?.kind === "brand") {
+    for (const death of [...deaths, ...reactionDeaths]) {
+      wantedBrand = jumpWantedBrand(
+        wantedBrand,
+        death,
+        targets.map((target) => ({ ...target, effects: normalizeTargetEffects(target.effects, current.now) })) as StatusTarget[],
+        current.now,
+        brandRule.jumpRadius,
+      );
+    }
+  } else wantedBrand = undefined;
+  const priorBrandVfx = vfxCommands.find(({ kind }) => kind === "wantedBrand.mark");
+  vfxCommands = vfxCommands.filter(({ kind }) => kind !== "wantedBrand.mark");
+  if (wantedBrand && current.now < wantedBrand.expiresAt) {
+    const marked = targets.find(({ id }) => id === wantedBrand!.targetId);
+    if (marked && (marked.immortal || marked.health > 0)) vfxCommands.push({
+      id: `status:wantedBrand.mark:${marked.id}`,
+      kind: "wantedBrand.mark",
+      artifactId: "wantedBrand",
+      bornAt: priorBrandVfx?.targetId === marked.id ? priorBrandVfx.bornAt : current.now,
+      expiresAt: wantedBrand.expiresAt,
+      x: marked.x,
+      y: marked.y,
+      targetId: marked.id,
+    });
+    else wantedBrand = undefined;
+  }
+
+  targets = targets
+    .filter((target) => target.immortal || target.health > 0)
+    .map((target) => cloneTarget(target, current.now));
   const activeRoots = new Set([
     ...current.projectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...current.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
     ...current.areas.map(({ rootTriggerId }) => rootTriggerId),
-    ...targets.flatMap(({ effects }) => effects?.hollowPoint ? [effects.hollowPoint.rootTriggerId] : []),
+    ...statusRootIds(targets.map((target) => ({
+      ...target,
+      effects: normalizeTargetEffects(target.effects, current.now),
+    })) as StatusTarget[]),
   ]);
   return {
     ...current,
     targets,
     pendingEmissions,
     areas: current.areas.filter(({ expiresAt }) => expiresAt > current.now),
-    vfxCommands: current.vfxCommands.filter(({ expiresAt }) => expiresAt > current.now),
-    metrics: retainTargetMetrics(current.metrics, targets.map(({ id }) => id)),
+    vfxCommands: vfxCommands.filter(({ expiresAt }) => expiresAt > current.now),
+    metrics: retainTargetMetrics(metrics, targets.map(({ id }) => id)),
     events: [],
     segments: [],
     emissionRequests: [],
@@ -1375,6 +1646,11 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     nextId,
     emittedEffects: Object.fromEntries(Object.entries(emittedEffects)
       .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    killReactionHistory: Object.fromEntries(Object.entries(killReactionHistory)
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    snareRoots: Object.fromEntries(Object.entries(current.snareRoots ?? {})
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    wantedBrand,
     pendingEffectTokens: (current.pendingEffectTokens ?? [])
       .filter(({ rootTriggerId }) => rootTriggerId === undefined || activeRoots.has(rootTriggerId)),
     relayLedger: Object.fromEntries(Object.entries(current.relayLedger ?? {})

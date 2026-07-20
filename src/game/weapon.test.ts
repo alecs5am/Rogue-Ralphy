@@ -44,8 +44,8 @@ describe("deriveWeapon", () => {
       spread: 0,
       radius: 5,
       damage: 27,
-      freezeChance: 0.25,
-      freezeDuration: 1.05,
+      freezeChance: 0,
+      freezeDuration: 0,
       bounces: 1,
       activeWindow: 0.12,
       activeBuff: 0.2,
@@ -86,8 +86,8 @@ describe("artifact formulas", () => {
     expect(weapon({ hollowPoint: true }).damage).toBeCloseTo(27);
   });
 
-  test("Coldcaster applies its fixed freeze effect", () => {
-    expect(weapon({ coldcaster: true })).toMatchObject({ freezeChance: 0.25, freezeDuration: 1.05 });
+  test("Coldcaster leaves projectile RNG neutral for deterministic status stacks", () => {
+    expect(weapon({ coldcaster: true })).toMatchObject({ freezeChance: 0, freezeDuration: 0 });
   });
 
   test("Pinball grants one retained-damage bounce", () => {

@@ -156,6 +156,27 @@ export function validateCombatBuild(build: CombatBuild): string[] {
       }
       const unsafe = rule as ArtifactRule & { generation?: number; recursive?: boolean };
       if ((unsafe.generation ?? 1) > 1 || unsafe.recursive === true) errors.push(`${rule.effectId} exceeds generation depth one`);
+      if (rule.family === "impact" && rule.kind === "poolOnHit") {
+        if (rule.radius !== 40) errors.push(`${rule.effectId}.radius must equal 40`);
+        if (rule.duration !== 1.5) errors.push(`${rule.effectId}.duration must equal 1.5`);
+        if (rule.tickRate !== 10) errors.push(`${rule.effectId}.tickRate must equal 10`);
+      }
+      if (rule.family === "impact") {
+        const positive = rule.kind === "chill"
+          ? [rule.stackDuration, rule.freezeDuration]
+          : rule.kind === "burn"
+            ? [rule.interval, rule.damageScale]
+            : rule.kind === "brand"
+              ? [rule.duration, rule.steering, rule.jumpRadius]
+              : rule.kind === "hitCounter"
+                ? [rule.duration, rule.damageScale]
+                : rule.kind === "poolOnHit"
+                  ? [rule.radius, rule.duration, rule.tickRate, rule.damageScale]
+                  : rule.kind === "statusPulse"
+                    ? [rule.radius, rule.duration]
+                    : [];
+        if (positive.some((value) => value <= 0)) errors.push(`${rule.effectId} status values must be positive`);
+      }
     }
   }
 

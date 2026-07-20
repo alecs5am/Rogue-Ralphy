@@ -2,6 +2,9 @@ import type { CombatBuild, EmissionRule } from "./combat-build";
 import type { DamageSource } from "./metrics";
 import type { PendingEffectToken, ProjectileSpec, ProjectileState } from "./projectiles";
 import type { Point } from "./room";
+import type { HollowPointCharge, TargetEffects } from "./statuses";
+
+export type { HollowPointCharge, TargetEffects } from "./statuses";
 
 export type PendingEmission = Readonly<{
   atStep: number;
@@ -24,24 +27,11 @@ export type BuiltPendingEmission = PendingEmission & Readonly<{
   templates: readonly ProjectileState[];
 }>;
 
-export type HollowPointCharge = Readonly<{
-  damage: number;
-  expiresAt: number;
-  rootTriggerId: string;
-  lineageId?: string;
-  projectileId?: string;
-  originPower: number;
-  generation: 0 | 1;
-  reactiveEffectIds: readonly string[];
-  sourceProjectile: ProjectileState;
-}>;
-
-export type TargetEffects = Readonly<{ hollowPoint?: HollowPointCharge }>;
-
 export type KillContext = Readonly<{
   victimId: string;
   x: number;
   y: number;
+  time: number;
   source: DamageSource;
   generation: 0 | 1;
   reactiveEffectIds: readonly string[];
@@ -53,6 +43,7 @@ export type KillContext = Readonly<{
   originPower: number;
   killReactionDepth: 0 | 1;
   sourceProjectile?: ProjectileState;
+  targetEffects?: TargetEffects;
 }>;
 
 export type EmittedEffectRecord = Readonly<{ rootTriggerId: string; lineageId?: string }>;

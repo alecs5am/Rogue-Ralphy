@@ -159,7 +159,8 @@ test("Shotgun children inherit compatible effects but cannot split recursively",
 
   expect(children.every((child) =>
     child.penetration?.obstacles === true && child.penetration.targets === true &&
-    child.behaviors.homing?.turnRate === 3 * Math.PI && child.behaviors.homing.radius === 96 && child.freezeChance > 0 &&
+    child.behaviors.homing?.turnRate === 3 * Math.PI && child.behaviors.homing.radius === 96 &&
+    child.freezeChance === 0 && child.activatedEffectIds.includes("coldcaster.chill") &&
     child.remainingBounces === 1 && child.behaviors.tesla !== undefined && child.behaviors.split === undefined
   )).toBe(true);
 });

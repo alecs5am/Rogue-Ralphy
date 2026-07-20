@@ -64,4 +64,20 @@ describe("combat build compiler", () => {
     expect(errors).toContain("ectoplasmicWake.trail.duration must not exceed 3 seconds");
     expect(errors).toContain("ectoplasmicWake.trail.tickRate must not exceed 10 Hz");
   });
+
+  test("validates Snare geometry even though it is an impact rule", () => {
+    const valid = compileCombatBuild({ ectoplasmSnare: true });
+    const snare = valid.impacts.find(({ kind }) => kind === "poolOnHit")!;
+    const invalid = {
+      ...valid,
+      impacts: [{ ...snare, radius: 41, duration: 3.1, tickRate: 11, slow: 0 }],
+    } as CombatBuild;
+
+    expect(validateCombatBuild(invalid)).toEqual(expect.arrayContaining([
+      "ectoplasmSnare.pool.radius must equal 40",
+      "ectoplasmSnare.pool.duration must equal 1.5",
+      "ectoplasmSnare.pool.tickRate must equal 10",
+      "ectoplasmSnare.pool.slow must be in (0, 1]",
+    ]));
+  });
 });

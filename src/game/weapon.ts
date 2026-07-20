@@ -79,12 +79,6 @@ export function deriveWeapon(build: CombatBuild, fireRateBuff: number): DerivedW
       case "embeddedCharge":
         if (rule.artifactId === "hollowPoint") damage *= 1.35;
         break;
-      case "chill":
-        if (rule.artifactId === "coldcaster") {
-          freezeChance = 0.25;
-          freezeDuration = rule.freezeDuration;
-        }
-        break;
       default:
         break;
     }

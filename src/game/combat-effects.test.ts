@@ -487,6 +487,28 @@ test("combat runtime rejects nonfinite values unsafe areas duplicate instances a
   expect(() => resolveCombatPhases(runtime({ areas: [{ ...area, tickInterval: 0.09 }] }), context())).toThrow("ten hertz");
   expect(() => resolveCombatPhases(runtime({ areas: [area, duplicate] }), context())).toThrow("duplicate area");
   expect(() => resolveCombatPhases(runtime({ metrics: badMetrics }), context())).toThrow("kill reaction depth");
+  expect(() => resolveCombatPhases(runtime({ hexCounter: 4 }), context())).toThrow("Hex counter");
+  expect(() => resolveCombatPhases(runtime({
+    targets: [{
+      id: "burned", kind: "chaser", immortal: false, x: 1, y: 1, radius: 18,
+      health: 10, maxHealth: 10, speed: 0, frozenUntil: 0,
+      effects: {
+        chill: { count: 0, expiresAt: 0 }, ledger: { count: 0, expiresAt: 0 }, slows: [],
+        burn: {
+          potency: -1, remainingTicks: 1, nextTickAt: 1, originPower: 20,
+          rootTriggerId: "trigger-1", generation: 0, reactiveEligible: true, reactiveEffectIds: [],
+        },
+      },
+    }],
+  }), context())).toThrow("burn potency");
+  expect(() => resolveCombatPhases(runtime({
+    areas: [{
+      id: "snare", kind: "snare", effectId: "ectoplasmSnare.pool", artifactId: "ectoplasmSnare",
+      rootTriggerId: "trigger-1", instanceKey: "root", bornAt: 0, expiresAt: 1.5,
+      tickInterval: 0.1, nextTickAt: 0.1, x: 1, y: 1, radius: 41, damage: 1, slow: 0.5,
+      originPower: 20, generation: 0, reactiveEligible: true, reactiveEffectIds: [],
+    }],
+  }), context())).toThrow("Snare runtime geometry");
 });
 
 test("VFX commands are finite unique bounded and expire deterministically", () => {
@@ -546,6 +568,102 @@ test("a later equal-sweep impact skips a target killed by an earlier projectile"
   expect(resolved.metrics).toMatchObject({ hits: 1, kills: 1, successfulProjectiles: 1 });
   expect(resolved.targets).toEqual([]);
   expect(resolved.projectiles.map(({ id }) => id)).toEqual(["projectile-2"]);
+});
+
+test("same-tick Twin hits deterministically detonate Hollow and advance chill twice", () => {
+  const composed = compileCombatBuild({ hollowPoint: true, coldcaster: true });
+  const effectIds = ["baseRevolver.direct", "hollowPoint.charge", "coldcaster.chill", "coldcaster.shatter"];
+  const target = {
+    id: "dummy-twin", kind: "dummy" as const, immortal: true,
+    x: 600, y: 300, radius: 22, health: 1, maxHealth: 1, speed: 0, frozenUntil: 0,
+  };
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.2,
+    projectiles: [
+      projectile({ id: "projectile-2", lineageId: "trigger-1:1", x: 500, vx: 600, activatedEffectIds: effectIds }),
+      projectile({ id: "projectile-1", lineageId: "trigger-1:0", x: 500, vx: 600, activatedEffectIds: effectIds }),
+    ],
+    targets: [target],
+  }), context({ dt: 0.2, build: composed }));
+
+  expect(resolved.metrics.hitEvents.filter(({ source }) => source === "direct").map(({ projectileId }) => projectileId))
+    .toEqual(["projectile-1", "projectile-2"]);
+  expect(resolved.targets[0]!.effects?.hollowPoint).toBeUndefined();
+  expect(resolved.targets[0]!.effects?.chill).toEqual({ count: 2, expiresAt: 2.12 });
+});
+
+test("a lethal Cinder direct hit applies burn before one depth-one ember ring", () => {
+  const cinder = compileCombatBuild({ cinderGospel: true });
+  const effectIds = ["baseRevolver.direct", "cinderGospel.burn", "cinderGospel.emberRing"];
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.2,
+    projectiles: [projectile({ x: 500, vx: 600, activatedEffectIds: effectIds })],
+    targets: [
+      { id: "victim", kind: "chaser", immortal: false, x: 600, y: 300, radius: 22, health: 20, maxHealth: 20, speed: 0, frozenUntil: 0 },
+      { id: "nearby", kind: "chaser", immortal: false, x: 630, y: 300, radius: 18, health: 100, maxHealth: 100, speed: 0, frozenUntil: 0 },
+    ],
+  }), context({ dt: 0.2, build: cinder }));
+
+  expect(resolved.targets).toHaveLength(1);
+  expect(resolved.targets[0]).toMatchObject({ id: "nearby", health: 96 });
+  expect(resolved.metrics.hitEvents.at(-1)).toMatchObject({
+    source: "reactive", damage: 4, time: 0.12, targetId: "nearby", artifactId: "cinderGospel",
+    effectId: "cinderGospel.emberRing", rootTriggerId: "trigger-1", killReactionDepth: 1, originPower: 20,
+  });
+  expect(resolved.vfxCommands).toContainEqual(expect.objectContaining({ kind: "cinderGospel.emberRing", x: 600, y: 300 }));
+});
+
+test("live Wanted Brand is injected before generation-zero projectile motion", () => {
+  const branded = compileCombatBuild({ wantedBrand: true });
+  const moved = resolveMotionPhase(runtime({
+    now: 0.1,
+    wantedBrand: { targetId: "marked", expiresAt: 3 },
+    projectiles: [projectile({ x: 200, y: 200, vx: 100, vy: 0 })],
+    targets: [{
+      id: "marked", kind: "chaser", immortal: false,
+      x: 200, y: 400, radius: 18, health: 100, maxHealth: 100, speed: 0, frozenUntil: 0,
+    }],
+  }), context({ dt: 0.1, build: branded, props: [] }));
+
+  expect(moved.projectiles[0]).toMatchObject({ wantedTargetId: "marked", wantedTurnRate: 2 * Math.PI / 3 });
+  expect(moved.projectiles[0]!.vy).toBeGreaterThan(0);
+});
+
+test("a lethal branded hit jumps the one mark with its original deadline", () => {
+  const branded = compileCombatBuild({ wantedBrand: true });
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.2,
+    wantedBrand: { targetId: "branded", expiresAt: 3 },
+    projectiles: [projectile({ x: 500, vx: 600 })],
+    targets: [
+      { id: "branded", kind: "chaser", immortal: false, x: 600, y: 300, radius: 22, health: 20, maxHealth: 20, speed: 0, frozenUntil: 0 },
+      { id: "tie-b", kind: "chaser", immortal: false, x: 700, y: 300, radius: 18, health: 100, maxHealth: 100, speed: 0, frozenUntil: 0 },
+      { id: "tie-a", kind: "chaser", immortal: false, x: 700, y: 300, radius: 18, health: 100, maxHealth: 100, speed: 0, frozenUntil: 0 },
+    ],
+  }), context({ dt: 0.2, build: branded }));
+
+  expect(resolved.wantedBrand).toEqual({ targetId: "tie-a", expiresAt: 3 });
+  expect(resolved.vfxCommands.filter(({ kind }) => kind === "wantedBrand.mark"))
+    .toEqual([expect.objectContaining({ targetId: "tie-a", expiresAt: 3 })]);
+});
+
+test("generation-one lethal burn applies status but cannot invoke Cinder", () => {
+  const cinder = compileCombatBuild({ cinderGospel: true });
+  const resolved = resolveCombatPhases(runtime({
+    now: 0.2,
+    projectiles: [projectile({
+      generation: 1, x: 500, vx: 600, damage: 20,
+      emission: { artifactId: "shotgun", effectId: "shotgun.split" },
+      activatedEffectIds: ["baseRevolver.direct", "cinderGospel.burn", "cinderGospel.emberRing"],
+    })],
+    targets: [
+      { id: "victim", kind: "chaser", immortal: false, x: 600, y: 300, radius: 22, health: 20, maxHealth: 20, speed: 0, frozenUntil: 0 },
+      { id: "nearby", kind: "chaser", immortal: false, x: 630, y: 300, radius: 18, health: 100, maxHealth: 100, speed: 0, frozenUntil: 0 },
+    ],
+  }), context({ dt: 0.2, build: cinder }));
+
+  expect(resolved.metrics.hitEvents.some(({ source }) => source === "reactive")).toBe(false);
+  expect(resolved.targets.find(({ id }) => id === "nearby")?.health).toBe(100);
 });
 
 test("an expiring ricochet records one outcome instead of surviving its final live segment", () => {
