@@ -440,8 +440,7 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
     if (vfxIds.has(command.id)) throw new Error("duplicate VFX id");
     vfxIds.add(command.id);
   }
-  const referencedTargets = new Set(runtime.vfxCommands.flatMap(({ targetId }) => targetId ? [targetId] : [])).size;
-  const targetBound = Math.max(1, runtime.targets.length, referencedTargets);
+  const targetBound = Math.max(1, runtime.targets.length);
   const vfxLimit = Math.max(1, Math.ceil(context.fireRate * 3 * sourceBound * vfxProviderWeight(context.build) * targetBound));
   if (runtime.vfxCommands.length > vfxLimit) throw new Error(`VFX live count exceeds derived bound ${vfxLimit}`);
 }

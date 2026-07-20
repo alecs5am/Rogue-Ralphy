@@ -599,6 +599,8 @@ test("VFX commands are finite unique bounded and expire deterministically", () =
   const limit = Math.ceil(context().fireRate * 3 * (1 + context().build.maxDescendants));
   const overBound = Array.from({ length: limit + 1 }, (_, index) => ({ ...vfx, id: `vfx-${index}` }));
   expect(() => resolveCombatPhases(runtime({ vfxCommands: overBound }), context())).toThrow("derived bound");
+  const forgedTargets = overBound.map((command, index) => ({ ...command, targetId: `forged-${index}` }));
+  expect(() => resolveCombatPhases(runtime({ vfxCommands: forgedTargets }), context())).toThrow("derived bound");
 });
 
 test("VFX bound accepts a valid Cinder Ledger and Snare command composition", () => {
