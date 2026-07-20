@@ -3,6 +3,7 @@ export type DamageEvent = Readonly<{
   source: DamageSource; damage: number; time: number; targetId: string;
   artifactId: string; effectId: string; rootTriggerId: string;
   lineageId?: string; projectileId?: string; killReactionDepth: 0 | 1; originPower: number;
+  generation?: 0 | 1; reactiveEffectIds?: readonly string[];
   x?: number; y?: number; firstProjectileHit?: boolean;
 }>;
 export type HitEvent = DamageEvent;

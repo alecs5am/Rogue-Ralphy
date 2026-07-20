@@ -14,7 +14,8 @@ const teslaProjectile = (
   tesla: TeslaBehavior = { radius: 96, neighbors: 2, damageScale: 0.25, cooldown: 0.15 },
 ): ProjectileState => ({
   id, triggerId, rootTriggerId: triggerId, lineageId: `${triggerId}:0`, generation: 0,
-  activatedEffectIds: Object.freeze(["baseRevolver.direct", "teslaBullets.link"]), originPower: damage,
+  localOrdinal: 0,
+  activatedEffectIds: Object.freeze(["baseRevolver.direct", "teslaBullets.link"]), emittedEffectIds: [], originPower: damage,
   x, y, damage, vx: 0, vy: 0, speed: 0, radius: 6, lifetime: 8, bornAt: 0,
   remainingBounces: 0, bounceRetention: 1, freezeChance: 0, freezeDuration: 0,
   behaviors: { tesla },

@@ -27,6 +27,24 @@ test("recorded direct damage history retains projectile and trigger provenance",
   });
 });
 
+test("damage history keeps generation and reactive eligibility separate from creation provenance", () => {
+  const metrics = recordDamage(createMetrics(), {
+    source: "direct", damage: 4, time: 1, targetId: "dummy-1",
+    projectileId: "projectile-8", rootTriggerId: "trigger-2", lineageId: "trigger-2:0",
+    artifactId: "boneOrchard", effectId: "boneOrchard.shards", generation: 1,
+    reactiveEffectIds: ["baseRevolver.direct", "hollowPoint.charge"],
+    killReactionDepth: 0, originPower: 4,
+  });
+
+  expect(metrics.hitEvents[0]).toMatchObject({
+    artifactId: "boneOrchard",
+    effectId: "boneOrchard.shards",
+    generation: 1,
+    reactiveEffectIds: ["baseRevolver.direct", "hollowPoint.charge"],
+    originPower: 4,
+  });
+});
+
 test("recorded Tesla damage history retains secondary provenance", () => {
   const metrics = recordDamage(createMetrics(), {
     source: "link", damage: 5, time: 2, targetId: "dummy-2",

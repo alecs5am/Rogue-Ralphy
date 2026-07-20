@@ -22,6 +22,19 @@ export type CometBehavior = Readonly<{ duration: number; speedScale: number; rad
 export type BellDescriptor = Readonly<{ interval: number; count: number; radius: number; damageScale: number }>;
 export type BellPulseState = Readonly<Omit<BellDescriptor, "count"> & { nextAt: number; remaining: number }>;
 export type EmissionProvenance = Readonly<{ artifactId: string; effectId: string }>;
+export type PendingEffectToken = Readonly<{
+  effectId: string;
+  distance: number;
+  rootTriggerId?: string;
+  lineageId?: string;
+  originPower?: number;
+  x?: number;
+  y?: number;
+  heading?: number;
+  damage?: number;
+  radius?: number;
+  speed?: number;
+}>;
 
 export type ProjectileBehaviors = Readonly<{
   converge?: ConvergeBehavior;
@@ -47,8 +60,10 @@ export type ProjectileSpec = {
 export type ProjectileState = {
   x: number; y: number; id: string; triggerId: string; vx: number; vy: number;
   generation: 0 | 1; rootTriggerId: string; lineageId: string;
-  activatedEffectIds: readonly string[]; originPower: number;
+  localOrdinal: number;
+  activatedEffectIds: readonly string[]; emittedEffectIds: readonly string[]; originPower: number;
   emission?: EmissionProvenance;
+  pendingEffectTokens?: readonly PendingEffectToken[];
   damage: number; speed: number; radius: number; lifetime: number; bornAt: number;
   remainingBounces: number; bounceRetention: number;
   freezeChance: number; freezeDuration: number;
@@ -193,6 +208,8 @@ export function splitProjectile(parent: ProjectileState, nextIds: Iterable<strin
       ...parent,
       id,
       generation: 1,
+      localOrdinal: index,
+      emittedEffectIds: [],
       ...velocity,
       damage: parent.damage * split.damageScale,
       radius: parent.radius * split.radiusScale,

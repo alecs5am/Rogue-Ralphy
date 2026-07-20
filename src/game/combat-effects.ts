@@ -5,14 +5,26 @@ import {
   recordProjectile,
   recordProjectileOutcome,
   retainTargetMetrics,
+  type DamageEvent,
   type Metrics,
 } from "./metrics";
+import {
+  buildGenerationOneEmission,
+  materializeEmission,
+  resolveImpactRules,
+  sortPendingEmissions,
+  type EmittedEffectRecord,
+  type KillContext,
+  type PendingEmission,
+  type TargetEffects,
+} from "./emissions";
 import {
   buildTeslaLinks,
   splitProjectile,
   synchronizeSpiralState,
   type ProjectileSpec,
   type ProjectileState,
+  type PendingEffectToken,
   type TeslaLink,
 } from "./projectiles";
 import { applyMotionRules, type MotionDistanceEffect, type MotionLeg } from "./motions";
@@ -36,18 +48,7 @@ export type CombatEvent = Readonly<{
   distanceEffect?: "shotgun" | MotionDistanceEffect;
 }>;
 
-export type PendingEmission = Readonly<{
-  atStep: number;
-  effectId: string;
-  artifactId: string;
-  rootTriggerId: string;
-  lineageId: string;
-  generation: 1;
-  originPower: number;
-  specs: readonly ProjectileSpec[];
-  activatedEffectIds?: readonly string[];
-  templates?: readonly ProjectileState[];
-}>;
+export type { KillContext, PendingEmission } from "./emissions";
 
 export type AreaState = Readonly<{
   id: string;
@@ -80,6 +81,7 @@ export type CombatTargetState = Readonly<Point & {
   immortal: boolean;
   speed: number;
   frozenUntil: number;
+  effects?: TargetEffects;
 }>;
 
 export type CombatRuntime = Readonly<{
@@ -94,6 +96,8 @@ export type CombatRuntime = Readonly<{
   step: number;
   now: number;
   relayLedger?: Readonly<Record<string, Readonly<{ rootTriggerId: string }>>>;
+  emittedEffects?: Readonly<Record<string, EmittedEffectRecord>>;
+  pendingEffectTokens?: readonly PendingEffectToken[];
 }>;
 
 type RoomGeometry = Readonly<{
@@ -140,7 +144,14 @@ type SweptSegment = Readonly<{
   endSpiralAngle?: number;
 }>;
 
-type EmissionRequest = Readonly<{ projectile: ProjectileState; rule: EmissionRule }>;
+type EmissionRequest = Readonly<{
+  projectile: ProjectileState;
+  rule: EmissionRule;
+  specs?: readonly ProjectileSpec[];
+  origin?: Point;
+  pendingTokens?: readonly Readonly<{ effectId: string; distance: number }>[];
+  wantedTargetIds?: readonly (string | undefined)[];
+}>;
 
 type CombatPhaseState = CombatRuntime & Readonly<{
   segments: readonly SweptSegment[];
@@ -148,6 +159,7 @@ type CombatPhaseState = CombatRuntime & Readonly<{
   emissionRequests: readonly EmissionRequest[];
   teslaLinks: readonly TeslaLink[];
   teslaCooldowns: Readonly<Record<string, number>>;
+  killContexts: readonly KillContext[];
 }>;
 
 const EVENT_PRIORITY: Readonly<Record<CombatEvent["kind"], number>> = {
@@ -179,6 +191,8 @@ const cloneProjectile = (projectile: ProjectileState): ProjectileState => ({
   ...projectile,
   emission: projectile.emission && { ...projectile.emission },
   activatedEffectIds: [...projectile.activatedEffectIds],
+  emittedEffectIds: [...projectile.emittedEffectIds],
+  pendingEffectTokens: projectile.pendingEffectTokens && [...projectile.pendingEffectTokens],
   behaviors: Object.freeze(Object.fromEntries(Object.entries(projectile.behaviors).map(([key, value]) => [
     key,
     value && typeof value === "object" ? { ...value } : value,
@@ -193,7 +207,13 @@ const cloneProjectile = (projectile: ProjectileState): ProjectileState => ({
   bellPulse: projectile.bellPulse && { ...projectile.bellPulse },
 });
 
-const cloneTarget = (target: CombatTargetState): CombatTargetState => ({ ...target });
+const cloneTarget = (target: CombatTargetState, now = -Infinity): CombatTargetState => {
+  const hollowPoint = target.effects?.hollowPoint;
+  return {
+    ...target,
+    effects: hollowPoint && hollowPoint.expiresAt > now ? { hollowPoint: { ...hollowPoint } } : {},
+  };
+};
 
 function phaseState(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const previous = runtime as Partial<CombatPhaseState>;
@@ -205,6 +225,9 @@ function phaseState(runtime: CombatRuntime | CombatPhaseState, context: CombatCo
     teslaLinks: previous.teslaLinks ?? context.teslaLinks,
     teslaCooldowns: previous.teslaCooldowns ?? context.teslaCooldowns,
     relayLedger: runtime.relayLedger ?? {},
+    emittedEffects: runtime.emittedEffects ?? {},
+    pendingEffectTokens: runtime.pendingEffectTokens ?? [],
+    killContexts: previous.killContexts ?? [],
   };
 }
 
@@ -233,6 +256,24 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
   for (const pending of runtime.pendingEmissions) {
     if (pending.generation !== 1) throw new Error("pending emission generation must be one");
     if (!Number.isInteger(pending.atStep) || pending.atStep < 0) throw new Error("pending emission step must be a nonnegative integer");
+    if (pending.templates && pending.templates.length !== pending.specs.length) throw new Error("pending emission child templates must match specs");
+    if (pending.templates && new Set(pending.templates.map(({ id }) => id)).size !== pending.templates.length) {
+      throw new Error("pending emission child IDs must be unique");
+    }
+  }
+  const liveAndPendingIds = new Set(runtime.projectiles.map(({ id }) => id));
+  for (const pending of runtime.pendingEmissions) for (const template of pending.templates ?? []) {
+    if (liveAndPendingIds.has(template.id)) throw new Error("pending emission child IDs must be globally unique");
+    liveAndPendingIds.add(template.id);
+  }
+  const descendantsByRoot = new Map<string, number>();
+  const countDescendants = (rootTriggerId: string, count: number) =>
+    descendantsByRoot.set(rootTriggerId, (descendantsByRoot.get(rootTriggerId) ?? 0) + count);
+  for (const projectile of runtime.projectiles) if (projectile.generation === 1) countDescendants(projectile.rootTriggerId, 1);
+  for (const scheduled of runtime.scheduledProjectiles) if (scheduled.generation === 1) countDescendants(scheduled.rootTriggerId, 1);
+  for (const pending of runtime.pendingEmissions) countDescendants(pending.rootTriggerId, pending.specs.length);
+  if ([...descendantsByRoot.values()].some((count) => count > 384)) {
+    throw new Error("generation-one descendant bound exceeds 384 for one root");
   }
   for (const event of runtime.metrics.hitEvents) {
     if (event.killReactionDepth !== 0 && event.killReactionDepth !== 1) throw new Error("kill reaction depth exceeds one");
@@ -285,6 +326,7 @@ export function queueEmission(
     step: number;
     nextIds: readonly string[];
     emissionEffectIds?: readonly string[];
+    pendingTokens?: readonly Readonly<{ effectId: string; distance: number }>[];
   }> = { step: 0, nextIds: [] },
 ): PendingEmission {
   if (projectile.generation === 1) throw new Error("generation-one projectile cannot emit");
@@ -292,26 +334,15 @@ export function queueEmission(
   const ids = options.nextIds.length > 0
     ? options.nextIds
     : Array.from({ length: rule.count }, (_, index) => `${projectile.id}:emission-${index}`);
-  const emission = Object.freeze({ artifactId: rule.artifactId, effectId: rule.effectId });
-  const creationEffectIds = new Set(options.emissionEffectIds ?? [rule.effectId]);
-  const activatedEffectIds = Object.freeze(projectile.activatedEffectIds.filter((effectId) => !creationEffectIds.has(effectId)));
   const templates = splitProjectile(cloneProjectile(projectile), ids).map((child) => Object.freeze(cloneProjectile({
     ...child,
-    emission,
-    activatedEffectIds,
     bellPulse: undefined,
   })));
-  return Object.freeze({
-    atStep: options.step + 1,
-    effectId: rule.effectId,
-    artifactId: rule.artifactId,
-    rootTriggerId: projectile.rootTriggerId,
-    lineageId: projectile.lineageId,
-    generation: 1,
-    originPower: projectile.originPower,
-    specs: Object.freeze(templates.map(projectileSpec)),
-    activatedEffectIds,
-    templates: Object.freeze(templates),
+  return buildGenerationOneEmission(projectile, rule, templates.map(projectileSpec), options.step, {
+    childIds: ids,
+    emissionEffectIds: options.emissionEffectIds,
+    templates,
+    pendingTokens: options.pendingTokens,
   });
 }
 
@@ -349,7 +380,9 @@ function materializeScheduled(
     generation: scheduled.generation,
     rootTriggerId: scheduled.rootTriggerId,
     lineageId: scheduled.lineageId,
+    localOrdinal: scheduled.localOrdinal,
     activatedEffectIds: [...scheduled.effectIds],
+    emittedEffectIds: [],
     emission: scheduled.emission && { ...scheduled.emission },
     originPower: spec.damage,
     x: muzzle.x + (spiral ? Math.cos(motionPhase) * spiral.initialRadius : 0),
@@ -410,28 +443,7 @@ function materializePending(
   nextId: number,
 ): Readonly<{ projectiles: ProjectileState[]; nextId: number }> {
   if (pending.templates) return {
-    projectiles: pending.templates.map((template) => ({
-      ...cloneProjectile(template),
-      bornAt: now,
-      travelled: 0,
-      legTravelled: 0,
-      returnLeg: "outbound" as const,
-      hitTargetIds: [],
-      outboundHitTargetIds: [],
-      returnHitTargetIds: [],
-      everHit: false,
-      convergeOffset: template.converge || template.behaviors.converge ? 0 : undefined,
-      convergeDone: false,
-      homingTargetId: undefined,
-      homingMarkerRemaining: 0,
-      relayTargetId: undefined,
-      relayLost: undefined,
-      wantedTargetId: undefined,
-      cometSpeedFactor: undefined,
-      cometRadiusFactor: undefined,
-      cometDamageFactor: undefined,
-      waveDistance: 0,
-    })),
+    projectiles: materializeEmission(pending as Parameters<typeof materializeEmission>[0], now),
     nextId,
   };
   let id = nextId;
@@ -452,6 +464,7 @@ function materializePending(
         origin: context.player,
       }, context, now, `projectile-${id++}`),
       originPower: pending.originPower,
+      emittedEffectIds: [],
     };
   });
   return { projectiles, nextId: id };
@@ -462,9 +475,7 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
   const scheduled = [...runtime.scheduledProjectiles].sort(compareScheduledProjectiles);
   const dueSchedules = scheduled.filter(({ at }) => at <= runtime.now);
   const futureSchedules = scheduled.filter(({ at }) => at > runtime.now);
-  const pending = [...runtime.pendingEmissions].sort((a, b) => a.atStep - b.atStep
-    || compareString(a.lineageId, b.lineageId)
-    || compareString(a.effectId, b.effectId));
+  const pending = sortPendingEmissions(runtime.pendingEmissions);
   const duePending = pending.filter(({ atStep }) => atStep <= runtime.step);
   const futurePending = pending.filter(({ atStep }) => atStep > runtime.step);
   let nextId = runtime.nextId;
@@ -484,7 +495,7 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
   return {
     ...phaseState(runtime, context),
     projectiles: [...runtime.projectiles.map(cloneProjectile), ...created],
-    targets: runtime.targets.map(cloneTarget),
+    targets: runtime.targets.map((target) => cloneTarget(target, runtime.now)),
     scheduledProjectiles: futureSchedules,
     pendingEmissions: futurePending,
     metrics,
@@ -492,6 +503,7 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
     segments: [],
     events: [],
     emissionRequests: [],
+    killContexts: [],
   };
 }
 
@@ -737,12 +749,82 @@ function synchronizeImpactSpiral(projectile: ProjectileState, segment: SweptSegm
   synchronizeSpiralState(projectile, reference);
 }
 
+const lineageEmissionKey = (effectId: string, lineageId: string): string => `lineage\0${effectId}\0${lineageId}`;
+const rootEmissionKey = (effectId: string, rootTriggerId: string): string => `root\0${effectId}\0${rootTriggerId}`;
+
+function emissionSpecs(source: ProjectileState, rule: EmissionRule, headings: readonly number[]): ProjectileSpec[] {
+  const damageScale = "damageScale" in rule ? rule.damageScale : 1;
+  const radiusScale = "radiusScale" in rule ? rule.radiusScale : 1;
+  const { split: _, ...behaviors } = source.behaviors;
+  return headings.map((heading) => ({
+    triggerId: source.rootTriggerId,
+    heading,
+    damage: source.damage * damageScale,
+    speed: source.speed,
+    radius: source.radius * radiusScale,
+    lifetime: source.lifetime,
+    freezeChance: source.freezeChance,
+    freezeDuration: source.freezeDuration,
+    bounces: source.remainingBounces,
+    bounceRetention: source.bounceRetention,
+    behaviors: Object.freeze(behaviors),
+    motionPhase: source.haloPhase,
+  }));
+}
+
+function headingsFor(source: ProjectileState, rule: EmissionRule): number[] {
+  const heading = Math.atan2(source.vy, source.vx);
+  if (rule.kind === "forwardShards") return [-rule.angle, 0, rule.angle].map((offset) => heading + offset);
+  if (rule.kind === "expiryRadial") return Array.from({ length: rule.count }, (_, index) => heading + 2 * Math.PI * index / rule.count);
+  if (rule.kind === "tangentCopy") {
+    const direction = source.localOrdinal % 2 === 0 ? rule.angle : -rule.angle;
+    return [Math.atan2(Math.sin(heading + direction), Math.cos(heading + direction))];
+  }
+  return [];
+}
+
+function captureKillContext(
+  target: CombatTargetState,
+  healthBefore: number,
+  event: DamageEvent,
+  projectile?: ProjectileState,
+): KillContext | undefined {
+  if (target.immortal || healthBefore <= 0 || target.health > 0) return undefined;
+  const sourceProjectile = projectile && cloneProjectile(projectile);
+  if (sourceProjectile) {
+    sourceProjectile.activatedEffectIds = Object.freeze([...sourceProjectile.activatedEffectIds]);
+    sourceProjectile.emittedEffectIds = Object.freeze([...sourceProjectile.emittedEffectIds]);
+  }
+  return Object.freeze({
+    victimId: target.id,
+    x: target.x,
+    y: target.y,
+    source: event.source,
+    generation: event.generation ?? projectile?.generation ?? 0,
+    reactiveEffectIds: Object.freeze([...(event.reactiveEffectIds ?? projectile?.activatedEffectIds ?? [])]),
+    artifactId: event.artifactId,
+    effectId: event.effectId,
+    rootTriggerId: event.rootTriggerId,
+    lineageId: event.lineageId,
+    projectileId: event.projectileId,
+    originPower: event.originPower,
+    killReactionDepth: event.killReactionDepth,
+    sourceProjectile: sourceProjectile && Object.freeze(sourceProjectile),
+  });
+}
+
+function directProvenance(projectile: ProjectileState): Readonly<{ artifactId: string; effectId: string }> {
+  return projectile.generation === 1 && projectile.emission
+    ? projectile.emission
+    : { artifactId: "baseRevolver", effectId: "baseRevolver.direct" };
+}
+
 export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const current = phaseState(runtime, context);
   const projectiles = current.projectiles.map(cloneProjectile);
   const finalProjectiles = new Map(projectiles.map((projectile) => [projectile.id, cloneProjectile(projectile)]));
   const projectileById = new Map(projectiles.map((projectile) => [projectile.id, projectile]));
-  const targets = current.targets.map(cloneTarget);
+  const targets = current.targets.map((target) => cloneTarget(target));
   const targetById = new Map(targets.map((target) => [target.id, target]));
   const segmentByKey = new Map(current.segments.map((segment) => [`${segment.projectileId}\0${segment.index}`, segment]));
   const removed = new Set<string>();
@@ -750,6 +832,9 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
   const emissionRequests: EmissionRequest[] = [];
   const vfxCommands = [...current.vfxCommands];
   const relayLedger = { ...(current.relayLedger ?? {}) };
+  const emittedEffects = { ...(current.emittedEffects ?? {}) };
+  const pendingEffectTokens = [...(current.pendingEffectTokens ?? [])];
+  const killContexts = [...current.killContexts];
   let nextId = current.nextId;
   let metrics = current.metrics;
 
@@ -809,14 +894,53 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
         removed.add(projectile.id);
         continue;
       }
-      const rule = context.build.emissions.find((candidate) =>
-        candidate.kind === "splitCone" && projectile.activatedEffectIds.includes(candidate.effectId));
-      if (rule && projectile.generation === 0) emissionRequests.push({ projectile: cloneProjectile(projectile), rule });
+      for (const rule of resolveImpactRules({ source: projectile, build: context.build, kind: "shotgun" }).emissions) {
+        const key = lineageEmissionKey(rule.effectId, projectile.lineageId);
+        if (emittedEffects[key]) continue;
+        const source = cloneProjectile(projectile);
+        const pendingTokens: readonly PendingEffectToken[] | undefined = rule.kind === "splitCone"
+          && projectile.activatedEffectIds.includes("dustlineDuel.threshold")
+          && projectile.activatedEffectIds.includes("dustlineDuel.afterimage")
+          ? [Object.freeze({
+            effectId: "dustlineDuel.afterimage",
+            distance: 32,
+            rootTriggerId: projectile.rootTriggerId,
+            lineageId: projectile.lineageId,
+            originPower: projectile.originPower,
+            x: event.point.x,
+            y: event.point.y,
+            heading: Math.atan2(projectile.vy, projectile.vx),
+            damage: projectile.damage,
+            radius: projectile.radius,
+            speed: projectile.speed,
+          })]
+          : undefined;
+        emissionRequests.push({
+          projectile: source,
+          rule,
+          specs: rule.kind === "expiryRadial" ? emissionSpecs(source, rule, headingsFor(source, rule)) : undefined,
+          origin: event.point,
+          pendingTokens,
+        });
+        projectile.emittedEffectIds = [...projectile.emittedEffectIds, rule.effectId];
+        emittedEffects[key] = { rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId };
+        if (rule.kind === "splitCone" && pendingTokens) pendingEffectTokens.push(...pendingTokens);
+      }
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
       removed.add(projectile.id);
       continue;
     }
     if (event.kind === "range" || event.kind === "lifetime") {
+      if (event.kind === "lifetime") {
+        for (const rule of resolveImpactRules({ source: projectile, build: context.build, kind: "lifetime" }).emissions) {
+          const key = lineageEmissionKey(rule.effectId, projectile.lineageId);
+          if (emittedEffects[key] || rule.kind !== "expiryRadial") continue;
+          const source = cloneProjectile(projectile);
+          emissionRequests.push({ projectile: source, rule, specs: emissionSpecs(source, rule, headingsFor(source, rule)), origin: event.point });
+          projectile.emittedEffectIds = [...projectile.emittedEffectIds, rule.effectId];
+          emittedEffects[key] = { rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId };
+        }
+      }
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
       removed.add(projectile.id);
       continue;
@@ -856,6 +980,14 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
             targetId: projectile.relayTargetId,
           });
         }
+        for (const rule of resolveImpactRules({ source: projectile, build: context.build, kind: "bounce" }).emissions) {
+          const key = lineageEmissionKey(rule.effectId, projectile.lineageId);
+          if (emittedEffects[key] || rule.kind !== "tangentCopy") continue;
+          const source = cloneProjectile(projectile);
+          emissionRequests.push({ projectile: source, rule, specs: emissionSpecs(source, rule, headingsFor(source, rule)), origin: event.point });
+          projectile.emittedEffectIds = [...projectile.emittedEffectIds, rule.effectId];
+          emittedEffects[key] = { rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId };
+        }
         if (segment.expiresAfterMove) {
           metrics = recordProjectileOutcome(metrics, projectile.everHit);
           removed.add(projectile.id);
@@ -872,27 +1004,99 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       : projectile.outboundHitTargetIds ?? (projectile.outboundHitTargetIds = []);
     history.push(target.id);
     projectile.hitTargetIds = history;
+    const healthBefore = target.health;
+    const originPower = projectile.damage;
+    projectile.originPower = originPower;
     if (!target.immortal) (target as { health: number }).health -= projectile.damage;
     if (projectile.freezeChance > 0 && context.rng() < projectile.freezeChance) {
       (target as { frozenUntil: number }).frozenUntil = Math.max(target.frozenUntil, current.now + projectile.freezeDuration);
     }
-    metrics = recordDamage(metrics, {
+    const provenance = directProvenance(projectile);
+    const damageEvent: DamageEvent = {
       source: "direct",
       damage: projectile.damage,
       time: current.now - context.dt + event.eventTime * context.dt,
       targetId: target.id,
-      artifactId: "baseRevolver",
-      effectId: "baseRevolver.direct",
+      ...provenance,
       rootTriggerId: projectile.rootTriggerId,
       lineageId: projectile.lineageId,
       projectileId: projectile.id,
       killReactionDepth: 0,
-      originPower: projectile.originPower,
+      originPower,
+      generation: projectile.generation,
+      reactiveEffectIds: projectile.activatedEffectIds,
       firstProjectileHit: firstHit,
       x: target.x,
       y: target.y,
-    });
-    if (!target.immortal && target.kind === "chaser" && target.health <= 0) metrics = recordKill(metrics, target.id);
+    };
+    metrics = recordDamage(metrics, damageEvent);
+    const directKill = captureKillContext(target, healthBefore, damageEvent, projectile);
+    if (directKill) {
+      killContexts.push(directKill);
+      metrics = recordKill(metrics, target.id);
+    }
+
+    let charge = target.effects?.hollowPoint;
+    if (charge && charge.expiresAt <= damageEvent.time) {
+      (target as { effects: TargetEffects }).effects = {};
+      charge = undefined;
+    }
+    if (charge) {
+      (target as { effects: TargetEffects }).effects = {};
+      for (const nearby of targets) {
+        if ((!nearby.immortal && nearby.health <= 0)
+          || (nearby.x - target.x) ** 2 + (nearby.y - target.y) ** 2 > 64 ** 2) continue;
+        const beforeExplosion = nearby.health;
+        if (!nearby.immortal) (nearby as { health: number }).health -= charge.damage;
+        const explosionEvent: DamageEvent = {
+          source: "area",
+          damage: charge.damage,
+          time: damageEvent.time,
+          targetId: nearby.id,
+          artifactId: "hollowPoint",
+          effectId: "hollowPoint.explosion",
+          rootTriggerId: charge.rootTriggerId,
+          lineageId: charge.lineageId,
+          projectileId: charge.projectileId,
+          killReactionDepth: 0,
+          originPower: charge.originPower,
+          generation: projectile.generation,
+          reactiveEffectIds: projectile.activatedEffectIds,
+          x: nearby.x,
+          y: nearby.y,
+        };
+        metrics = recordDamage(metrics, explosionEvent);
+        const explosionKill = captureKillContext(nearby, beforeExplosion, explosionEvent, projectile);
+        if (explosionKill) {
+          killContexts.push(explosionKill);
+          metrics = recordKill(metrics, nearby.id);
+        }
+      }
+    } else {
+      const hollow = context.build.impacts.find((rule) => rule.kind === "embeddedCharge"
+        && projectile.activatedEffectIds.includes(rule.effectId));
+      if (hollow?.kind === "embeddedCharge" && (target.immortal || target.health > 0)) {
+        (target as { effects: TargetEffects }).effects = {
+          hollowPoint: Object.freeze({
+            damage: originPower * hollow.storedDamageScale,
+            expiresAt: damageEvent.time + hollow.duration,
+            rootTriggerId: projectile.rootTriggerId,
+            lineageId: projectile.lineageId,
+            projectileId: projectile.id,
+            originPower,
+          }),
+        };
+      }
+    }
+
+    for (const rule of resolveImpactRules({ source: projectile, build: context.build, kind: "direct" }).emissions) {
+      const key = lineageEmissionKey(rule.effectId, projectile.lineageId);
+      if (emittedEffects[key] || rule.kind !== "forwardShards") continue;
+      const source = cloneProjectile(projectile);
+      emissionRequests.push({ projectile: source, rule, specs: emissionSpecs(source, rule, headingsFor(source, rule)), origin: event.point });
+      projectile.emittedEffectIds = [...projectile.emittedEffectIds, rule.effectId];
+      emittedEffects[key] = { rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId };
+    }
     if (projectile.penetration?.targets) continue;
     if (projectile.remainingBounces > 0) {
       const normal = event.normal!;
@@ -916,11 +1120,15 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     const outboundHitTargetIds = [...(projectile.outboundHitTargetIds ?? [])];
     const returnHitTargetIds = [...(projectile.returnHitTargetIds ?? [])];
     const everHit = projectile.everHit;
+    const originPower = projectile.originPower;
+    const emittedEffectIds = [...projectile.emittedEffectIds];
     Object.assign(projectile, cloneProjectile(final));
     projectile.outboundHitTargetIds = outboundHitTargetIds;
     projectile.returnHitTargetIds = returnHitTargetIds;
     projectile.hitTargetIds = projectile.returnLeg === "return" ? returnHitTargetIds : outboundHitTargetIds;
     projectile.everHit = everHit;
+    projectile.originPower = originPower;
+    projectile.emittedEffectIds = emittedEffectIds;
   }
 
   return {
@@ -931,6 +1139,9 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     emissionRequests,
     vfxCommands,
     relayLedger,
+    emittedEffects,
+    pendingEffectTokens,
+    killContexts,
     nextId,
   };
 }
@@ -940,13 +1151,22 @@ export function resolveEmissionPhase(runtime: CombatRuntime | CombatPhaseState, 
   let nextId = current.nextId;
   const pending = [...current.pendingEmissions];
   for (const request of current.emissionRequests) {
-    const count = request.rule.kind === "splitCone" ? request.rule.count : 0;
+    const count = request.specs?.length ?? (request.rule.kind === "splitCone" ? request.rule.count : 0);
     const nextIds = Array.from({ length: count }, () => `projectile-${nextId++}`);
-    pending.push(queueEmission(request.projectile, request.rule, {
-      step: current.step,
-      nextIds,
-      emissionEffectIds: context.build.emissions.map(({ effectId }) => effectId),
-    }));
+    pending.push(request.rule.kind === "splitCone"
+      ? queueEmission(request.projectile, request.rule, {
+        step: current.step,
+        nextIds,
+        emissionEffectIds: context.build.emissions.map(({ effectId }) => effectId),
+        pendingTokens: request.pendingTokens,
+      })
+      : buildGenerationOneEmission(request.projectile, request.rule, request.specs ?? [], current.step, {
+        childIds: nextIds,
+        origin: request.origin,
+        emissionEffectIds: context.build.emissions.map(({ effectId }) => effectId),
+        pendingTokens: request.pendingTokens,
+        wantedTargetIds: request.wantedTargetIds,
+      }));
   }
   return { ...current, pendingEmissions: pending, nextId, emissionRequests: [] };
 }
@@ -954,8 +1174,9 @@ export function resolveEmissionPhase(runtime: CombatRuntime | CombatPhaseState, 
 export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const current = phaseState(runtime, context);
   const projectiles = current.projectiles.map(cloneProjectile);
-  let targets = current.targets.map(cloneTarget);
+  let targets = current.targets.map((target) => cloneTarget(target, current.now));
   const vfxCommands = [...current.vfxCommands];
+  const killContexts = [...current.killContexts];
   let nextId = current.nextId;
   let metrics = current.metrics;
   for (const projectile of projectiles) {
@@ -965,8 +1186,9 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
       targets = targets.map((target) => {
         if ((!target.immortal && target.health <= 0) || Math.hypot(target.x - projectile.x, target.y - projectile.y) > pulse!.radius + target.radius) return target;
         const damage = projectile.damage * pulse!.damageScale;
+        const healthBefore = target.health;
         const damaged = target.immortal ? target : { ...target, health: target.health - damage };
-        metrics = recordDamage(metrics, {
+        const damageEvent: DamageEvent = {
           source: "area",
           damage,
           time: pulseAt,
@@ -978,10 +1200,17 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
           projectileId: projectile.id,
           killReactionDepth: 0,
           originPower: projectile.originPower,
+          generation: projectile.generation,
+          reactiveEffectIds: projectile.activatedEffectIds,
           x: target.x,
           y: target.y,
-        });
-        if (!damaged.immortal && damaged.kind === "chaser" && damaged.health <= 0) metrics = recordKill(metrics, damaged.id);
+        };
+        metrics = recordDamage(metrics, damageEvent);
+        const killed = captureKillContext(damaged, healthBefore, damageEvent, projectile);
+        if (killed) {
+          killContexts.push(killed);
+          metrics = recordKill(metrics, damaged.id);
+        }
         return damaged;
       });
       vfxCommands.push({
@@ -1008,9 +1237,10 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
       const key = `${link.id}:${target.id}`;
       if (current.now < (cooldowns[key] ?? 0)) return target;
       const damage = Math.min(a.damage, b.damage) * link.damageScale;
-      const source = a.damage <= b.damage ? a : b;
+      const source = a.damage < b.damage || (a.damage === b.damage && compareString(a.id, b.id) < 0) ? a : b;
+      const healthBefore = target.health;
       const damaged = target.immortal ? target : { ...target, health: target.health - damage };
-      metrics = recordDamage(metrics, {
+      const damageEvent: DamageEvent = {
         source: "link",
         damage,
         time: current.now,
@@ -1021,11 +1251,18 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
         lineageId: source.lineageId,
         projectileId: source.id,
         killReactionDepth: 0,
-        originPower: source.originPower,
+        originPower: source.damage,
+        generation: source.generation,
+        reactiveEffectIds: source.activatedEffectIds,
         x: target.x,
         y: target.y,
-      });
-      if (!damaged.immortal && damaged.kind === "chaser" && damaged.health <= 0) metrics = recordKill(metrics, damaged.id);
+      };
+      metrics = recordDamage(metrics, damageEvent);
+      const killed = captureKillContext(damaged, healthBefore, damageEvent, source);
+      if (killed) {
+        killContexts.push(killed);
+        metrics = recordKill(metrics, damaged.id);
+      }
       cooldowns[key] = current.now + link.cooldown;
       return damaged;
     });
@@ -1044,27 +1281,81 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
     nextId,
     teslaLinks: links,
     teslaCooldowns: cooldowns,
+    killContexts,
   };
 }
 
 export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const current = phaseState(runtime, context);
-  const targets = current.targets.filter((target) => target.immortal || target.health > 0).map(cloneTarget);
+  const targets = current.targets
+    .filter((target) => target.immortal || target.health > 0)
+    .map((target) => cloneTarget(target, current.now));
+  const pendingEmissions = [...current.pendingEmissions];
+  const emittedEffects = { ...(current.emittedEffects ?? {}) };
+  let nextId = current.nextId;
+  for (const killed of current.killContexts) {
+    if (killed.generation !== 0 || killed.killReactionDepth !== 0 || !killed.sourceProjectile) continue;
+    const rule = context.build.emissions.find((candidate) => candidate.kind === "killSpirits"
+      && killed.reactiveEffectIds.includes(candidate.effectId));
+    if (!rule || rule.kind !== "killSpirits") continue;
+    const key = rootEmissionKey(rule.effectId, killed.rootTriggerId);
+    if (emittedEffects[key]) continue;
+    const source = cloneProjectile({
+      ...killed.sourceProjectile,
+      rootTriggerId: killed.rootTriggerId,
+      lineageId: killed.lineageId ?? killed.sourceProjectile.lineageId,
+      activatedEffectIds: killed.reactiveEffectIds,
+      x: killed.x,
+      y: killed.y,
+      damage: killed.originPower,
+      originPower: killed.originPower,
+      emittedEffectIds: killed.sourceProjectile.emittedEffectIds.filter((effectId) => effectId !== rule.effectId),
+    });
+    const candidates = targets
+      .filter((target) => target.id !== killed.victimId
+        && (target.immortal || target.health > 0)
+        && (target.x - killed.x) ** 2 + (target.y - killed.y) ** 2 <= rule.radius ** 2)
+      .sort((a, b) => (a.x - killed.x) ** 2 + (a.y - killed.y) ** 2
+        - ((b.x - killed.x) ** 2 + (b.y - killed.y) ** 2)
+        || compareString(a.id, b.id));
+    const selected = Array.from({ length: rule.count }, (_, index) => candidates[index]);
+    const baseHeading = Math.atan2(source.vy, source.vx);
+    const headings = selected.map((target, index) => target
+      ? Math.atan2(target.y - killed.y, target.x - killed.x)
+      : baseHeading + 2 * Math.PI * index / rule.count);
+    const specs = emissionSpecs(source, rule, headings);
+    const childIds = Array.from({ length: rule.count }, () => `projectile-${nextId++}`);
+    pendingEmissions.push(buildGenerationOneEmission(source, rule, specs, current.step, {
+      childIds,
+      origin: killed,
+      emissionEffectIds: context.build.emissions.map(({ effectId }) => effectId),
+      wantedTargetIds: selected.map((target) => target?.id),
+    }));
+    emittedEffects[key] = { rootTriggerId: killed.rootTriggerId };
+  }
   const activeRoots = new Set([
     ...current.projectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...current.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
-    ...current.pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
+    ...pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
     ...current.areas.map(({ rootTriggerId }) => rootTriggerId),
+    ...targets.flatMap(({ effects }) => effects?.hollowPoint ? [effects.hollowPoint.rootTriggerId] : []),
   ]);
   return {
     ...current,
     targets,
+    pendingEmissions,
     areas: current.areas.filter(({ expiresAt }) => expiresAt > current.now),
     vfxCommands: current.vfxCommands.filter(({ expiresAt }) => expiresAt > current.now),
     metrics: retainTargetMetrics(current.metrics, targets.map(({ id }) => id)),
     events: [],
     segments: [],
     emissionRequests: [],
+    killContexts: [],
+    nextId,
+    emittedEffects: Object.fromEntries(Object.entries(emittedEffects)
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    pendingEffectTokens: (current.pendingEffectTokens ?? [])
+      .filter(({ rootTriggerId }) => rootTriggerId === undefined || activeRoots.has(rootTriggerId)),
     relayLedger: Object.fromEntries(Object.entries(current.relayLedger ?? {})
       .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
   };

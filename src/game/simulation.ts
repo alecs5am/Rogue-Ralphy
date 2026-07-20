@@ -2,7 +2,7 @@ import { createMetrics, recordTrigger, retainTargetMetrics, summarizeMetrics, ty
 import { advanceReload, ammoCount, attemptActiveReload, consumeRound, createCylinder, fireRateBuffAt, startReload, type CylinderState } from "./cylinder";
 import { compileCombatBuild, type CombatBuild } from "./combat-build";
 import { deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon } from "./weapon";
-import { type ProjectileState, type TeslaLink } from "./projectiles";
+import { type PendingEffectToken, type ProjectileState, type TeslaLink } from "./projectiles";
 import { ROOM, ROOM_PROPS, TILE_SIZE, type Point } from "./room";
 import { expandTrigger, type LocketState, type ScheduledProjectile } from "./trigger";
 import {
@@ -41,6 +41,8 @@ export type GameState = {
   projectiles: ProjectileState[]; targets: TargetState[]; areas: AreaState[]; vfxCommands: VfxCommand[];
   teslaLinks: TeslaLink[]; teslaCooldowns: Record<string, number>;
   relayLedger: Record<string, Readonly<{ rootTriggerId: string }>>;
+  emittedEffects: Record<string, Readonly<{ rootTriggerId: string; lineageId?: string }>>;
+  pendingEffectTokens: PendingEffectToken[];
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; step: number; nextShotAt: number; nextId: number; rootSequence: number; paused: boolean; rng: () => number;
   dealerCounter: number; locketState: LocketState;
@@ -118,6 +120,8 @@ export function createGame(rng: () => number = Math.random): GameState {
     teslaLinks: [],
     teslaCooldowns: {},
     relayLedger: {},
+    emittedEffects: {},
+    pendingEffectTokens: [],
     metrics,
     telemetry: summarizeMetrics(metrics, 0),
     time: 0,
@@ -166,7 +170,7 @@ export function spawnDummy(state: GameState, position?: Point): GameState {
   if (!point || !canSpawn(state, point, 22)) return state;
   const target: TargetState = {
     ...point, id: `dummy-${state.nextId}`, kind: "dummy", radius: 22,
-    health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0,
+    health: 1, maxHealth: 1, immortal: true, speed: 0, frozenUntil: 0, effects: {},
   };
   return { ...state, targets: [...state.targets, target], nextId: state.nextId + 1 };
 }
@@ -180,7 +184,7 @@ export function spawnChaser(state: GameState, position?: Point): GameState {
   if (!point || !canSpawn(state, point, 18)) return state;
   const target: TargetState = {
     ...point, id: `chaser-${state.nextId}`, kind: "chaser", radius: 18,
-    health: 80, maxHealth: 80, immortal: false, speed: 85, frozenUntil: 0,
+    health: 80, maxHealth: 80, immortal: false, speed: 85, frozenUntil: 0, effects: {},
   };
   return { ...state, targets: [...state.targets, target], nextId: state.nextId + 1 };
 }
@@ -211,6 +215,10 @@ export function clearTargets(state: GameState): GameState {
     teslaCooldowns: {},
     relayLedger: Object.fromEntries(Object.entries(state.relayLedger)
       .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    emittedEffects: Object.fromEntries(Object.entries(state.emittedEffects)
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    pendingEffectTokens: state.pendingEffectTokens
+      .filter(({ rootTriggerId }) => rootTriggerId === undefined || activeRoots.has(rootTriggerId)),
     metrics,
     telemetry: summarizeMetrics(metrics, state.time),
   };
@@ -333,6 +341,8 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     step: state.step + 1,
     now,
     relayLedger: state.relayLedger,
+    emittedEffects: state.emittedEffects,
+    pendingEffectTokens: state.pendingEffectTokens,
   }, {
     dt,
     room: state.room,
@@ -362,6 +372,8 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     teslaLinks: [...combat.teslaLinks],
     teslaCooldowns: { ...combat.teslaCooldowns },
     relayLedger: { ...(combat.relayLedger ?? {}) },
+    emittedEffects: { ...(combat.emittedEffects ?? {}) },
+    pendingEffectTokens: [...(combat.pendingEffectTokens ?? [])],
     metrics,
     telemetry,
     time: now,
