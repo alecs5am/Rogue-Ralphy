@@ -1,5 +1,8 @@
 import { ASSET_PATHS } from "./assets";
-import { ARTIFACT_CATALOG } from "./game/artifacts";
+import {
+	ARTIFACT_CATALOG,
+	type ArtifactDefinition,
+} from "./game/artifacts";
 import { ammoCount } from "./game/cylinder";
 import { resetMetrics, summarizeMetrics } from "./game/metrics";
 import {
@@ -46,28 +49,114 @@ export function mountLab(access: StateAccess): (state: GameState) => void {
 	if (!artifactsRoot || !spawnerRoot || !statsRoot)
 		throw new Error("Laboratory shell is incomplete");
 
-	artifactsRoot.innerHTML = `${sectionHeading("artifacts-title", "Artifacts")}<div class="artifact-grid"></div><div class="action-row artifact-actions"></div>`;
+	artifactsRoot.innerHTML = `${sectionHeading("artifacts-title", "Artifacts")}<div class="artifact-grid" role="group" aria-labelledby="artifacts-title"></div><article class="artifact-detail" aria-live="polite"></article><div class="action-row artifact-actions"></div>`;
 	const grid = required<HTMLElement>(artifactsRoot, ".artifact-grid");
-	const artifactControls = new Map<
-		ArtifactId,
-		{ card: HTMLElement; button: HTMLButtonElement }
-	>();
-	for (const artifact of ARTIFACT_CATALOG) {
-		const card = document.createElement("article");
-		card.className = "artifact-card";
-		card.dataset.artifact = artifact.id;
-		const iconKey = artifact.icon;
-		card.innerHTML = `<img src="${ASSET_PATHS[iconKey]}" alt=""><div class="artifact-copy"><h3>${artifact.name}</h3><p>${artifact.description}</p></div>`;
-		const artifactButton = button("Take", "artifact-toggle");
-		artifactButton.setAttribute("aria-label", `Take ${artifact.name}`);
+	const detail = required<HTMLElement>(artifactsRoot, ".artifact-detail");
+	const catalogById = new Map<string, ArtifactDefinition>(
+		ARTIFACT_CATALOG.map((artifact) => [artifact.id, artifact]),
+	);
+	const artifactControls = new Map<ArtifactId, HTMLButtonElement>();
+	const artifactTiles: HTMLButtonElement[] = [];
+	let rovingIndex = 0;
+	let lastDetailedArtifact: ArtifactDefinition = ARTIFACT_CATALOG[0];
+
+	const projectDetail = (artifact: ArtifactDefinition): void => {
+		const title = document.createElement("h3");
+		title.textContent = artifact.name;
+		const description = document.createElement("p");
+		description.className = "artifact-description";
+		description.textContent = artifact.description;
+		const tags = document.createElement("ul");
+		tags.className = "artifact-tags";
+		for (const tag of artifact.tags) {
+			const item = document.createElement("li");
+			item.className = "artifact-tag";
+			item.textContent = tag;
+			tags.append(item);
+		}
+		const synergyTitle = document.createElement("h4");
+		synergyTitle.textContent = "Synergies";
+		const synergies = document.createElement("ul");
+		synergies.className = "artifact-synergies";
+		for (const id of artifact.synergies) {
+			const synergy = catalogById.get(id);
+			if (!synergy) throw new Error(`Unknown artifact synergy: ${id}`);
+			const item = document.createElement("li");
+			item.className = "artifact-synergy";
+			item.textContent = synergy.name;
+			synergies.append(item);
+		}
+		detail.replaceChildren(title, description, tags, synergyTitle, synergies);
+	};
+
+	const setRoving = (index: number): void => {
+		const tile = artifactTiles[index];
+		const artifact = ARTIFACT_CATALOG[index];
+		if (!tile || !artifact) return;
+		const previous = artifactTiles[rovingIndex];
+		if (previous) previous.tabIndex = -1;
+		tile.tabIndex = 0;
+		rovingIndex = index;
+		lastDetailedArtifact = artifact;
+		projectDetail(artifact);
+	};
+
+	for (const [index, artifact] of ARTIFACT_CATALOG.entries()) {
+		const artifactButton = button("", "artifact-tile");
+		artifactButton.dataset.artifact = artifact.id;
+		artifactButton.dataset.row = String(artifact.grid.row);
+		artifactButton.dataset.column = String(artifact.grid.column);
+		artifactButton.setAttribute("aria-label", artifact.name);
+		artifactButton.setAttribute("aria-pressed", "false");
+		artifactButton.tabIndex = index === 0 ? 0 : -1;
+		const image = document.createElement("img");
+		image.src = ASSET_PATHS[artifact.icon];
+		image.alt = "";
+		image.draggable = false;
+		artifactButton.append(image);
+		artifactButton.addEventListener("focus", () => setRoving(index));
 		artifactButton.addEventListener("click", () => {
+			setRoving(index);
 			const state = access.get();
 			access.set(setArtifact(state, artifact.id, !state.artifacts[artifact.id]));
 		});
-		card.append(artifactButton);
-		grid.append(card);
-		artifactControls.set(artifact.id, { card, button: artifactButton });
+		artifactButton.addEventListener("pointerenter", () => projectDetail(artifact));
+		artifactButton.addEventListener("pointerleave", () =>
+			projectDetail(lastDetailedArtifact),
+		);
+		artifactButton.addEventListener("keydown", (event) => {
+			const row = Math.floor(index / 6);
+			const column = index % 6;
+			let next = index;
+			switch (event.key) {
+				case "ArrowLeft":
+					if (column > 0) next -= 1;
+					break;
+				case "ArrowRight":
+					if (column < 5) next += 1;
+					break;
+				case "ArrowUp":
+					if (row > 0) next -= 6;
+					break;
+				case "ArrowDown":
+					if (row < 5) next += 6;
+					break;
+				default:
+					return;
+			}
+			event.preventDefault();
+			if (next === index) return;
+			setRoving(next);
+			const target = artifactTiles[next];
+			if (!target) return;
+			target.focus();
+			target.scrollIntoView({ block: "nearest", inline: "nearest" });
+		});
+		artifactTiles.push(artifactButton);
+		grid.append(artifactButton);
+		artifactControls.set(artifact.id, artifactButton);
 	}
+	projectDetail(lastDetailedArtifact);
 
 	const artifactActions = required<HTMLElement>(
 		artifactsRoot,
@@ -167,12 +256,7 @@ export function mountLab(access: StateAccess): (state: GameState) => void {
 			const control = artifactControls.get(artifact.id);
 			if (!control) continue;
 			const owned = state.artifacts[artifact.id] === true;
-			control.card.classList.toggle("active", owned);
-			control.button.textContent = owned ? "Remove" : "Take";
-			control.button.setAttribute(
-				"aria-label",
-				`${owned ? "Remove" : "Take"} ${artifact.name}`,
-			);
+			control.setAttribute("aria-pressed", String(owned));
 		}
 		const telemetry = state.telemetry;
 		const reloadProgress = state.cylinder.reloading
