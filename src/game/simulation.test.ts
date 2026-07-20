@@ -1249,6 +1249,192 @@ test("Last Gasp converts every third low-health root without projectile telemetr
   expect(game.locketOrbitals).toHaveLength(3);
 });
 
+test("Locket reactive kills enter ordered Bonanza cleanup without projectile telemetry", () => {
+  let game = setArtifactLoadout(createGame(() => 0.9), {
+    bonanzaClip: true,
+    lastGaspLocket: true,
+  });
+  game = {
+    ...game,
+    player: { ...game.player, health: 40 },
+    locketState: { armed: true, cadence: 0 },
+    targets: [{
+      id: "chaser-locket", kind: "chaser", x: game.player.x + 40, y: game.player.y,
+      radius: 18, health: 1, maxHealth: 1, immortal: false, speed: 0, frozenUntil: 0,
+      effects: createTargetEffects(),
+    }],
+  };
+
+  game = updateGame(game, {
+    ...idle, aimX: game.player.x + 100, aimY: game.player.y, firing: true,
+  }, 0, 1);
+
+  expect(game.pendingRefunds).toEqual([expect.objectContaining({
+    effectId: "bonanzaClip.refund", rootTriggerId: "trigger-1", arrivesAt: 1.25,
+  })]);
+  expect(game.metrics.hitEvents).toEqual([expect.objectContaining({
+    source: "reactive", effectId: "lastGaspLocket.orbital", rootTriggerId: "trigger-1",
+    reactiveEffectIds: ["bonanzaClip.refund"],
+  })]);
+  expect(game.metrics).toMatchObject({
+    triggers: 1, projectiles: 0, hits: 0, secondaryHits: 1, kills: 1,
+    successfulProjectiles: 0, misses: 0,
+  });
+  expect(game.telemetry.accuracy).toBe(0);
+});
+
+test("Locket reactive kills preserve Soul Harvester eligibility for exactly two next-step spirits", () => {
+  let game = setArtifactLoadout(createGame(() => 0.9), {
+    lastGaspLocket: true,
+    soulHarvester: true,
+  });
+  game = {
+    ...game,
+    player: { ...game.player, health: 40 },
+    locketState: { armed: true, cadence: 0 },
+    targets: [
+      {
+        id: "chaser-locket", kind: "chaser", x: game.player.x + 40, y: game.player.y,
+        radius: 18, health: 1, maxHealth: 1, immortal: false, speed: 0, frozenUntil: 0,
+        effects: createTargetEffects(),
+      },
+      {
+        id: "chaser-spirit-a", kind: "chaser", x: game.player.x + 120, y: game.player.y - 40,
+        radius: 18, health: 80, maxHealth: 80, immortal: false, speed: 0, frozenUntil: 0,
+        effects: createTargetEffects(),
+      },
+      {
+        id: "chaser-spirit-b", kind: "chaser", x: game.player.x + 120, y: game.player.y + 40,
+        radius: 18, health: 80, maxHealth: 80, immortal: false, speed: 0, frozenUntil: 0,
+        effects: createTargetEffects(),
+      },
+    ],
+  };
+
+  game = updateGame(game, {
+    ...idle, aimX: game.player.x + 100, aimY: game.player.y, firing: true,
+  }, 0, 1);
+
+  expect(game.metrics.projectiles).toBe(0);
+  expect(game.pendingEmissions).toEqual([expect.objectContaining({
+    effectId: "soulHarvester.spirits", rootTriggerId: "trigger-1", generation: 1,
+  })]);
+  expect(game.pendingEmissions[0]!.templates).toHaveLength(2);
+
+  game = updateGame(game, idle, 0, 1);
+  expect(game.pendingEmissions).toEqual([]);
+  expect(game.projectiles).toHaveLength(2);
+  expect(game.metrics.projectiles).toBe(2);
+});
+
+test("accepted Locket Soul snapshots survive artifact removal until later contact", () => {
+  let game = setArtifactLoadout(createGame(() => 0.9), {
+    lastGaspLocket: true,
+    soulHarvester: true,
+  });
+  game = {
+    ...game,
+    player: { ...game.player, health: 40 },
+    locketState: { armed: true, cadence: 0 },
+  };
+  game = updateGame(game, {
+    ...idle, aimX: game.player.x + 100, aimY: game.player.y, firing: true,
+  }, 0, 1);
+  expect(game.locketOrbitals[0]!.reactiveEffectIds).toEqual(["soulHarvester.spirits"]);
+
+  game = setArtifact(game, "soulHarvester", false);
+  game = {
+    ...game,
+    targets: [
+      {
+        id: "chaser-locket", kind: "chaser", x: game.player.x + 40, y: game.player.y,
+        radius: 18, health: 1, maxHealth: 1, immortal: false, speed: 0, frozenUntil: 0,
+        effects: createTargetEffects(),
+      },
+      {
+        id: "chaser-spirit-a", kind: "chaser", x: game.player.x + 120, y: game.player.y - 40,
+        radius: 18, health: 80, maxHealth: 80, immortal: false, speed: 0, frozenUntil: 0,
+        effects: createTargetEffects(),
+      },
+      {
+        id: "chaser-spirit-b", kind: "chaser", x: game.player.x + 120, y: game.player.y + 40,
+        radius: 18, health: 80, maxHealth: 80, immortal: false, speed: 0, frozenUntil: 0,
+        effects: createTargetEffects(),
+      },
+    ],
+  };
+  game = updateGame(game, idle, 0, 1.01);
+
+  expect(game.metrics.projectiles).toBe(0);
+  expect(game.pendingEmissions).toEqual([expect.objectContaining({
+    effectId: "soulHarvester.spirits", rootTriggerId: "trigger-1", generation: 1,
+  })]);
+  expect(game.pendingEmissions[0]!.templates).toHaveLength(2);
+
+  game = updateGame(game, idle, 0, 1.01);
+  expect(game.pendingEmissions).toEqual([]);
+  expect(game.projectiles).toHaveLength(2);
+  expect(game.metrics.projectiles).toBe(2);
+});
+
+test("a live Locket root retains Bonanza and Soul once-only ledgers", () => {
+  let game = setArtifactLoadout(createGame(() => 0.9), {
+    twinChamber: true,
+    soulHarvester: true,
+    bonanzaClip: true,
+    lastGaspLocket: true,
+  });
+  game = {
+    ...game,
+    player: { ...game.player, health: 40 },
+    locketState: { armed: true, cadence: 0 },
+    targets: [{
+      id: "chaser-projectile", kind: "chaser", x: game.player.x + 80, y: game.player.y,
+      radius: 18, health: 1, maxHealth: 1, immortal: false, speed: 0, frozenUntil: 0,
+      effects: createTargetEffects(),
+    }],
+  };
+
+  game = updateGame(game, {
+    ...idle, aimX: game.player.x + 100, aimY: game.player.y, firing: true,
+  }, 0, 1);
+  game = updateGame(game, idle, 0.2, 1.2);
+  expect(game.locketOrbitals).toHaveLength(1);
+  expect(game.pendingEmissions).toEqual([expect.objectContaining({
+    effectId: "soulHarvester.spirits", rootTriggerId: "trigger-1",
+  })]);
+
+  game = updateGame(game, idle, 0, 1.2);
+  expect(game.projectiles.filter(({ emission }) => emission?.effectId === "soulHarvester.spirits")).toHaveLength(2);
+  const projectileCountAfterFirstSoulBatch = game.metrics.projectiles;
+
+  game = updateGame(game, idle, 2, 3.2);
+  expect(game.projectiles).toEqual([]);
+  expect(game.pendingRefunds).toEqual([]);
+  expect(game.bonanzaHistory).not.toEqual({});
+  expect(game.emittedEffects).not.toEqual({});
+  expect(game.descendantsByRoot["trigger-1"]?.count).toBe(2);
+
+  const orbital = game.locketOrbitals[0]!;
+  game = {
+    ...game,
+    targets: [{
+      id: "chaser-orbital",
+      kind: "chaser",
+      x: game.player.x + Math.cos(orbital.angle) * orbital.radius,
+      y: game.player.y + Math.sin(orbital.angle) * orbital.radius,
+      radius: 18, health: 1, maxHealth: 1, immortal: false, speed: 0, frozenUntil: 0,
+      effects: createTargetEffects(),
+    }],
+  };
+  game = updateGame(game, idle, 0, 3.21);
+
+  expect(game.locketOrbitals).toEqual([]);
+  expect(game.pendingRefunds).toEqual([]);
+  expect(game.pendingEmissions).toEqual([]);
+  expect(game.metrics.projectiles).toBe(projectileCountAfterFirstSoulBatch);
+});
+
 test("Undertaker's Coat leaves a pre-hit decoy only for nonfatal accepted contact", () => {
   let game = setArtifact(createGame(() => 0.9), "undertakersCoat", true);
   game = {
@@ -1349,7 +1535,8 @@ test("earned Bonanza delivery survives Clear Targets and expired reactive state 
     }],
     locketOrbitals: [{
       id: "locket-expired", slot: 0, rootTriggerId: "trigger-3", rootIndex: 3,
-      lineageId: "trigger-3:0", localOrdinal: 0, eligibleEffectIds: [], originPower: 20,
+      lineageId: "trigger-3:0", localOrdinal: 0, eligibleEffectIds: [], reactiveEffectIds: [], originPower: 20,
+      sourceSpec: { heading: 0, ...game.weapon.projectileBase },
       damage: 20, radius: 40, hitRadius: 5, angle: 0, angularSpeed: Math.PI * 2,
       bornAt: 0, expiresAt: 1,
     }],

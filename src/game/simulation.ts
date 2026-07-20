@@ -7,8 +7,10 @@ import { ROOM, ROOM_PROPS, TILE_SIZE, type Point } from "./room";
 import { expandTrigger, type LocketState, type PlayerSatelliteState, type ScheduledProjectile } from "./trigger";
 import {
   resolveCombatPhases,
+  resolveReactiveKillPhase,
   type AreaState,
   type CombatTargetState,
+  type KillContext,
   type PendingEmission,
   type VfxCommand,
 } from "./combat-effects";
@@ -265,6 +267,7 @@ export function clearTargets(state: GameState): GameState {
   const metrics = retainTargetMetrics(state.metrics, []);
   const activeProjectileIds = new Set(state.projectiles.map(({ id }) => id));
   const activeRoots = new Set([
+    ...state.locketOrbitals.map(({ rootTriggerId }) => rootTriggerId),
     ...state.projectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...state.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...state.pendingRefunds.map(({ rootTriggerId }) => rootTriggerId),
@@ -488,7 +491,19 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   }
   if (acceptedDamage) stillwater = resolveStillwater(stillwater, state.artifacts.stillwater === true, 0, 0, true);
 
-  const combat = resolveCombatPhases({
+  const combatContext = {
+    dt,
+    room: state.room,
+    props: ROOM_PROPS,
+    build: state.build,
+    rng: state.rng,
+    player,
+    trajectoryTargets: targets,
+    teslaLinks: state.teslaLinks,
+    teslaCooldowns: state.teslaCooldowns,
+    fireRate: weapon.fireRate,
+  } as const;
+  let combat = resolveCombatPhases({
     projectiles: state.projectiles,
     targets,
     scheduledProjectiles,
@@ -514,22 +529,13 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     descendantsByRoot,
     pendingRefunds,
     bonanzaHistory: state.bonanzaHistory,
-  }, {
-    dt,
-    room: state.room,
-    props: ROOM_PROPS,
-    build: state.build,
-    rng: state.rng,
-    player,
-    trajectoryTargets: targets,
-    teslaLinks: state.teslaLinks,
-    teslaCooldowns: state.teslaCooldowns,
-    fireRate: weapon.fireRate,
-  });
+    retainedRootIds: Object.freeze(locketOrbitals.map(({ rootTriggerId }) => rootTriggerId)),
+  }, combatContext);
   metrics = combat.metrics;
   let finalTargets = [...combat.targets];
   let nextId = combat.nextId;
-  const vfxCommands = [...combat.vfxCommands];
+  let vfxCommands = [...combat.vfxCommands];
+  const orbitalKills: KillContext[] = [];
   const orbitalResult = advanceLocketOrbitals(
     locketOrbitals,
     player,
@@ -541,6 +547,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   for (const hit of orbitalResult.hits) {
     const target = finalTargets.find(({ id }) => id === hit.targetId);
     if (!target || (!target.immortal && target.health <= 0)) continue;
+    const healthBefore = target.health;
     const damaged = target.immortal ? target : { ...target, health: target.health - hit.damage };
     finalTargets = finalTargets.map((candidate) => candidate.id === target.id ? damaged : candidate);
     metrics = recordDamage(metrics, {
@@ -555,11 +562,37 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       killReactionDepth: 0,
       originPower: hit.originPower,
       generation: 0,
-      reactiveEffectIds: [],
+      reactiveEffectIds: hit.reactiveEffectIds,
       x: hit.x,
       y: hit.y,
     });
-    if (!damaged.immortal && damaged.health <= 0) metrics = recordKill(metrics, damaged.id);
+    if (!damaged.immortal && healthBefore > 0 && damaged.health <= 0) {
+      metrics = recordKill(metrics, damaged.id);
+      orbitalKills.push(Object.freeze({
+        victimId: damaged.id,
+        x: damaged.x,
+        y: damaged.y,
+        time: now,
+        source: "reactive",
+        generation: 0,
+        reactiveEffectIds: Object.freeze([...hit.reactiveEffectIds]),
+        artifactId: hit.artifactId,
+        effectId: hit.effectId,
+        rootTriggerId: hit.rootTriggerId,
+        lineageId: hit.lineageId,
+        originPower: hit.originPower,
+        killReactionDepth: 0,
+        sourceSnapshot: Object.freeze({
+          rootIndex: hit.rootIndex,
+          localOrdinal: hit.localOrdinal,
+          triggeredAt: hit.triggeredAt,
+          effectIds: Object.freeze([...new Set([...hit.eligibleEffectIds, ...hit.reactiveEffectIds])]),
+          spec: hit.sourceSpec,
+          killReaction: hit.killReaction,
+        }),
+        targetEffects: normalizeTargetEffects(damaged.effects, now),
+      }));
+    }
     vfxCommands.push({
       id: `vfx-${nextId++}`,
       kind: "lastGaspLocket.consume",
@@ -576,11 +609,25 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     });
   }
   finalTargets = finalTargets.filter((target) => target.immortal || target.health > 0);
+  if (orbitalKills.length > 0) {
+    combat = resolveReactiveKillPhase({
+      ...combat,
+      targets: finalTargets,
+      metrics,
+      vfxCommands,
+      nextId,
+    }, combatContext, orbitalKills);
+    metrics = combat.metrics;
+    finalTargets = [...combat.targets];
+    nextId = combat.nextId;
+    vfxCommands = [...combat.vfxCommands];
+  }
 
   const resolvedRefunds = resolvePendingRefunds(cylinder, combat.pendingRefunds ?? pendingRefunds, now);
   cylinder = resolvedRefunds.cylinder;
   pendingRefunds = resolvedRefunds.pendingRefunds;
   const activeBonanzaRoots = new Set([
+    ...locketOrbitals.map(({ rootTriggerId }) => rootTriggerId),
     ...combat.projectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...combat.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...combat.pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),

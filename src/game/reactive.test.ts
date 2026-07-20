@@ -15,6 +15,11 @@ import {
 } from "./reactive";
 import { deriveWeapon } from "./weapon";
 
+const sourceSpec = Object.freeze({
+  heading: 0,
+  ...deriveWeapon(compileCombatBuild({}), 0).projectileBase,
+});
+
 const recoil = (
   rootIndex: number,
   vector: Readonly<{ x: number; y: number }> = { x: -55, y: 0 },
@@ -100,11 +105,13 @@ test("due Bonanza and Recoil refunds use arrival, effect ID, and numeric root or
 test("Last Gasp Locket uses lowest free slot, exact orbit constants, and stable swept consumption", () => {
   const first = createLocketOrbital({
     rootTriggerId: "trigger-3", rootIndex: 3, lineageId: "trigger-3:1", localOrdinal: 1,
-    eligibleEffectIds: ["stillwater.charge"], damage: 32, radius: 10, originPower: 20, triggeredAt: 1,
+    eligibleEffectIds: ["stillwater.charge"], reactiveEffectIds: ["bonanzaClip.refund"],
+    sourceSpec, damage: 32, radius: 10, originPower: 20, triggeredAt: 1,
   }, [], 1);
   const second = createLocketOrbital({
     rootTriggerId: "trigger-6", rootIndex: 6, lineageId: "trigger-6:1", localOrdinal: 1,
-    eligibleEffectIds: [], damage: 20, radius: 5, originPower: 20, triggeredAt: 1,
+    eligibleEffectIds: [], reactiveEffectIds: [], sourceSpec,
+    damage: 20, radius: 5, originPower: 20, triggeredAt: 1,
   }, [first], 1);
   expect(first).toMatchObject({ id: "locket-trigger-3-0", slot: 0, angle: 0, radius: 40, angularSpeed: Math.PI * 2, expiresAt: 3.5 });
   expect(second.slot).toBe(1);
@@ -118,6 +125,28 @@ test("Last Gasp Locket uses lowest free slot, exact orbit constants, and stable 
     ["locket-trigger-3-0", "chaser-a"],
   ]);
   expect(advanced.orbitals.map(({ id }) => id)).toEqual(["locket-trigger-6-1"]);
+});
+
+test("simultaneous Locket orbitals retarget after a kill and retain without a live swept contact", () => {
+  const orbital = createLocketOrbital({
+    rootTriggerId: "trigger-3", rootIndex: 3, lineageId: "trigger-3:0", localOrdinal: 0,
+    eligibleEffectIds: [], reactiveEffectIds: [], sourceSpec,
+    damage: 20, radius: 5, originPower: 20, triggeredAt: 1,
+  }, [], 1);
+  const result = advanceLocketOrbitals([
+    { ...orbital, id: "locket-a" },
+    { ...orbital, id: "locket-b" },
+    { ...orbital, id: "locket-c" },
+  ], { x: 100, y: 100 }, [
+    { id: "chaser-b", x: 140, y: 100, radius: 18, health: 1 },
+    { id: "chaser-a", x: 140, y: 100, radius: 18, health: 1 },
+  ], 0, 1);
+
+  expect(result.hits.map(({ orbitalId, targetId }) => [orbitalId, targetId])).toEqual([
+    ["locket-a", "chaser-a"],
+    ["locket-b", "chaser-b"],
+  ]);
+  expect(result.orbitals.map(({ id }) => id)).toEqual(["locket-c"]);
 });
 
 test("timed reactive records prune at their exact deadlines", () => {

@@ -28,6 +28,11 @@ export type BuiltPendingEmission = PendingEmission & Readonly<{
   templates: readonly ProjectileState[];
 }>;
 
+export type KillReactionSnapshot = Readonly<{
+  rule: Readonly<Extract<EmissionRule, { kind: "killSpirits" }>>;
+  descendantLimit: number;
+}>;
+
 export type KillContext = Readonly<{
   victimId: string;
   x: number;
@@ -44,6 +49,14 @@ export type KillContext = Readonly<{
   originPower: number;
   killReactionDepth: 0 | 1;
   sourceProjectile?: ProjectileState;
+  sourceSnapshot?: Readonly<{
+    rootIndex: number;
+    localOrdinal: number;
+    triggeredAt: number;
+    effectIds: readonly string[];
+    spec: Readonly<Omit<ProjectileSpec, "triggerId"> & { triggerId?: never }>;
+    killReaction?: KillReactionSnapshot;
+  }>;
   targetEffects?: TargetEffects;
 }>;
 

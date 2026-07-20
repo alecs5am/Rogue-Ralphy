@@ -310,6 +310,10 @@ test("Locket remains armed at its three-orbital cap and excludes later transform
     radius: 5 * 2,
     originPower: 20 * 1.6,
     eligibleEffectIds: ["stillwater.charge"],
+    sourceSpec: { behaviors: { penetration: { obstacles: true, targets: true } } },
+  });
+  expect(transformed.locketOrbital!.sourceSpec.behaviors).toEqual({
+    penetration: { obstacles: true, targets: true },
   });
 });
 

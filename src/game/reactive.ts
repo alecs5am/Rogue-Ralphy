@@ -1,6 +1,9 @@
 import { refundRound, type CylinderState } from "./cylinder";
-import type { KillContext } from "./emissions";
+import type { KillContext, KillReactionSnapshot } from "./emissions";
+import type { ProjectileSpec } from "./projectiles";
 import { segmentCircleHitTime, type Point } from "./room";
+
+type LocketSourceSpec = Readonly<Omit<ProjectileSpec, "triggerId"> & { triggerId?: never }>;
 
 export type RecoilWindow = Readonly<{
   effectId: "recoilBoots.recoil";
@@ -30,6 +33,9 @@ export type LocketOrbitalSeed = Readonly<{
   lineageId: string;
   localOrdinal: number;
   eligibleEffectIds: readonly string[];
+  reactiveEffectIds: readonly string[];
+  sourceSpec: LocketSourceSpec;
+  killReaction?: KillReactionSnapshot;
   damage: number;
   radius: number;
   originPower: number;
@@ -44,6 +50,9 @@ export type ProtectiveOrbital = Readonly<{
   lineageId: string;
   localOrdinal: number;
   eligibleEffectIds: readonly string[];
+  reactiveEffectIds: readonly string[];
+  sourceSpec: LocketSourceSpec;
+  killReaction?: KillReactionSnapshot;
   originPower: number;
   damage: number;
   radius: number;
@@ -61,6 +70,13 @@ export type LocketHit = Readonly<{
   effectId: "lastGaspLocket.orbital";
   rootTriggerId: string;
   lineageId: string;
+  rootIndex: number;
+  localOrdinal: number;
+  eligibleEffectIds: readonly string[];
+  reactiveEffectIds: readonly string[];
+  sourceSpec: LocketSourceSpec;
+  killReaction?: KillReactionSnapshot;
+  triggeredAt: number;
   originPower: number;
   damage: number;
   x: number;
@@ -68,6 +84,15 @@ export type LocketHit = Readonly<{
 }>;
 
 export type DecoyState = Readonly<{ x: number; y: number; expiresAt: number }>;
+
+const snapshotSpec = (spec: LocketSourceSpec): LocketSourceSpec => Object.freeze({
+  ...spec,
+  behaviors: Object.freeze(Object.fromEntries(Object.entries(spec.behaviors).map(([key, value]) => [
+    key,
+    value && typeof value === "object" ? Object.freeze({ ...value }) : value,
+  ]))),
+  bell: spec.bell && Object.freeze({ ...spec.bell }),
+});
 
 export function resolveStillwater(
   state: StillwaterState,
@@ -190,6 +215,12 @@ export function createLocketOrbital(
     lineageId: seed.lineageId,
     localOrdinal: seed.localOrdinal,
     eligibleEffectIds: Object.freeze([...seed.eligibleEffectIds]),
+    reactiveEffectIds: Object.freeze([...seed.reactiveEffectIds]),
+    sourceSpec: snapshotSpec(seed.sourceSpec),
+    killReaction: seed.killReaction && Object.freeze({
+      rule: Object.freeze({ ...seed.killReaction.rule }),
+      descendantLimit: seed.killReaction.descendantLimit,
+    }),
     originPower: seed.originPower,
     damage: seed.damage,
     radius: 40,
@@ -204,7 +235,7 @@ export function createLocketOrbital(
 export function advanceLocketOrbitals(
   orbitals: readonly ProtectiveOrbital[],
   player: Point,
-  chasers: readonly Readonly<Point & { id: string; radius: number; health: number }>[],
+  chasers: readonly Readonly<Point & { id: string; radius: number; health: number; immortal?: boolean }>[],
   dt: number,
   now: number,
 ): Readonly<{ orbitals: ProtectiveOrbital[]; hits: LocketHit[] }> {
@@ -212,6 +243,7 @@ export function advanceLocketOrbitals(
     .toSorted((a, b) => compareString(a.id, b.id));
   const consumed = new Set<string>();
   const hits: LocketHit[] = [];
+  const remainingHealth = new Map(chasers.map(({ id, health }) => [id, health]));
   for (const orbital of live) {
     const nextAngle = orbital.angle + orbital.angularSpeed * dt;
     const from = {
@@ -223,11 +255,12 @@ export function advanceLocketOrbitals(
       y: player.y + Math.sin(nextAngle) * orbital.radius,
     };
     const target = chasers
-      .filter(({ health, radius, ...center }) => health > 0
+      .filter(({ id, immortal, radius, ...center }) => (immortal || (remainingHealth.get(id) ?? 0) > 0)
         && segmentCircleHitTime(from, to, center, radius + orbital.hitRadius) !== null)
       .toSorted((a, b) => compareString(a.id, b.id))[0];
     if (!target) continue;
     consumed.add(orbital.id);
+    if (!target.immortal) remainingHealth.set(target.id, (remainingHealth.get(target.id) ?? 0) - orbital.damage);
     hits.push({
       orbitalId: orbital.id,
       targetId: target.id,
@@ -235,6 +268,13 @@ export function advanceLocketOrbitals(
       effectId: "lastGaspLocket.orbital",
       rootTriggerId: orbital.rootTriggerId,
       lineageId: orbital.lineageId,
+      rootIndex: orbital.rootIndex,
+      localOrdinal: orbital.localOrdinal,
+      eligibleEffectIds: Object.freeze([...orbital.eligibleEffectIds]),
+      reactiveEffectIds: Object.freeze([...orbital.reactiveEffectIds]),
+      sourceSpec: orbital.sourceSpec,
+      killReaction: orbital.killReaction,
+      triggeredAt: orbital.bornAt,
       originPower: orbital.originPower,
       damage: orbital.damage,
       x: target.x,

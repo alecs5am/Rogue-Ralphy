@@ -125,9 +125,10 @@ export function expandTrigger(context: TriggerContext) {
   const lastRound = trigger("lastRound");
   const locket = trigger("lowHealthOrbital");
   const bonanza = trigger("ammoReturn");
+  const killSpirits = context.build.emissions.find((rule) => rule.kind === "killSpirits");
   const reactiveEffectIds = Object.freeze([
     ...(bonanza ? [bonanza.effectId] : []),
-    ...context.build.emissions.filter(({ kind }) => kind === "killSpirits").map(({ effectId }) => effectId),
+    ...(killSpirits ? [killSpirits.effectId] : []),
   ]);
   const bigIron = trigger("heavyMainAndMoonlet");
   const posse = trigger("playerSatellite");
@@ -235,12 +236,29 @@ export function expandTrigger(context: TriggerContext) {
       : undefined;
     if (candidate) {
       candidate.locket = true;
+      const retainsStillwater = candidate.effectIds.has("stillwater.charge");
       locketOrbital = Object.freeze({
         rootTriggerId: context.rootTriggerId,
         rootIndex: context.rootIndex,
         lineageId: `${context.rootTriggerId}:${candidate.localOrdinal}`,
         localOrdinal: candidate.localOrdinal,
-        eligibleEffectIds: Object.freeze(candidate.effectIds.has("stillwater.charge") ? ["stillwater.charge"] : []),
+        eligibleEffectIds: Object.freeze(retainsStillwater ? ["stillwater.charge"] : []),
+        reactiveEffectIds: Object.freeze([...reactiveEffectIds]),
+        sourceSpec: freezeSpec({
+          ...candidate.spec,
+          freezeChance: 0,
+          freezeDuration: 0,
+          bounces: 0,
+          behaviors: retainsStillwater && candidate.spec.behaviors.penetration
+            ? { penetration: candidate.spec.behaviors.penetration }
+            : {},
+          motionPhase: undefined,
+          bell: undefined,
+        }),
+        killReaction: killSpirits?.kind === "killSpirits" ? Object.freeze({
+          rule: Object.freeze({ ...killSpirits }),
+          descendantLimit: context.build.maxDescendants,
+        }) : undefined,
         damage: candidate.spec.damage,
         radius: candidate.spec.radius,
         originPower: candidate.spec.damage,

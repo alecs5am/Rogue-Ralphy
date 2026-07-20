@@ -139,6 +139,7 @@ export type CombatRuntime = Readonly<{
   descendantsByRoot?: Readonly<Record<string, DescendantRecord>>;
   pendingRefunds?: readonly PendingRefund[];
   bonanzaHistory?: Readonly<Record<string, RootStatusRecord>>;
+  retainedRootIds?: readonly string[];
 }>;
 
 type RoomGeometry = Readonly<{
@@ -470,6 +471,7 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
   if (runtime.wantedBrand && runtime.wantedBrand.expiresAt < 0) throw new Error("Wanted Brand deadline must be nonnegative");
 
   const liveRootIds = new Set([
+    ...(runtime.retainedRootIds ?? []),
     ...runtime.projectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...runtime.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...runtime.pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
@@ -2326,6 +2328,33 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
   };
 }
 
+function sourceProjectileForKill(killed: KillContext, context: CombatContext): ProjectileState | undefined {
+  if (killed.sourceProjectile) return killed.sourceProjectile;
+  const snapshot = killed.sourceSnapshot;
+  if (!snapshot) return undefined;
+  const source = materializeScheduled({
+    at: snapshot.triggeredAt,
+    generation: 0,
+    rootTriggerId: killed.rootTriggerId,
+    rootIndex: snapshot.rootIndex,
+    localOrdinal: snapshot.localOrdinal,
+    lineageId: killed.lineageId ?? `${killed.rootTriggerId}:${snapshot.localOrdinal}`,
+    effectIds: snapshot.effectIds,
+    reactiveEffectIds: killed.reactiveEffectIds,
+    spec: snapshot.spec,
+    origin: Object.freeze({ x: killed.x, y: killed.y }),
+    aim: snapshot.spec.heading,
+    exactOrigin: true,
+  }, context, snapshot.triggeredAt, `reactive-source:${killed.rootTriggerId}:${snapshot.localOrdinal}`, 0, 1);
+  return immutableProjectileSnapshot({
+    ...source,
+    x: killed.x,
+    y: killed.y,
+    damage: killed.originPower,
+    originPower: killed.originPower,
+  });
+}
+
 export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseState, context: CombatContext): CombatPhaseState {
   const current = phaseState(runtime, context);
   let targets = current.targets.map((target) => cloneTarget(target, current.now));
@@ -2419,22 +2448,27 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
       }
     }
 
-    if (killed.generation !== 0 || killed.killReactionDepth !== 0 || !killed.sourceProjectile) continue;
-    const rule = context.build.emissions.find((candidate) => candidate.kind === "killSpirits"
-      && killed.reactiveEffectIds.includes(candidate.effectId));
+    if (killed.generation !== 0 || killed.killReactionDepth !== 0) continue;
+    const snapshottedRule = killed.sourceSnapshot?.killReaction?.rule;
+    const rule = snapshottedRule && killed.reactiveEffectIds.includes(snapshottedRule.effectId)
+      ? snapshottedRule
+      : context.build.emissions.find((candidate) => candidate.kind === "killSpirits"
+        && killed.reactiveEffectIds.includes(candidate.effectId));
     if (!rule || rule.kind !== "killSpirits") continue;
+    const sourceProjectile = sourceProjectileForKill(killed, context);
+    if (!sourceProjectile) continue;
     const key = rootEmissionKey(rule.effectId, killed.rootTriggerId);
     if (emittedEffects[key]) continue;
     const source = cloneProjectile({
-      ...killed.sourceProjectile,
+      ...sourceProjectile,
       rootTriggerId: killed.rootTriggerId,
-      lineageId: killed.lineageId ?? killed.sourceProjectile.lineageId,
-      activatedEffectIds: killed.reactiveEffectIds,
+      lineageId: killed.lineageId ?? sourceProjectile.lineageId,
+      activatedEffectIds: killed.sourceSnapshot?.effectIds ?? killed.reactiveEffectIds,
       x: killed.x,
       y: killed.y,
       damage: killed.originPower,
       originPower: killed.originPower,
-      emittedEffectIds: killed.sourceProjectile.emittedEffectIds.filter((effectId) => effectId !== rule.effectId),
+      emittedEffectIds: sourceProjectile.emittedEffectIds.filter((effectId) => effectId !== rule.effectId),
     });
     const candidates = targets
       .filter((target) => target.id !== killed.victimId
@@ -2451,7 +2485,9 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     const specs = emissionSpecs(source, rule, headings);
     const previousDescendants = descendantsByRoot[killed.rootTriggerId];
     const descendantCount = (previousDescendants?.count ?? 0) + specs.length;
-    const descendantLimit = Math.min(294, previousDescendants?.limit ?? context.build.maxDescendants);
+    const descendantLimit = Math.min(294, previousDescendants?.limit
+      ?? killed.sourceSnapshot?.killReaction?.descendantLimit
+      ?? context.build.maxDescendants);
     if (descendantCount > descendantLimit) {
       throw new Error(`generation-one descendant overflow: ${killed.rootTriggerId} exceeds ${descendantLimit} (generation-one descendant bound)`);
     }
@@ -2464,7 +2500,7 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     pendingEmissions.push(buildGenerationOneEmission(source, rule, specs, current.step, {
       childIds,
       origin: killed,
-      emissionEffectIds: context.build.emissions.map(({ effectId }) => effectId),
+      emissionEffectIds: [...new Set([...context.build.emissions.map(({ effectId }) => effectId), rule.effectId])],
       soulTargetIds: selected.map((target) => target?.id),
     }));
     emittedEffects[key] = { rootTriggerId: killed.rootTriggerId };
@@ -2507,6 +2543,7 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     .filter((target) => target.immortal || target.health > 0)
     .map((target) => cloneTarget(target, current.now));
   const activeRoots = new Set([
+    ...(current.retainedRootIds ?? []),
     ...current.projectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...current.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
@@ -2554,6 +2591,19 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     bonanzaHistory: Object.fromEntries(Object.entries(bonanzaHistory)
       .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
   };
+}
+
+export function resolveReactiveKillPhase(
+  runtime: CombatRuntime | CombatPhaseState,
+  context: CombatContext,
+  killContexts: readonly KillContext[],
+): CombatPhaseState {
+  const resolved = resolveKillAndCleanupPhase({
+    ...phaseState(runtime, context),
+    killContexts: Object.freeze([...killContexts]),
+  }, context);
+  assertRuntime(resolved, context);
+  return resolved;
 }
 
 export function resolveCombatPhases(runtime: CombatRuntime, context: CombatContext): CombatPhaseState {
