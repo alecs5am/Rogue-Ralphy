@@ -150,7 +150,7 @@ type EmissionRequest = Readonly<{
   specs?: readonly ProjectileSpec[];
   origin?: Point;
   pendingTokens?: readonly Readonly<{ effectId: string; distance: number }>[];
-  wantedTargetIds?: readonly (string | undefined)[];
+  soulTargetIds?: readonly (string | undefined)[];
 }>;
 
 type CombatPhaseState = CombatRuntime & Readonly<{
@@ -207,11 +207,30 @@ const cloneProjectile = (projectile: ProjectileState): ProjectileState => ({
   bellPulse: projectile.bellPulse && { ...projectile.bellPulse },
 });
 
+const immutableProjectileSnapshot = (projectile: ProjectileState): ProjectileState => {
+  const snapshot = cloneProjectile(projectile);
+  snapshot.activatedEffectIds = Object.freeze([...snapshot.activatedEffectIds]);
+  snapshot.emittedEffectIds = Object.freeze([...snapshot.emittedEffectIds]);
+  snapshot.hitTargetIds = Object.freeze([...snapshot.hitTargetIds]) as unknown as string[];
+  snapshot.outboundHitTargetIds = snapshot.outboundHitTargetIds
+    && Object.freeze([...snapshot.outboundHitTargetIds]) as unknown as string[];
+  snapshot.returnHitTargetIds = snapshot.returnHitTargetIds
+    && Object.freeze([...snapshot.returnHitTargetIds]) as unknown as string[];
+  snapshot.pendingEffectTokens = snapshot.pendingEffectTokens && Object.freeze([...snapshot.pendingEffectTokens]);
+  return Object.freeze(snapshot);
+};
+
 const cloneTarget = (target: CombatTargetState, now = -Infinity): CombatTargetState => {
   const hollowPoint = target.effects?.hollowPoint;
   return {
     ...target,
-    effects: hollowPoint && hollowPoint.expiresAt > now ? { hollowPoint: { ...hollowPoint } } : {},
+    effects: hollowPoint && hollowPoint.expiresAt > now ? {
+      hollowPoint: Object.freeze({
+        ...hollowPoint,
+        reactiveEffectIds: Object.freeze([...hollowPoint.reactiveEffectIds]),
+        sourceProjectile: immutableProjectileSnapshot(hollowPoint.sourceProjectile),
+      }),
+    } : {},
   };
 };
 
@@ -495,7 +514,7 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
   return {
     ...phaseState(runtime, context),
     projectiles: [...runtime.projectiles.map(cloneProjectile), ...created],
-    targets: runtime.targets.map((target) => cloneTarget(target, runtime.now)),
+    targets: runtime.targets.map((target) => cloneTarget(target)),
     scheduledProjectiles: futureSchedules,
     pendingEmissions: futurePending,
     metrics,
@@ -790,11 +809,7 @@ function captureKillContext(
   projectile?: ProjectileState,
 ): KillContext | undefined {
   if (target.immortal || healthBefore <= 0 || target.health > 0) return undefined;
-  const sourceProjectile = projectile && cloneProjectile(projectile);
-  if (sourceProjectile) {
-    sourceProjectile.activatedEffectIds = Object.freeze([...sourceProjectile.activatedEffectIds]);
-    sourceProjectile.emittedEffectIds = Object.freeze([...sourceProjectile.emittedEffectIds]);
-  }
+  const sourceProjectile = projectile && immutableProjectileSnapshot(projectile);
   return Object.freeze({
     victimId: target.id,
     x: target.x,
@@ -837,6 +852,17 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
   const killContexts = [...current.killContexts];
   let nextId = current.nextId;
   let metrics = current.metrics;
+
+  const queueNaturalExpiry = (projectile: ProjectileState, point: Point): void => {
+    for (const rule of resolveImpactRules({ source: projectile, build: context.build, kind: "range" }).emissions) {
+      const key = lineageEmissionKey(rule.effectId, projectile.lineageId);
+      if (emittedEffects[key] || rule.kind !== "expiryRadial") continue;
+      const source = cloneProjectile(projectile);
+      emissionRequests.push({ projectile: source, rule, specs: emissionSpecs(source, rule, headingsFor(source, rule)), origin: point });
+      projectile.emittedEffectIds = [...projectile.emittedEffectIds, rule.effectId];
+      emittedEffects[key] = { rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId };
+    }
+  };
 
   for (const event of current.events) {
     if (removed.has(event.projectileId) || settled.has(event.projectileId)) continue;
@@ -890,6 +916,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     if (event.kind === "distance") {
       if (event.distanceEffect === "undertakersReturn") continue;
       if (event.distanceEffect === "return-expire") {
+        queueNaturalExpiry(projectile, event.point);
         metrics = recordProjectileOutcome(metrics, projectile.everHit);
         removed.add(projectile.id);
         continue;
@@ -931,16 +958,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       continue;
     }
     if (event.kind === "range" || event.kind === "lifetime") {
-      if (event.kind === "lifetime") {
-        for (const rule of resolveImpactRules({ source: projectile, build: context.build, kind: "lifetime" }).emissions) {
-          const key = lineageEmissionKey(rule.effectId, projectile.lineageId);
-          if (emittedEffects[key] || rule.kind !== "expiryRadial") continue;
-          const source = cloneProjectile(projectile);
-          emissionRequests.push({ projectile: source, rule, specs: emissionSpecs(source, rule, headingsFor(source, rule)), origin: event.point });
-          projectile.emittedEffectIds = [...projectile.emittedEffectIds, rule.effectId];
-          emittedEffects[key] = { rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId };
-        }
-      }
+      queueNaturalExpiry(projectile, event.point);
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
       removed.add(projectile.id);
       continue;
@@ -1060,13 +1078,13 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
           projectileId: charge.projectileId,
           killReactionDepth: 0,
           originPower: charge.originPower,
-          generation: projectile.generation,
-          reactiveEffectIds: projectile.activatedEffectIds,
+          generation: charge.generation,
+          reactiveEffectIds: charge.reactiveEffectIds,
           x: nearby.x,
           y: nearby.y,
         };
         metrics = recordDamage(metrics, explosionEvent);
-        const explosionKill = captureKillContext(nearby, beforeExplosion, explosionEvent, projectile);
+        const explosionKill = captureKillContext(nearby, beforeExplosion, explosionEvent, charge.sourceProjectile);
         if (explosionKill) {
           killContexts.push(explosionKill);
           metrics = recordKill(metrics, nearby.id);
@@ -1084,6 +1102,9 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
             lineageId: projectile.lineageId,
             projectileId: projectile.id,
             originPower,
+            generation: projectile.generation,
+            reactiveEffectIds: Object.freeze([...projectile.activatedEffectIds]),
+            sourceProjectile: immutableProjectileSnapshot(projectile),
           }),
         };
       }
@@ -1165,7 +1186,7 @@ export function resolveEmissionPhase(runtime: CombatRuntime | CombatPhaseState, 
         origin: request.origin,
         emissionEffectIds: context.build.emissions.map(({ effectId }) => effectId),
         pendingTokens: request.pendingTokens,
-        wantedTargetIds: request.wantedTargetIds,
+        soulTargetIds: request.soulTargetIds,
       }));
   }
   return { ...current, pendingEmissions: pending, nextId, emissionRequests: [] };
@@ -1329,7 +1350,7 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
       childIds,
       origin: killed,
       emissionEffectIds: context.build.emissions.map(({ effectId }) => effectId),
-      wantedTargetIds: selected.map((target) => target?.id),
+      soulTargetIds: selected.map((target) => target?.id),
     }));
     emittedEffects[key] = { rootTriggerId: killed.rootTriggerId };
   }

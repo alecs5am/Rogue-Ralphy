@@ -3,6 +3,7 @@ import { compileCombatBuild, type CombatBuild } from "./combat-build";
 import { resolveCombatPhases, type CombatContext, type CombatRuntime, type CombatTargetState } from "./combat-effects";
 import { createMetrics } from "./metrics";
 import { buildGenerationOneEmission } from "./emissions";
+import { selectMotionTarget } from "./motions";
 import type { ProjectileState } from "./projectiles";
 import { ROOM } from "./room";
 
@@ -91,7 +92,7 @@ test("Hollow Point plants on a live direct target, expires inclusively, and the 
     targets: [target("charged", 300), target("nearby", 330)],
   }), context(build));
 
-  expect(state.targets.find(({ id }) => id === "charged")?.effects?.hollowPoint).toEqual({
+  expect(state.targets.find(({ id }) => id === "charged")?.effects?.hollowPoint).toMatchObject({
     damage: 12,
     expiresAt: 3,
     rootTriggerId: "trigger-1",
@@ -124,7 +125,18 @@ test("Hollow Point plants on a live direct target, expires inclusively, and the 
     now: 4,
     projectiles: [projectile("projectile-3", 400, ["hollowPoint.charge"])],
     targets: [target("expired", 400, 100, {
-      effects: { hollowPoint: { damage: 99, expiresAt: 4, rootTriggerId: "old", originPower: 99 } },
+      effects: { hollowPoint: {
+        damage: 99,
+        expiresAt: 4,
+        rootTriggerId: "old",
+        originPower: 99,
+        generation: 0,
+        reactiveEffectIds: ["baseRevolver.direct", "hollowPoint.charge"],
+        sourceProjectile: projectile("old-projectile", 400, ["hollowPoint.charge"], {
+          rootTriggerId: "old",
+          originPower: 99,
+        }),
+      } },
     })],
   }), context(build));
   expect(expired.targets[0]?.effects?.hollowPoint?.damage).toBe(12);
@@ -138,6 +150,83 @@ test("Hollow Point duration starts at the swept direct-impact time", () => {
   }), context(build, { dt: 1 }));
   const hitAt = state.metrics.hitEvents[0]!.time;
   expect(state.targets[0]?.effects?.hollowPoint?.expiresAt).toBeCloseTo(hitAt + 2, 12);
+});
+
+test("Hollow Point resolves a swept hit before an expiry crossed later in the step", () => {
+  const build = compileCombatBuild({ hollowPoint: true });
+  const state = resolveCombatPhases(runtime(build, {
+    projectiles: [projectile("projectile-2", 200, ["hollowPoint.charge"], {
+      rootTriggerId: "detonator-root",
+      lineageId: "detonator-lineage",
+    })],
+    targets: [
+      target("charged", 250, 100, {
+        effects: { hollowPoint: {
+          damage: 12,
+          expiresAt: 0.75,
+          rootTriggerId: "charge-root",
+          originPower: 20,
+          generation: 0,
+          reactiveEffectIds: ["baseRevolver.direct", "hollowPoint.charge"],
+          sourceProjectile: projectile("charge-projectile", 250, ["hollowPoint.charge"], {
+            rootTriggerId: "charge-root",
+          }),
+        } },
+      }),
+      target("nearby", 280),
+    ],
+  }), context(build, { dt: 1 }));
+
+  expect(state.metrics.hitEvents.find(({ effectId }) => effectId === "hollowPoint.explosion")?.time).toBeCloseTo(0.38, 12);
+  expect(state.targets.find(({ id }) => id === "nearby")?.health).toBe(88);
+});
+
+test("Hollow Point explosion and kill reactions use the applying projectile provenance", () => {
+  const build = compileCombatBuild({ hollowPoint: true, soulHarvester: true });
+  let state = resolveCombatPhases(runtime(build, {
+    projectiles: [projectile("applying-projectile", 300, ["hollowPoint.charge", "soulHarvester.spirits"], {
+      rootTriggerId: "charge-root",
+      lineageId: "charge-lineage",
+    })],
+    targets: [target("charged", 300), target("nearby", 330, 10)],
+  }), context(build));
+
+  const stored = state.targets.find(({ id }) => id === "charged")?.effects?.hollowPoint;
+  expect(stored).toMatchObject({
+    generation: 0,
+    reactiveEffectIds: ["baseRevolver.direct", "hollowPoint.charge", "soulHarvester.spirits"],
+    sourceProjectile: { id: "applying-projectile", rootTriggerId: "charge-root" },
+  });
+  expect([stored, stored?.reactiveEffectIds, stored?.sourceProjectile].every(Object.isFrozen)).toBe(true);
+
+  state = resolveCombatPhases({
+    ...state,
+    now: 2,
+    step: 2,
+    projectiles: [projectile("detonator", 300, ["hollowPoint.charge", "detonator.only"], {
+      generation: 1,
+      rootTriggerId: "detonator-root",
+      lineageId: "detonator-lineage",
+      damage: 1,
+      emission: { artifactId: "boneOrchard", effectId: "boneOrchard.shards" },
+    })],
+  }, context(build));
+
+  const explosion = state.metrics.hitEvents.find(({ effectId }) => effectId === "hollowPoint.explosion")!;
+  expect(explosion).toMatchObject({
+    rootTriggerId: "charge-root",
+    lineageId: "charge-lineage",
+    projectileId: "applying-projectile",
+    originPower: 20,
+    generation: 0,
+    reactiveEffectIds: ["baseRevolver.direct", "hollowPoint.charge", "soulHarvester.spirits"],
+  });
+  const spirits = state.pendingEmissions.find(({ effectId }) => effectId === "soulHarvester.spirits")!;
+  expect(spirits).toMatchObject({ rootTriggerId: "charge-root", lineageId: "charge-lineage", originPower: 20 });
+  expect(spirits.templates?.map(({ splitParentId }) => splitParentId)).toEqual([
+    "applying-projectile",
+    "applying-projectile",
+  ]);
 });
 
 test("Bone Orchard emits the exact three offsets only once per lineage", () => {
@@ -161,7 +250,7 @@ test("Bone Orchard emits the exact three offsets only once per lineage", () => {
   expect(state.projectiles[0]?.emittedEffectIds).toContain("boneOrchard.shards");
 });
 
-test("Grave Bloom emits only for natural expiry and the explicit Shotgun transformation", () => {
+test("Grave Bloom emits once for natural range lifetime and return expiry plus Shotgun", () => {
   const bloom = compileCombatBuild({ graveBloom: true });
   const natural = resolveCombatPhases(runtime(bloom, {
     projectiles: [projectile("projectile-1", 300, ["graveBloom.expiry"], { bornAt: 0, lifetime: 1 })],
@@ -171,7 +260,16 @@ test("Grave Bloom emits only for natural expiry and the explicit Shotgun transfo
   const ranged = resolveCombatPhases(runtime(bloom, {
     projectiles: [projectile("projectile-2", 300, ["graveBloom.expiry"], { maxTravel: 0 })],
   }), context(bloom));
-  expect(ranged.pendingEmissions).toEqual([]);
+  expect(ranged.pendingEmissions.find(({ effectId }) => effectId === "graveBloom.expiry")?.specs).toHaveLength(6);
+
+  const returningBuild = compileCombatBuild({ graveBloom: true, undertakersReturn: true });
+  const returning = resolveCombatPhases(runtime(returningBuild, {
+    projectiles: [projectile("projectile-return", 300, ["graveBloom.expiry", "undertakersReturn.return"], {
+      motionRules: returningBuild.motions,
+    })],
+  }), context(returningBuild, { dt: 4.8 }));
+  expect(returning.pendingEmissions.filter(({ effectId }) => effectId === "graveBloom.expiry")).toHaveLength(1);
+  expect(returning.pendingEmissions[0]?.specs).toHaveLength(6);
 
   const splitBuild = compileCombatBuild({ shotgun: true, graveBloom: true, dustlineDuel: true });
   const split = resolveCombatPhases(runtime(splitBuild, {
@@ -216,7 +314,18 @@ test("Soul Harvester captures the first ordered kill and selects two distinct ne
   expect(state.pendingEmissions.filter(({ effectId }) => effectId === "soulHarvester.spirits")).toHaveLength(1);
   const spirits = state.pendingEmissions.find(({ effectId }) => effectId === "soulHarvester.spirits")!;
   expect(spirits.specs).toHaveLength(2);
-  expect(spirits.templates?.map(({ wantedTargetId }) => wantedTargetId)).toEqual(["near-a", "near-b"]);
+  expect(spirits.templates?.map(({ soulTargetId }) => soulTargetId)).toEqual(["near-a", "near-b"]);
+  expect(spirits.templates?.map(({ wantedTargetId }) => wantedTargetId)).toEqual([undefined, undefined]);
+  expect(selectMotionTarget(spirits.templates![0]!, state.targets)).toMatchObject({
+    targetId: "near-a",
+    turnRate: 3 * Math.PI,
+    source: "soul",
+  });
+  expect(selectMotionTarget(projectile("inherited-wanted", 300, [], {
+    generation: 1,
+    wantedTargetId: "near-a",
+    wantedTurnRate: 3 * Math.PI,
+  }), state.targets).targetId).toBeUndefined();
   expect(spirits.specs.map(({ damage }) => damage)).toEqual([8.75, 8.75]);
   expect(state.metrics.hitEvents.slice(0, 2).map(({ originPower }) => originPower)).toEqual([25, 25]);
 
@@ -226,7 +335,7 @@ test("Soul Harvester captures the first ordered kill and selects two distinct ne
   }), context(build));
   const unbound = unmatched.pendingEmissions.find(({ effectId }) => effectId === "soulHarvester.spirits")!;
   expect(unbound.specs).toHaveLength(2);
-  expect(unbound.templates?.map(({ wantedTargetId }) => wantedTargetId)).toEqual([undefined, undefined]);
+  expect(unbound.templates?.map(({ soulTargetId }) => soulTargetId)).toEqual([undefined, undefined]);
 });
 
 test("Bootleg Mint snapshots the successful post-bounce projectile once and ignores target ricochets", () => {

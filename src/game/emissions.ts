@@ -31,6 +31,9 @@ export type HollowPointCharge = Readonly<{
   lineageId?: string;
   projectileId?: string;
   originPower: number;
+  generation: 0 | 1;
+  reactiveEffectIds: readonly string[];
+  sourceProjectile: ProjectileState;
 }>;
 
 export type TargetEffects = Readonly<{ hollowPoint?: HollowPointCharge }>;
@@ -67,7 +70,7 @@ const EMISSION_KIND: Readonly<Record<ImpactMoment, readonly EmissionRule["kind"]
   bounce: ["tangentCopy"],
   lifetime: ["expiryRadial"],
   shotgun: ["splitCone", "expiryRadial"],
-  range: [],
+  range: ["expiryRadial"],
   kill: ["killSpirits"],
 };
 
@@ -161,6 +164,8 @@ function templateFromSpec(
     relayTargetId: undefined,
     relayLost: undefined,
     wantedTargetId: undefined,
+    soulTargetId: undefined,
+    soulTurnRate: undefined,
     baseHeading: spec.heading,
     launchHeading: spec.heading,
     childIndex: localOrdinal,
@@ -189,7 +194,7 @@ export function buildGenerationOneEmission(
     emissionEffectIds?: readonly string[];
     templates?: readonly ProjectileState[];
     pendingTokens?: readonly PendingEffectToken[];
-    wantedTargetIds?: readonly (string | undefined)[];
+    soulTargetIds?: readonly (string | undefined)[];
   }> = {},
 ): BuiltPendingEmission {
   if (source.generation !== 0) throw new Error("generation-one projectile cannot emit");
@@ -207,8 +212,8 @@ export function buildGenerationOneEmission(
   const templates = options.templates?.map(cloneProjectile) ?? specs.map((spec, index) =>
     ({
       ...templateFromSpec(source, rule, spec, ids[index]!, index, count, origin, activatedEffectIds),
-      wantedTargetId: options.wantedTargetIds?.[index],
-      wantedTurnRate: options.wantedTargetIds?.[index] ? (rule.kind === "killSpirits" ? rule.turnRate : source.wantedTurnRate) : undefined,
+      soulTargetId: options.soulTargetIds?.[index],
+      soulTurnRate: options.soulTargetIds?.[index] && rule.kind === "killSpirits" ? rule.turnRate : undefined,
     }));
   const frozenSpecs = Object.freeze(specs.map((spec) => Object.freeze({
     ...spec,

@@ -40,7 +40,7 @@ export type MotionResult = Readonly<{
 export type MotionTarget = Readonly<{
   targetId?: string;
   turnRate: number;
-  source?: "relay" | "ghost" | "wanted";
+  source?: "relay" | "ghost" | "wanted" | "soul";
 }>;
 
 const TRACE = Object.freeze([
@@ -74,13 +74,16 @@ export function selectMotionTarget(
   const relay = motionRule(projectile, "relay") ?? projectile.behaviors.relay;
   const ghost = motionRule(projectile, "homing") ?? projectile.behaviors.homing;
   const wantedRate = projectile.generation === 0 ? projectile.wantedTurnRate ?? 0 : 0;
-  const turnRate = Math.max(relay?.turnRate ?? 0, ghost?.turnRate ?? 0, wantedRate);
+  const soulRate = projectile.generation === 1 ? projectile.soulTurnRate ?? 0 : 0;
+  const turnRate = Math.max(relay?.turnRate ?? 0, ghost?.turnRate ?? 0, wantedRate, soulRate);
   const live = (id: string | undefined) => targets.find((target) => target.id === id && target.health > 0);
 
   const relayTarget = live(projectile.relayTargetId);
   if (relayTarget) return { targetId: relayTarget.id, turnRate, source: "relay" };
   const retainedGhost = live(projectile.homingTargetId);
   if (retainedGhost) return { targetId: retainedGhost.id, turnRate, source: "ghost" };
+  const soul = projectile.generation === 1 ? live(projectile.soulTargetId) : undefined;
+  if (soul) return { targetId: soul.id, turnRate, source: "soul" };
   const wanted = projectile.generation === 0 ? live(projectile.wantedTargetId) : undefined;
   if (wanted) return { targetId: wanted.id, turnRate, source: "wanted" };
   if (!ghost) return { turnRate };

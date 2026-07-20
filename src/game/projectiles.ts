@@ -96,6 +96,8 @@ export type ProjectileState = {
   reflected?: boolean;
   wantedTargetId?: string;
   wantedTurnRate?: number;
+  soulTargetId?: string;
+  soulTurnRate?: number;
   motionRules?: readonly MotionRule[];
   bellPulse?: BellPulseState;
 };
