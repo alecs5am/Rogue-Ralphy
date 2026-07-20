@@ -149,7 +149,7 @@ function provenance(projectile: ProjectileState): StatusProvenance {
     originPower: projectile.damage,
     generation: projectile.generation,
     reactiveEligible: projectile.generation === 0,
-    reactiveEffectIds: [...projectile.activatedEffectIds],
+    reactiveEffectIds: [...projectile.reactiveEffectIds],
     sourceProjectile: projectile,
   };
 }

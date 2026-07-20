@@ -86,7 +86,7 @@ export type ProjectileState = {
   x: number; y: number; id: string; triggerId: string; vx: number; vy: number;
   generation: 0 | 1; rootTriggerId: string; lineageId: string;
   localOrdinal: number;
-  activatedEffectIds: readonly string[]; emittedEffectIds: readonly string[]; originPower: number;
+  activatedEffectIds: readonly string[]; reactiveEffectIds: readonly string[]; emittedEffectIds: readonly string[]; originPower: number;
   emission?: EmissionProvenance;
   pendingEffectTokens?: readonly PendingEffectToken[];
   damage: number; speed: number; radius: number; lifetime: number; bornAt: number;
@@ -240,6 +240,7 @@ export function splitProjectile(parent: ProjectileState, nextIds: Iterable<strin
       id,
       generation: 1,
       localOrdinal: index,
+      reactiveEffectIds: [],
       emittedEffectIds: [],
       ...velocity,
       damage: parent.damage * split.damageScale,

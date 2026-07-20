@@ -3,6 +3,7 @@ import type { ArtifactRule, CombatBuild } from "./combat-build";
 import type { ConsumedRound } from "./cylinder";
 import type { EmissionProvenance, ProjectileBehaviors, ProjectileSpec } from "./projectiles";
 import type { Point } from "./room";
+import type { LocketOrbitalSeed } from "./reactive";
 import type { DerivedWeapon } from "./weapon";
 
 export type LocketState = Readonly<{ armed: boolean; cadence: number }>;
@@ -39,7 +40,8 @@ export type TriggerContext = Readonly<{
   origin: Point;
   now: number;
   stationaryCharged: boolean;
-  lowHealth: boolean;
+  health: number;
+  activeOrbitalCount: number;
   dealerCounter: number;
   locketState: LocketState;
   build: CombatBuild;
@@ -56,6 +58,7 @@ export type ScheduledProjectile = Readonly<{
   localOrdinal: number;
   lineageId: string;
   effectIds: readonly string[];
+  reactiveEffectIds?: readonly string[];
   emission?: EmissionProvenance;
   spec: Readonly<Omit<ProjectileSpec, "triggerId"> & { triggerId?: never }>;
   origin?: Point;
@@ -121,6 +124,11 @@ export function expandTrigger(context: TriggerContext) {
   const stillwater = trigger("stationaryCharge");
   const lastRound = trigger("lastRound");
   const locket = trigger("lowHealthOrbital");
+  const bonanza = trigger("ammoReturn");
+  const reactiveEffectIds = Object.freeze([
+    ...(bonanza ? [bonanza.effectId] : []),
+    ...context.build.emissions.filter(({ kind }) => kind === "killSpirits").map(({ effectId }) => effectId),
+  ]);
   const bigIron = trigger("heavyMainAndMoonlet");
   const posse = trigger("playerSatellite");
   const crossfire = context.build.areas.find((rule) => rule.kind === "pathCross");
@@ -213,16 +221,31 @@ export function expandTrigger(context: TriggerContext) {
     };
   }
 
-  let locketState: LocketState = context.lowHealth ? context.locketState : { armed: false, cadence: 0 };
-  if (locket && context.lowHealth) {
+  let locketOrbital: LocketOrbitalSeed | undefined;
+  let locketState: LocketState = locket && context.health <= locket.healthThreshold
+    ? context.locketState
+    : { armed: false, cadence: 0 };
+  if (locket && context.health <= locket.healthThreshold) {
     if (!locketState.armed) {
       const cadence = locketState.cadence + 1;
       locketState = cadence >= locket.cadence ? { armed: true, cadence: 0 } : { armed: false, cadence };
     }
-    const candidate = locketState.armed ? roots.findLast((root) => root !== bell) : undefined;
+    const candidate = locketState.armed && context.activeOrbitalCount < locket.cap
+      ? roots.findLast((root) => root !== bell)
+      : undefined;
     if (candidate) {
       candidate.locket = true;
-      candidate.effectIds.add(locket.effectId);
+      locketOrbital = Object.freeze({
+        rootTriggerId: context.rootTriggerId,
+        rootIndex: context.rootIndex,
+        lineageId: `${context.rootTriggerId}:${candidate.localOrdinal}`,
+        localOrdinal: candidate.localOrdinal,
+        eligibleEffectIds: Object.freeze(candidate.effectIds.has("stillwater.charge") ? ["stillwater.charge"] : []),
+        damage: candidate.spec.damage,
+        radius: candidate.spec.radius,
+        originPower: candidate.spec.damage,
+        triggeredAt: context.now,
+      });
       locketState = { armed: false, cadence: 0 };
     }
   }
@@ -263,7 +286,7 @@ export function expandTrigger(context: TriggerContext) {
   }
 
   const origin = Object.freeze({ ...context.origin });
-  const scheduled: ScheduledProjectile[] = roots.map((root) => Object.freeze({
+  const scheduled: ScheduledProjectile[] = roots.filter(({ locket }) => !locket).map((root) => Object.freeze({
     at: root.at,
     generation: 0 as const,
     rootTriggerId: context.rootTriggerId,
@@ -271,6 +294,7 @@ export function expandTrigger(context: TriggerContext) {
     localOrdinal: root.localOrdinal,
     lineageId: `${context.rootTriggerId}:${root.localOrdinal}`,
     effectIds: orderedEffects(root.effectIds),
+    reactiveEffectIds,
     spec: freezeSpec(root.spec),
     origin,
     aim: root.spec.heading,
@@ -286,10 +310,10 @@ export function expandTrigger(context: TriggerContext) {
     && effectId !== "bigIron.kineticExplosion"
     && effectId !== "bigIron.moonletOrbit"
     && effectId !== "ectoplasmicWake.trail"
+    && effectId !== "dustlineDuel.threshold"
     && effectId !== "crossfireCovenant.cross"));
 
   if (bigIron) for (const source of generationZeroScheduled) {
-    if (roots[source.localOrdinal]?.locket) continue;
     const { split: _, crossfire: __, ...compatibleBehaviors } = source.spec.behaviors;
     scheduled.push(Object.freeze({
       at: source.at,
@@ -299,6 +323,7 @@ export function expandTrigger(context: TriggerContext) {
       localOrdinal: scheduled.length,
       lineageId: source.lineageId,
       effectIds: generationOneEffects(source.effectIds),
+      reactiveEffectIds: Object.freeze([]),
       emission: Object.freeze({ artifactId: "bigIron", effectId: "bigIron.moonlet" }),
       spec: freezeSpec({
         ...source.spec,
@@ -338,6 +363,7 @@ export function expandTrigger(context: TriggerContext) {
       localOrdinal: scheduled.length,
       lineageId: `${context.rootTriggerId}:posse:${satellite.id}`,
       effectIds,
+      reactiveEffectIds: Object.freeze([]),
       emission: Object.freeze({ artifactId: "ghostPosse", effectId: "ghostPosse.shot" }),
       spec: freezeSpec({
         ...context.weapon.projectileBase,
@@ -383,6 +409,7 @@ export function expandTrigger(context: TriggerContext) {
       localOrdinal: scheduled.length,
       lineageId: source.lineageId,
       effectIds: orderedEffects(effectIds),
+      reactiveEffectIds: Object.freeze([]),
       emission: Object.freeze({ ...provenance }),
       spec: freezeSpec({
         ...source.spec,
@@ -396,7 +423,6 @@ export function expandTrigger(context: TriggerContext) {
   };
 
   for (const source of generationZeroScheduled) {
-    if (roots[source.localOrdinal]?.locket) continue;
     if (context.round.echo) scheduled.push(copy(
       source,
       { artifactId: "deadeye", effectId: "deadeye.echo" },
@@ -419,6 +445,7 @@ export function expandTrigger(context: TriggerContext) {
     now: context.now,
     dealerCounter,
     locketState: Object.freeze(locketState),
+    locketOrbital,
     projectiles: Object.freeze(scheduled),
     satellites: Object.freeze(satellites),
   });

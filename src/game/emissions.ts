@@ -8,6 +8,7 @@ export type { HollowPointCharge, TargetEffects } from "./statuses";
 
 export type PendingEmission = Readonly<{
   atStep: number;
+  atTime?: number;
   effectId: string;
   artifactId: string;
   phase?: number;
@@ -86,6 +87,7 @@ const cloneProjectile = (projectile: ProjectileState): ProjectileState => ({
   ...projectile,
   emission: projectile.emission && { ...projectile.emission },
   activatedEffectIds: [...projectile.activatedEffectIds],
+  reactiveEffectIds: [...projectile.reactiveEffectIds],
   emittedEffectIds: [...projectile.emittedEffectIds],
   pendingEffectTokens: projectile.pendingEffectTokens && [...projectile.pendingEffectTokens],
   behaviors: Object.freeze(Object.fromEntries(Object.entries(projectile.behaviors).map(([key, value]) => [
@@ -121,6 +123,7 @@ function templateFromSpec(
     generation: 1,
     localOrdinal,
     activatedEffectIds,
+    reactiveEffectIds: [],
     emittedEffectIds: [],
     emission: Object.freeze({ artifactId: rule.artifactId, effectId: rule.effectId }),
     pendingEffectTokens: undefined,
@@ -217,6 +220,8 @@ export function buildGenerationOneEmission(
       localOrdinal: index,
       generation: 1,
       activatedEffectIds,
+      reactiveEffectIds: [],
+      pendingEffectTokens: options.pendingTokens && Object.freeze(options.pendingTokens.map((token) => Object.freeze({ ...token }))),
       emittedEffectIds: [],
       emission: Object.freeze({ artifactId: rule.artifactId, effectId: rule.effectId }),
     });
@@ -272,7 +277,8 @@ export function materializeEmission(pending: BuiltPendingEmission, now: number):
 const compareString = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
 
 export function sortPendingEmissions(pending: readonly PendingEmission[]): PendingEmission[] {
-  return [...pending].sort((a, b) => a.atStep - b.atStep
+  return [...pending].sort((a, b) => (a.atTime ?? -Infinity) - (b.atTime ?? -Infinity)
+    || a.atStep - b.atStep
     || compareString(a.rootTriggerId, b.rootTriggerId)
     || compareString(a.lineageId, b.lineageId)
     || (a.phase ?? Number.MAX_SAFE_INTEGER) - (b.phase ?? Number.MAX_SAFE_INTEGER)

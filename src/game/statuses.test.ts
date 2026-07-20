@@ -23,7 +23,7 @@ const ROW_FOUR = [
 const projectile = (overrides: Partial<ProjectileState> = {}): ProjectileState => ({
   id: "projectile-1", triggerId: "trigger-1", generation: 0,
   rootTriggerId: "trigger-1", lineageId: "trigger-1:0", localOrdinal: 0,
-  activatedEffectIds: ["baseRevolver.direct"], emittedEffectIds: [], originPower: 20,
+  activatedEffectIds: ["baseRevolver.direct"], reactiveEffectIds: [], emittedEffectIds: [], originPower: 20,
   x: 100, y: 100, vx: 100, vy: 0, damage: 20, speed: 100, radius: 5,
   lifetime: 8, bornAt: 0, remainingBounces: 0, bounceRetention: 1,
   freezeChance: 0, freezeDuration: 0, behaviors: {}, hitTargetIds: [], everHit: false, travelled: 0,

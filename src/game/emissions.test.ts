@@ -25,6 +25,7 @@ const projectile = (overrides: Partial<ProjectileState> = {}): ProjectileState =
   lineageId: "trigger-3:2",
   localOrdinal: 2,
   activatedEffectIds: ["baseRevolver.direct", "boneOrchard.shards"],
+  reactiveEffectIds: [],
   emittedEffectIds: [],
   originPower: 20,
   x: 200,

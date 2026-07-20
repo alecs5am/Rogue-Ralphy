@@ -35,6 +35,7 @@ const projectile = (id: string, x: number, effectIds: readonly string[], overrid
   lineageId: `trigger-1:${id}`,
   localOrdinal: 0,
   activatedEffectIds: ["baseRevolver.direct", ...effectIds],
+  reactiveEffectIds: ["baseRevolver.direct", ...effectIds],
   emittedEffectIds: [],
   originPower: 20,
   x,

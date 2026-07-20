@@ -35,6 +35,7 @@ const projectile = (id: string, overrides: Partial<ProjectileState> = {}): Proje
   lineageId: `trigger-1:${id}`,
   localOrdinal: Number(id.replace(/\D/g, "")) || 0,
   activatedEffectIds: ["baseRevolver.direct"],
+  reactiveEffectIds: [],
   emittedEffectIds: [],
   originPower: 20,
   x: 200,

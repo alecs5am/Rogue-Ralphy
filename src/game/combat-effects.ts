@@ -52,6 +52,7 @@ import {
   type TargetEffects,
   type WantedBrand,
 } from "./statuses";
+import { queueBonanzaRefunds, sortPendingRefunds, type PendingRefund } from "./reactive";
 
 export type CombatEvent = Readonly<{
   eventTime: number;
@@ -67,7 +68,7 @@ export type CombatEvent = Readonly<{
   leg?: MotionLeg;
   damage?: number;
   radius?: number;
-  distanceEffect?: "shotgun" | MotionDistanceEffect;
+  distanceEffect?: "shotgun" | "dustline" | MotionDistanceEffect;
 }>;
 
 export type { KillContext, PendingEmission } from "./emissions";
@@ -89,6 +90,10 @@ export type VfxCommand = Readonly<{
   id: string;
   kind: string;
   artifactId: string;
+  effectId: string;
+  rootTriggerId: string;
+  lineageId?: string;
+  destination: "world" | "hud";
   bornAt: number;
   expiresAt: number;
   x: number;
@@ -132,6 +137,8 @@ export type CombatRuntime = Readonly<{
   crossfireParticipation?: Readonly<Record<string, CrossfireParticipation>>;
   bigIronPairHits?: Readonly<Record<string, BigIronPairHit>>;
   descendantsByRoot?: Readonly<Record<string, DescendantRecord>>;
+  pendingRefunds?: readonly PendingRefund[];
+  bonanzaHistory?: Readonly<Record<string, RootStatusRecord>>;
 }>;
 
 type RoomGeometry = Readonly<{
@@ -186,6 +193,7 @@ type EmissionRequest = Readonly<{
   origin?: Point;
   pendingTokens?: readonly Readonly<{ effectId: string; distance: number }>[];
   soulTargetIds?: readonly (string | undefined)[];
+  atTime?: number;
 }>;
 
 type CombatPhaseState = CombatRuntime & Readonly<{
@@ -227,6 +235,7 @@ const cloneProjectile = (projectile: ProjectileState): ProjectileState => ({
   ...projectile,
   emission: projectile.emission && { ...projectile.emission },
   activatedEffectIds: [...projectile.activatedEffectIds],
+  reactiveEffectIds: [...projectile.reactiveEffectIds],
   emittedEffectIds: [...projectile.emittedEffectIds],
   pendingEffectTokens: projectile.pendingEffectTokens && [...projectile.pendingEffectTokens],
   behaviors: Object.freeze(Object.fromEntries(Object.entries(projectile.behaviors).map(([key, value]) => [
@@ -319,6 +328,8 @@ function phaseState(runtime: CombatRuntime | CombatPhaseState, context: CombatCo
     crossfireParticipation: runtime.crossfireParticipation ?? {},
     bigIronPairHits: runtime.bigIronPairHits ?? {},
     descendantsByRoot: runtime.descendantsByRoot ?? inferredDescendants,
+    pendingRefunds: runtime.pendingRefunds ?? [],
+    bonanzaHistory: runtime.bonanzaHistory ?? {},
     terminalTimes: previous.terminalTimes ?? {},
   };
 }
@@ -462,6 +473,7 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
     ...runtime.projectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...runtime.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...runtime.pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
+    ...(runtime.pendingRefunds ?? []).map(({ rootTriggerId }) => rootTriggerId),
     ...runtime.areas.map(({ rootTriggerId }) => rootTriggerId),
     ...statusRootIds(runtime.targets.map((target) => ({
       ...target,
@@ -486,10 +498,35 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
     }
   }
 
+  const refundKeys = new Set<string>();
+  for (const refund of runtime.pendingRefunds ?? []) {
+    const key = `${refund.effectId}\0${refund.rootTriggerId}`;
+    if (refundKeys.has(key)) throw new Error("duplicate root-scoped pending refund");
+    if (!Number.isSafeInteger(refund.rootIndex) || refund.rootIndex < 0 || refund.arrivesAt < 0) {
+      throw new Error("pending refund ordering and deadline must be nonnegative");
+    }
+    refundKeys.add(key);
+  }
+  const bonanzaEntries = Object.entries(runtime.bonanzaHistory ?? {});
+  if (bonanzaEntries.length > liveRootIds.size) throw new Error("Bonanza history exceeds one record per live root");
+  for (const [key, record] of bonanzaEntries) {
+    if (key !== `bonanzaClip.refund\0${record.rootTriggerId}` || !liveRootIds.has(record.rootTriggerId)) {
+      throw new Error("invalid Bonanza root history");
+    }
+  }
+  const dustlineKeys = runtime.pendingEmissions
+    .filter(({ effectId }) => effectId === "dustlineDuel.afterimage")
+    .map(({ rootTriggerId, lineageId }) => `${rootTriggerId}\0${lineageId}`);
+  if (new Set(dustlineKeys).size !== dustlineKeys.length) throw new Error("duplicate Dustline afterimage lineage");
+
   const vfxIds = new Set<string>();
   for (const command of runtime.vfxCommands) {
     if (command.expiresAt <= command.bornAt || command.expiresAt - command.bornAt > 3) {
       throw new Error("VFX lifetime must be positive and at most three seconds");
+    }
+    if (!command.artifactId || !command.effectId || !command.rootTriggerId
+      || (command.destination !== "world" && command.destination !== "hud")) {
+      throw new Error("VFX command requires complete semantic provenance");
     }
     if (vfxIds.has(command.id)) throw new Error("duplicate VFX id");
     vfxIds.add(command.id);
@@ -579,6 +616,7 @@ function materializeScheduled(
     lineageId: scheduled.lineageId,
     localOrdinal: scheduled.localOrdinal,
     activatedEffectIds: [...scheduled.effectIds],
+    reactiveEffectIds: [...(scheduled.reactiveEffectIds ?? [])],
     emittedEffectIds: [],
     emission: scheduled.emission && { ...scheduled.emission },
     originPower: spec.damage,
@@ -673,8 +711,8 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
   const dueSchedules = scheduled.filter(({ at }) => at <= runtime.now);
   const futureSchedules = scheduled.filter(({ at }) => at > runtime.now);
   const pending = sortPendingEmissions(runtime.pendingEmissions);
-  const duePending = pending.filter(({ atStep }) => atStep <= runtime.step);
-  const futurePending = pending.filter(({ atStep }) => atStep > runtime.step);
+  const duePending = pending.filter(({ atStep, atTime }) => atStep <= runtime.step && (atTime === undefined || atTime <= runtime.now));
+  const futurePending = pending.filter(({ atStep, atTime }) => atStep > runtime.step || (atTime !== undefined && atTime > runtime.now));
   let nextId = runtime.nextId;
   const created = dueSchedules.map((scheduledProjectile) => {
     const siblings = dueSchedules.filter((candidate) => candidate.rootTriggerId === scheduledProjectile.rootTriggerId
@@ -717,7 +755,24 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
     nextId = materialized.nextId;
   }
   let metrics = runtime.metrics;
+  const vfxCommands = [...runtime.vfxCommands];
   for (const _ of created) metrics = recordProjectile(metrics);
+  for (const emission of duePending.filter(({ effectId }) => effectId === "dustlineDuel.afterimage")) {
+    const point = emission.templates?.[0] ?? context.player;
+    vfxCommands.push({
+      id: `vfx-${nextId++}`,
+      kind: "dustlineDuel.fire",
+      artifactId: "dustlineDuel",
+      effectId: emission.effectId,
+      rootTriggerId: emission.rootTriggerId,
+      lineageId: emission.lineageId,
+      destination: "world",
+      bornAt: runtime.now,
+      expiresAt: runtime.now + 0.15,
+      x: point.x,
+      y: point.y,
+    });
+  }
   return {
     ...phaseState(runtime, context),
     projectiles: [...runtime.projectiles.map(cloneProjectile), ...created],
@@ -725,6 +780,7 @@ export function resolveTriggerPhase(runtime: CombatRuntime | CombatPhaseState, c
     scheduledProjectiles: futureSchedules,
     pendingEmissions: futurePending,
     metrics,
+    vfxCommands,
     nextId,
     segments: [],
     events: [],
@@ -984,6 +1040,19 @@ export function collectCombatEvents(runtime: CombatRuntime | CombatPhaseState, c
         events.push({ ...eventFields(time), kind: "distance", distanceEffect: "shotgun", projectileId: projectile.id, point: pointAt(segment, time), segment: path });
       }
     }
+    const dustlineToken = projectile.pendingEffectTokens?.find(({ effectId }) => effectId === "dustlineDuel.afterimage");
+    const dustlineDistance = projectile.generation === 0
+      && projectile.activatedEffectIds.includes("dustlineDuel.threshold")
+      && !projectile.emittedEffectIds.includes("dustlineDuel.threshold")
+      ? 192
+      : dustlineToken?.distance;
+    if (dustlineDistance !== undefined) {
+      const remaining = dustlineDistance - segment.startTravelled;
+      if (remaining >= -EPSILON && remaining <= segment.distance + EPSILON) {
+        const time = segment.distance === 0 ? 0 : Math.max(0, remaining / segment.distance);
+        events.push({ ...eventFields(time), kind: "distance", distanceEffect: "dustline", projectileId: projectile.id, point: pointAt(segment, time), segment: path });
+      }
+    }
     if (segment.distanceEffect) events.push({
       ...eventFields(1),
       kind: "distance",
@@ -1070,7 +1139,24 @@ function headingsFor(source: ProjectileState, rule: EmissionRule): number[] {
     const direction = source.localOrdinal % 2 === 0 ? rule.angle : -rule.angle;
     return [Math.atan2(Math.sin(heading + direction), Math.cos(heading + direction))];
   }
+  if (rule.kind === "afterimage") return [heading];
   return [];
+}
+
+function dustlineAfterimageRule(source: ProjectileState, build: CombatBuild): Extract<EmissionRule, { kind: "afterimage" }> | undefined {
+  const current = build.emissions.find((candidate): candidate is Extract<EmissionRule, { kind: "afterimage" }> =>
+    candidate.kind === "afterimage" && candidate.effectId === "dustlineDuel.afterimage");
+  if (current) return current;
+  return source.activatedEffectIds.includes("dustlineDuel.afterimage") ? Object.freeze({
+    family: "emission" as const,
+    kind: "afterimage" as const,
+    artifactId: "dustlineDuel" as const,
+    effectId: "dustlineDuel.afterimage",
+    phase: 90,
+    delay: 0.12,
+    range: 192,
+    damageScale: 0.35,
+  }) : undefined;
 }
 
 function captureKillContext(
@@ -1090,7 +1176,7 @@ function captureKillContext(
     time: event.time,
     source: event.source,
     generation: event.generation ?? projectile?.generation ?? 0,
-    reactiveEffectIds: Object.freeze([...(event.reactiveEffectIds ?? projectile?.activatedEffectIds ?? [])]),
+    reactiveEffectIds: Object.freeze([...(event.reactiveEffectIds ?? projectile?.reactiveEffectIds ?? [])]),
     artifactId: event.artifactId,
     effectId: event.effectId,
     rootTriggerId: event.rootTriggerId,
@@ -1258,6 +1344,50 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
         removed.add(projectile.id);
         continue;
       }
+      if (event.distanceEffect === "dustline") {
+        if (projectile.generation === 0 && projectile.emittedEffectIds.includes("dustlineDuel.threshold")) continue;
+        if (projectile.generation === 1
+          && !projectile.pendingEffectTokens?.some(({ effectId }) => effectId === "dustlineDuel.afterimage")) continue;
+        projectile.penetration = { obstacles: true, targets: true };
+        projectile.behaviors = Object.freeze({
+          ...projectile.behaviors,
+          penetration: projectile.penetration,
+        });
+        projectile.pendingEffectTokens = projectile.pendingEffectTokens
+          ?.filter(({ effectId }) => effectId !== "dustlineDuel.afterimage");
+        if (projectile.generation === 0) {
+          projectile.emittedEffectIds = [...projectile.emittedEffectIds, "dustlineDuel.threshold"];
+          const rule = dustlineAfterimageRule(projectile, context.build);
+          const key = lineageEmissionKey("dustlineDuel.afterimage", projectile.lineageId);
+          if (rule?.kind === "afterimage" && !emittedEffects[key]) {
+            const source = cloneProjectile(projectile);
+            const crossedAt = current.now - context.dt + event.eventTime * context.dt;
+            emissionRequests.push({
+              projectile: source,
+              rule,
+              specs: emissionSpecs(source, rule, headingsFor(source, rule)),
+              origin: event.point,
+              atTime: crossedAt + rule.delay,
+            });
+            projectile.emittedEffectIds = [...projectile.emittedEffectIds, rule.effectId];
+            emittedEffects[key] = { rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId };
+            vfxCommands.push({
+              id: `vfx-${nextId++}`,
+              kind: "dustlineDuel.snapshot",
+              artifactId: "dustlineDuel",
+              effectId: rule.effectId,
+              rootTriggerId: projectile.rootTriggerId,
+              lineageId: projectile.lineageId,
+              destination: "world",
+              bornAt: crossedAt,
+              expiresAt: crossedAt + 0.2,
+              x: event.point.x,
+              y: event.point.y,
+            });
+          }
+        }
+        continue;
+      }
       for (const rule of resolveImpactRules({ source: projectile, build: context.build, kind: "shotgun" }).emissions) {
         const key = lineageEmissionKey(rule.effectId, projectile.lineageId);
         if (emittedEffects[key]) continue;
@@ -1289,6 +1419,36 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
         projectile.emittedEffectIds = [...projectile.emittedEffectIds, rule.effectId];
         emittedEffects[key] = { rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId };
         if (rule.kind === "splitCone" && pendingTokens) pendingEffectTokens.push(...pendingTokens);
+      }
+      const dustline = dustlineAfterimageRule(projectile, context.build);
+      const dustlineKey = lineageEmissionKey("dustlineDuel.afterimage", projectile.lineageId);
+      if (dustline?.kind === "afterimage"
+        && projectile.activatedEffectIds.includes(dustline.effectId)
+        && !emittedEffects[dustlineKey]) {
+        const source = cloneProjectile(projectile);
+        const crossedAt = current.now - context.dt + event.eventTime * context.dt;
+        emissionRequests.push({
+          projectile: source,
+          rule: dustline,
+          specs: emissionSpecs(source, dustline, headingsFor(source, dustline)),
+          origin: event.point,
+          atTime: crossedAt + dustline.delay,
+        });
+        projectile.emittedEffectIds = [...projectile.emittedEffectIds, dustline.effectId, "dustlineDuel.threshold"];
+        emittedEffects[dustlineKey] = { rootTriggerId: projectile.rootTriggerId, lineageId: projectile.lineageId };
+        vfxCommands.push({
+          id: `vfx-${nextId++}`,
+          kind: "dustlineDuel.snapshot",
+          artifactId: "dustlineDuel",
+          effectId: dustline.effectId,
+          rootTriggerId: projectile.rootTriggerId,
+          lineageId: projectile.lineageId,
+          destination: "world",
+          bornAt: crossedAt,
+          expiresAt: crossedAt + 0.2,
+          x: event.point.x,
+          y: event.point.y,
+        });
       }
       metrics = recordProjectileOutcome(metrics, projectile.everHit);
       stopProjectile(projectile, event);
@@ -1331,6 +1491,10 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
             id: `vfx-${nextId++}`,
             kind: "pinball.relay",
             artifactId: "pinball",
+            effectId: "pinball.relay",
+            rootTriggerId: projectile.rootTriggerId,
+            lineageId: projectile.lineageId,
+            destination: "world",
             bornAt: current.now,
             expiresAt: current.now + 0.18,
             x: event.point.x,
@@ -1385,7 +1549,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       killReactionDepth: 0,
       originPower,
       generation: projectile.generation,
-      reactiveEffectIds: projectile.activatedEffectIds,
+      reactiveEffectIds: projectile.reactiveEffectIds,
       firstProjectileHit: firstHit,
       x: target.x,
       y: target.y,
@@ -1443,7 +1607,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
             killReactionDepth: 0,
             originPower: main?.originPower ?? previous.mainDamage,
             generation: 0,
-            reactiveEffectIds: main?.activatedEffectIds ?? [],
+            reactiveEffectIds: main?.reactiveEffectIds ?? [],
             x: nearby.x,
             y: nearby.y,
           };
@@ -1458,6 +1622,10 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
           id: `vfx-${nextId++}`,
           kind: "bigIron.kineticExplosion",
           artifactId: "bigIron",
+          effectId: "bigIron.kineticExplosion",
+          rootTriggerId: projectile.rootTriggerId,
+          lineageId: projectile.lineageId,
+          destination: "world",
           bornAt: current.now,
           expiresAt: current.now + 0.25,
           x: event.point.x,
@@ -1516,7 +1684,7 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
             projectileId: projectile.id,
             originPower,
             generation: projectile.generation,
-            reactiveEffectIds: Object.freeze([...projectile.activatedEffectIds]),
+            reactiveEffectIds: Object.freeze([...projectile.reactiveEffectIds]),
             sourceProjectile: immutableProjectileSnapshot(projectile),
           }),
         };
@@ -1553,7 +1721,13 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
       id: `area-${nextId++}`,
       sourceProjectile: area.sourceProjectile && immutableProjectileSnapshot(area.sourceProjectile),
     });
-    for (const command of applied.vfx) upsertVfx(command);
+    for (const command of applied.vfx) upsertVfx({
+      ...command,
+      effectId: command.kind,
+      rootTriggerId: projectile.rootTriggerId,
+      lineageId: projectile.lineageId,
+      destination: "world",
+    });
 
     if (applied.shatter) {
       const key = lineageEmissionKey(applied.shatter.rule.effectId, projectile.lineageId);
@@ -1634,6 +1808,8 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     const everHit = projectile.everHit;
     const originPower = projectile.originPower;
     const emittedEffectIds = [...projectile.emittedEffectIds];
+    const penetration = projectile.penetration && { ...projectile.penetration };
+    const pendingTokens = projectile.pendingEffectTokens && [...projectile.pendingEffectTokens];
     Object.assign(projectile, cloneProjectile(final));
     projectile.outboundHitTargetIds = outboundHitTargetIds;
     projectile.returnHitTargetIds = returnHitTargetIds;
@@ -1641,6 +1817,12 @@ export function resolveImpactPhase(runtime: CombatRuntime | CombatPhaseState, co
     projectile.everHit = everHit;
     projectile.originPower = originPower;
     projectile.emittedEffectIds = emittedEffectIds;
+    projectile.penetration = penetration;
+    projectile.pendingEffectTokens = pendingTokens;
+    projectile.behaviors = Object.freeze({
+      ...projectile.behaviors,
+      ...(penetration && { penetration }),
+    });
   }
 
   const clippedSegments = current.segments.flatMap((segment) => {
@@ -1687,6 +1869,12 @@ export function resolveEmissionPhase(runtime: CombatRuntime | CombatPhaseState, 
   let nextId = current.nextId;
   const pending = [...current.pendingEmissions];
   const descendantsByRoot = { ...(current.descendantsByRoot ?? {}) };
+  const creationEffectIds = [
+    ...context.build.emissions.map(({ effectId }) => effectId),
+    ...context.build.motions.filter(({ kind }) => kind === "distanceThreshold").map(({ effectId }) => effectId),
+    "dustlineDuel.afterimage",
+    "dustlineDuel.threshold",
+  ];
   for (const request of current.emissionRequests) {
     const count = request.specs?.length ?? (request.rule.kind === "splitCone" ? request.rule.count : 0);
     const previousDescendants = descendantsByRoot[request.projectile.rootTriggerId];
@@ -1701,20 +1889,21 @@ export function resolveEmissionPhase(runtime: CombatRuntime | CombatPhaseState, 
       limit,
     };
     const nextIds = Array.from({ length: count }, () => `projectile-${nextId++}`);
-    pending.push(request.rule.kind === "splitCone"
+    const built = request.rule.kind === "splitCone"
       ? queueEmission(request.projectile, request.rule, {
         step: current.step,
         nextIds,
-        emissionEffectIds: context.build.emissions.map(({ effectId }) => effectId),
+        emissionEffectIds: creationEffectIds,
         pendingTokens: request.pendingTokens,
       })
       : buildGenerationOneEmission(request.projectile, request.rule, request.specs ?? [], current.step, {
         childIds: nextIds,
         origin: request.origin,
-        emissionEffectIds: context.build.emissions.map(({ effectId }) => effectId),
+        emissionEffectIds: creationEffectIds,
         pendingTokens: request.pendingTokens,
         soulTargetIds: request.soulTargetIds,
-      }));
+      });
+    pending.push(request.atTime === undefined ? built : Object.freeze({ ...built, atTime: request.atTime }));
   }
   return { ...current, pendingEmissions: pending, nextId, emissionRequests: [], descendantsByRoot };
 }
@@ -1785,7 +1974,7 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
           killReactionDepth: 0,
           originPower: projectile.originPower,
           generation: projectile.generation,
-          reactiveEffectIds: projectile.activatedEffectIds,
+          reactiveEffectIds: projectile.reactiveEffectIds,
           x: target.x,
           y: target.y,
         };
@@ -1801,6 +1990,10 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
         id: `vfx-${nextId++}`,
         kind: "lastBell.ring",
         artifactId: "lastBell",
+        effectId: "lastBell.rings",
+        rootTriggerId: projectile.rootTriggerId,
+        lineageId: projectile.lineageId,
+        destination: "world",
         bornAt: current.now,
         expiresAt: current.now + 0.2,
         x: projectile.x,
@@ -1837,7 +2030,7 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
         killReactionDepth: 0,
         originPower: source.originPower,
         generation: source.generation,
-        reactiveEffectIds: source.activatedEffectIds,
+        reactiveEffectIds: source.reactiveEffectIds,
         x: target.x,
         y: target.y,
       };
@@ -1954,7 +2147,7 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
           killReactionDepth: 0,
           originPower: source.originPower,
           generation: source.generation,
-          reactiveEffectIds: source.activatedEffectIds,
+          reactiveEffectIds: source.reactiveEffectIds,
           x: target.x,
           y: target.y,
         };
@@ -1979,6 +2172,10 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
       id: vfxId,
       kind: trail.effectId,
       artifactId: trail.artifactId,
+      effectId: trail.effectId,
+      rootTriggerId: trail.rootTriggerId,
+      lineageId,
+      destination: "world",
       bornAt: prior?.bornAt ?? liveSegments[0]!.bornAt,
       expiresAt,
       x: liveSegments.at(-1)!.to.x,
@@ -2069,7 +2266,7 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
         killReactionDepth: 0,
         originPower: source.originPower,
         generation: 0,
-        reactiveEffectIds: source.activatedEffectIds,
+        reactiveEffectIds: source.reactiveEffectIds,
         x: target.x,
         y: target.y,
       };
@@ -2101,6 +2298,10 @@ export function resolveAreaPhase(runtime: CombatRuntime | CombatPhaseState, cont
       id: `vfx-${nextId++}`,
       kind: crossfireRule.effectId,
       artifactId: crossfireRule.artifactId,
+      effectId: crossfireRule.effectId,
+      rootTriggerId: source.rootTriggerId,
+      lineageId: source.lineageId,
+      destination: "world",
       bornAt: pulseAt,
       expiresAt: pulseAt + crossfireRule.duration,
       x: crossing.point.x,
@@ -2138,6 +2339,30 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
   let vfxCommands = [...current.vfxCommands];
   let nextId = current.nextId;
   const descendantsByRoot = { ...(current.descendantsByRoot ?? {}) };
+  let pendingRefunds = [...(current.pendingRefunds ?? [])];
+  let bonanzaHistory = { ...(current.bonanzaHistory ?? {}) };
+
+  const bonanza = context.build.triggers.find((rule) => rule.kind === "ammoReturn");
+  if (bonanza?.kind === "ammoReturn"
+    || current.killContexts.some(({ reactiveEffectIds }) => reactiveEffectIds.includes("bonanzaClip.refund"))) {
+    const delivery = bonanza?.kind === "ammoReturn" ? bonanza.delivery : 0.25;
+    const queued = queueBonanzaRefunds(current.killContexts, bonanzaHistory, delivery);
+    pendingRefunds = sortPendingRefunds([...pendingRefunds, ...queued.pendingRefunds]);
+    bonanzaHistory = queued.history;
+    for (const refund of queued.pendingRefunds) vfxCommands.push({
+      id: `vfx-${nextId++}`,
+      kind: "bonanzaClip.delivery",
+      artifactId: "bonanzaClip",
+      effectId: refund.effectId,
+      rootTriggerId: refund.rootTriggerId,
+      lineageId: refund.lineageId,
+      destination: "hud",
+      bornAt: refund.arrivesAt - delivery,
+      expiresAt: refund.arrivesAt + 0.2,
+      x: refund.x,
+      y: refund.y,
+    });
+  }
 
   for (const killed of current.killContexts) {
     const burn = killed.targetEffects?.burn;
@@ -2182,6 +2407,10 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
           id: `vfx-${nextId++}`,
           kind: cinder.effectId,
           artifactId: cinder.artifactId,
+          effectId: cinder.effectId,
+          rootTriggerId: killed.rootTriggerId,
+          lineageId: killed.lineageId,
+          destination: "world",
           bornAt: current.now,
           expiresAt: current.now + 0.25,
           x: killed.x,
@@ -2261,6 +2490,10 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
       id: `status:wantedBrand.mark:${marked.id}`,
       kind: "wantedBrand.mark",
       artifactId: "wantedBrand",
+      effectId: priorBrandVfx?.effectId ?? "wantedBrand.mark",
+      rootTriggerId: priorBrandVfx?.rootTriggerId ?? "wantedBrand",
+      lineageId: priorBrandVfx?.lineageId,
+      destination: "world",
       bornAt: priorBrandVfx?.targetId === marked.id ? priorBrandVfx.bornAt : current.now,
       expiresAt: wantedBrand.expiresAt,
       x: marked.x,
@@ -2284,6 +2517,7 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
       ...target,
       effects: normalizeTargetEffects(target.effects, current.now),
     })) as StatusTarget[]),
+    ...pendingRefunds.map(({ rootTriggerId }) => rootTriggerId),
   ]);
   return {
     ...current,
@@ -2315,6 +2549,9 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
     bigIronPairHits: Object.fromEntries(Object.entries(current.bigIronPairHits ?? {})
       .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
     descendantsByRoot: Object.fromEntries(Object.entries(descendantsByRoot)
+      .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
+    pendingRefunds,
+    bonanzaHistory: Object.fromEntries(Object.entries(bonanzaHistory)
       .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId))),
   };
 }

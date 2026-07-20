@@ -150,7 +150,8 @@ test("clear targets and reset clean deferred combat and Tesla histories", () => 
       rootTriggerId: "trigger-1", instanceKey: "dummy-1", bornAt: 1, expiresAt: 2, tickInterval: 0.1,
     }],
     vfxCommands: [{
-      id: "vfx-1", kind: "impact", artifactId: "shotgun", bornAt: 1, expiresAt: 2,
+      id: "vfx-1", kind: "impact", artifactId: "shotgun", effectId: "shotgun.split",
+      rootTriggerId: "trigger-1", destination: "world", bornAt: 1, expiresAt: 2,
       x: 600, y: 270,
     }],
     teslaLinks: [{ id: "projectile-1:projectile-2", a: "projectile-1", b: "projectile-2", distance: 1, damageScale: 0.25, cooldown: 0.15 }],
@@ -1126,4 +1127,240 @@ test("last-round Shotgun children strip creation state without multiplying Bell 
 
   game = updateGame(game, idle, 0.75 - game.time, 0.75);
   expect(game.vfxCommands.filter(({ kind }) => kind === "lastBell.ring")).toEqual([]);
+});
+
+test("Recoil Boots applies once per accepted root after displacement and refunds on the next boundary clamp", () => {
+  let game = setArtifact(createGame(() => 0.9), "recoilBoots", true);
+  game = {
+    ...game,
+    player: { ...game.player, x: game.room.minX + game.player.radius },
+  };
+  game = updateGame(game, { ...idle, aimX: game.player.x + 100, aimY: game.player.y, firing: true }, 0, 1);
+  expect(game.player.vx).toBe(-55);
+  expect(game.recoilWindows).toEqual([expect.objectContaining({
+    rootTriggerId: "trigger-1", rootIndex: 1, effectId: "recoilBoots.recoil", expiresAt: 1.35,
+  })]);
+  expect(ammoCount(game.cylinder)).toBe(5);
+
+  game = updateGame(game, idle, STEP, 1 + STEP);
+  expect(ammoCount(game.cylinder)).toBe(6);
+  expect(game.recoilWindows).toEqual([]);
+  expect(game.pendingRefunds).toEqual([]);
+});
+
+test("Stillwater reaches its exact fixed-step threshold before same-step fire and snapshots delayed roots", () => {
+  let game = setArtifact(createGame(() => 0.9), "stillwater", true);
+  game = moveForTicks(game, idle, 71);
+  expect(game.stillwater.charged).toBe(false);
+  expect(game.stillwater.progress).toBeCloseTo(71 / 120, 12);
+  game = updateGame(game, { ...idle, firing: true }, STEP, game.time + STEP);
+  expect(game.stillwater).toEqual({ progress: 0, charged: false });
+  expect(game.projectiles[0]).toMatchObject({
+    damage: 32,
+    radius: 10,
+    penetration: { obstacles: true, targets: true },
+  });
+});
+
+test("Dustline snapshots at 192 px and fires one inert generation-one copy after 0.12 seconds", () => {
+  let game = setArtifact(createGame(() => 0.9), "dustlineDuel", true);
+  game = updateGame(game, { ...idle, aimY: game.player.y, firing: true }, 0, 0);
+  const crossingAt = 192 / game.projectiles[0]!.speed;
+  game = setArtifact(game, "dustlineDuel", false);
+  game = updateGame(game, idle, crossingAt, crossingAt);
+  expect(game.projectiles[0]).toMatchObject({ penetration: { obstacles: true, targets: true } });
+  expect(game.pendingEmissions).toEqual([expect.objectContaining({
+    effectId: "dustlineDuel.afterimage", atTime: crossingAt + 0.12,
+    originPower: 20,
+  })]);
+  expect(game.vfxCommands.some(({ kind }) => kind === "dustlineDuel.snapshot")).toBe(true);
+
+  game = updateGame(game, idle, 0, crossingAt + 0.119);
+  expect(game.projectiles.filter(({ generation }) => generation === 1)).toHaveLength(0);
+  game = updateGame(game, idle, 0, crossingAt + 0.12);
+  const copy = game.projectiles.find(({ emission }) => emission?.effectId === "dustlineDuel.afterimage")!;
+  expect(copy).toMatchObject({ generation: 1, damage: 7, maxTravel: 192 });
+  expect(copy.activatedEffectIds).not.toContain("dustlineDuel.afterimage");
+  expect(copy.activatedEffectIds).not.toContain("dustlineDuel.threshold");
+});
+
+test("Shotgun owns one Dustline afterimage at 160 px and pellets turn spectral after 32 px", () => {
+  let game = setArtifactLoadout(createGame(() => 0.9), { shotgun: true, dustlineDuel: true });
+  game = updateGame(game, { ...idle, aimY: game.player.y, firing: true }, 0, 0);
+  const splitAt = 160 / game.projectiles[0]!.speed;
+  game = updateGame(game, idle, splitAt, splitAt);
+  expect(game.pendingEmissions.map(({ effectId }) => effectId).toSorted()).toEqual([
+    "dustlineDuel.afterimage", "shotgun.split",
+  ]);
+  game = updateGame(game, idle, 0, splitAt);
+  expect(game.projectiles).toHaveLength(8);
+  expect(game.projectiles.every(({ pendingEffectTokens }) => pendingEffectTokens?.[0]?.distance === 32)).toBe(true);
+  game = updateGame(game, idle, 32 / 620, splitAt + 32 / 620);
+  expect(game.projectiles.every(({ penetration }) => penetration?.obstacles && penetration.targets)).toBe(true);
+  expect(game.pendingEmissions.filter(({ effectId }) => effectId === "dustlineDuel.afterimage")).toHaveLength(1);
+});
+
+test("Bonanza schedules one earned HUD delivery and resolves an ordinary round after 0.25 seconds", () => {
+  let game = setArtifact(createGame(() => 0.9), "bonanzaClip", true);
+  game = {
+    ...game,
+    targets: [{
+      id: "chaser-kill", kind: "chaser", x: game.player.x + 80, y: game.player.y,
+      radius: 18, health: 1, maxHealth: 1, immortal: false, speed: 0, frozenUntil: 0,
+      effects: createTargetEffects(),
+    }],
+  };
+  game = updateGame(game, { ...idle, aimY: game.player.y, firing: true }, 0, 1);
+  game = setArtifact(game, "bonanzaClip", false);
+  game = updateGame(game, idle, 0.2, 1.2);
+  expect(game.pendingRefunds).toEqual([expect.objectContaining({
+    effectId: "bonanzaClip.refund", rootTriggerId: "trigger-1",
+  })]);
+  const arrivesAt = game.pendingRefunds[0]!.arrivesAt;
+  expect(arrivesAt - game.metrics.hitEvents[0]!.time).toBeCloseTo(0.25, 12);
+  expect(ammoCount(game.cylinder)).toBe(5);
+  game = updateGame(game, idle, 0, arrivesAt);
+  expect(ammoCount(game.cylinder)).toBe(6);
+  expect(game.pendingRefunds).toEqual([]);
+  expect(game.vfxCommands.some(({ kind }) => kind === "bonanzaClip.delivery")).toBe(true);
+  expect(() => { game = updateGame(game, idle, 1 / 120, arrivesAt + 1 / 120); }).not.toThrow();
+  expect(game.bonanzaHistory).toEqual({});
+});
+
+test("Last Gasp converts every third low-health root without projectile telemetry and respects the cap", () => {
+  let game = setArtifact(createGame(() => 0.9), "lastGaspLocket", true);
+  game = { ...game, player: { ...game.player, health: 40 } };
+  for (const time of [1, 1.34, 1.68]) {
+    game = updateGame(game, { ...idle, firing: true }, 0, time);
+  }
+  expect(game.locketOrbitals).toHaveLength(1);
+  expect(game.locketOrbitals[0]).toMatchObject({
+    rootTriggerId: "trigger-3", radius: 40, expiresAt: 4.18,
+  });
+  expect(game.metrics).toMatchObject({ triggers: 3, projectiles: 2 });
+
+  game = { ...game, locketState: { armed: true, cadence: 0 }, locketOrbitals: [
+    game.locketOrbitals[0]!,
+    { ...game.locketOrbitals[0]!, id: "locket-old-1", slot: 1 },
+    { ...game.locketOrbitals[0]!, id: "locket-old-2", slot: 2 },
+  ] };
+  game = updateGame(game, { ...idle, firing: true }, 0, 2.02);
+  expect(game.locketState).toEqual({ armed: true, cadence: 0 });
+  expect(game.locketOrbitals).toHaveLength(3);
+});
+
+test("Undertaker's Coat leaves a pre-hit decoy only for nonfatal accepted contact", () => {
+  let game = setArtifact(createGame(() => 0.9), "undertakersCoat", true);
+  game = {
+    ...game,
+    targets: [{
+      id: "chaser-contact", kind: "chaser", x: game.player.x + 35, y: game.player.y,
+      radius: 18, health: 80, maxHealth: 80, immortal: false, speed: 0, frozenUntil: 0,
+      effects: createTargetEffects(),
+    }],
+  };
+  const position = { x: game.player.x, y: game.player.y };
+  game = updateGame(game, idle, 0, 1);
+  expect(game.player).toMatchObject({ health: 90, invulnerableUntil: 2 });
+  expect(game.decoy).toEqual({ ...position, expiresAt: 2 });
+
+  game = { ...game, player: { ...game.player, health: 10, invulnerableUntil: 0 }, decoy: undefined };
+  game = updateGame(game, idle, 0, 3);
+  expect(game.player.health).toBe(0);
+  expect(game.decoy).toBeUndefined();
+});
+
+test("Stillwater Shotgun Dustline snapshots prior transforms and applies 0.35 exactly once", () => {
+  let game = setArtifactLoadout(createGame(() => 0.9), {
+    stillwater: true, shotgun: true, dustlineDuel: true,
+  });
+  game = { ...game, stillwater: { progress: 0.6, charged: true } };
+  game = updateGame(game, { ...idle, aimY: game.player.y, firing: true }, 0, 0);
+  game = updateGame(game, idle, 160 / 620, 160 / 620);
+  const afterimage = game.pendingEmissions.find(({ effectId }) => effectId === "dustlineDuel.afterimage")!;
+  const split = game.pendingEmissions.find(({ effectId }) => effectId === "shotgun.split")!;
+  expect(afterimage.templates?.[0]).toMatchObject({ damage: 32 * 0.35, radius: 10, maxTravel: 192 });
+  expect(split.templates).toHaveLength(8);
+  expect(split.templates?.every(({ damage, radius }) => damage === 8 && radius === 5.5)).toBe(true);
+});
+
+test("Recoil runs once for a Twin root and same-root Bonanza remains independently earned", () => {
+  let game = setArtifactLoadout(createGame(() => 0.9), {
+    twinChamber: true, recoilBoots: true, bonanzaClip: true,
+  });
+  game = {
+    ...game,
+    cylinder: createCylinder(2),
+    player: { ...game.player, x: game.room.minX + game.player.radius },
+    targets: [{
+      id: "chaser-root", kind: "chaser", x: game.room.minX + game.player.radius + 80, y: game.player.y,
+      radius: 18, health: 1, maxHealth: 1, immortal: false, speed: 0, frozenUntil: 0,
+      effects: createTargetEffects(),
+    }],
+  };
+  game = updateGame(game, { ...idle, aimX: game.player.x + 100, aimY: game.player.y, firing: true }, 0, 1);
+  expect(game.recoilWindows).toHaveLength(1);
+  expect(game.player.vx).toBe(-55);
+  game = updateGame(game, idle, STEP, 1 + STEP);
+  expect(ammoCount(game.cylinder)).toBe(2);
+  game = updateGame(game, idle, 0.2 - STEP, 1.2);
+  expect(game.pendingRefunds).toEqual([expect.objectContaining({
+    effectId: "bonanzaClip.refund", rootTriggerId: "trigger-1",
+  })]);
+  game = updateGame(game, idle, 0, game.pendingRefunds[0]!.arrivesAt);
+  expect(ammoCount(game.cylinder)).toBe(3);
+});
+
+test("same-step fatal contact never retroactively cancels an accepted root", () => {
+  let game = setArtifact(createGame(() => 0.9), "undertakersCoat", true);
+  game = {
+    ...game,
+    player: { ...game.player, health: 10 },
+    targets: [{
+      id: "fatal-contact", kind: "chaser", x: game.player.x + 35, y: game.player.y,
+      radius: 18, health: 80, maxHealth: 80, immortal: false, speed: 0, frozenUntil: 0,
+      effects: createTargetEffects(),
+    }],
+  };
+  game = updateGame(game, { ...idle, firing: true }, 0, 1);
+  expect(game).toMatchObject({ rootSequence: 1, diedAt: 1, player: { health: 0 }, decoy: undefined });
+  expect(game.metrics.triggers).toBe(1);
+  expect(ammoCount(game.cylinder)).toBe(5);
+  expect(game.metrics.projectiles).toBe(1);
+});
+
+test("earned Bonanza delivery survives Clear Targets and expired reactive state drains", () => {
+  let game = setArtifact(createGame(() => 0.9), "bonanzaClip", true);
+  game = {
+    ...game,
+    pendingRefunds: [{
+      effectId: "bonanzaClip.refund", artifactId: "bonanzaClip", rootTriggerId: "trigger-1",
+      rootIndex: 1, arrivesAt: 2, x: 500, y: 300,
+    }],
+    bonanzaHistory: { "bonanzaClip.refund\0trigger-1": { rootTriggerId: "trigger-1" } },
+    vfxCommands: [{
+      id: "bonanza-earned", kind: "bonanzaClip.delivery", artifactId: "bonanzaClip",
+      effectId: "bonanzaClip.refund", rootTriggerId: "trigger-1", destination: "hud",
+      bornAt: 1, expiresAt: 2.2, x: 500, y: 300,
+    }],
+    recoilWindows: [{
+      effectId: "recoilBoots.recoil", rootTriggerId: "trigger-2", rootIndex: 2,
+      vector: { x: -55, y: 0 }, expiresAt: 1, refunded: false,
+    }],
+    locketOrbitals: [{
+      id: "locket-expired", slot: 0, rootTriggerId: "trigger-3", rootIndex: 3,
+      lineageId: "trigger-3:0", localOrdinal: 0, eligibleEffectIds: [], originPower: 20,
+      damage: 20, radius: 40, hitRadius: 5, angle: 0, angularSpeed: Math.PI * 2,
+      bornAt: 0, expiresAt: 1,
+    }],
+    decoy: { x: 480, y: 288, expiresAt: 1 },
+  };
+  game = clearTargets(game);
+  expect(game.pendingRefunds).toHaveLength(1);
+  expect(game.vfxCommands.map(({ destination }) => destination)).toEqual(["hud"]);
+  game = updateGame(game, idle, 0, 1.5);
+  expect(game).toMatchObject({ recoilWindows: [], locketOrbitals: [], decoy: undefined });
+  expect(game.pendingRefunds).toHaveLength(1);
+  expect(game.vfxCommands.every(({ artifactId, effectId, rootTriggerId, destination }) =>
+    artifactId && effectId && rootTriggerId && (destination === "world" || destination === "hud"))).toBe(true);
 });

@@ -1,4 +1,4 @@
-import { createMetrics, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
+import { createMetrics, recordDamage, recordKill, recordTrigger, retainTargetMetrics, summarizeMetrics, type Metrics } from "./metrics";
 import { advanceReload, ammoCount, attemptActiveReload, consumeRound, createCylinder, fireRateBuffAt, startReload, type CylinderState } from "./cylinder";
 import { compileCombatBuild, type CombatBuild } from "./combat-build";
 import { deriveWeapon, type ArtifactId, type ArtifactLoadout, type DerivedWeapon } from "./weapon";
@@ -17,8 +17,10 @@ import {
   effectiveSlow,
   normalizeTargetEffects,
   snareSlowAt,
+  statusRootIds,
   type RootStatusRecord,
   type SnareAreaState,
+  type StatusTarget,
   type WantedBrand,
 } from "./statuses";
 import type {
@@ -28,6 +30,18 @@ import type {
   DescendantRecord,
   WakeTrailState,
 } from "./areas";
+import {
+  advanceLocketOrbitals,
+  createLocketOrbital,
+  resolveBoundaryClamp,
+  resolvePendingRefunds,
+  resolveStillwater,
+  type DecoyState,
+  type PendingRefund,
+  type ProtectiveOrbital,
+  type RecoilWindow,
+  type StillwaterState,
+} from "./reactive";
 
 export { ROOM, TILE_SIZE } from "./room";
 export type { Point } from "./room";
@@ -70,6 +84,12 @@ export type GameState = {
   metrics: Metrics; telemetry: ReturnType<typeof summarizeMetrics>;
   time: number; step: number; nextShotAt: number; nextId: number; rootSequence: number; paused: boolean; rng: () => number;
   dealerCounter: number; locketState: LocketState;
+  stillwater: StillwaterState;
+  recoilWindows: RecoilWindow[];
+  pendingRefunds: PendingRefund[];
+  bonanzaHistory: Record<string, RootStatusRecord>;
+  locketOrbitals: ProtectiveOrbital[];
+  decoy?: DecoyState;
   lastShotAt: number | null; lastHurtAt: number | null; diedAt: number | null;
 };
 
@@ -165,6 +185,12 @@ export function createGame(rng: () => number = Math.random): GameState {
     rootSequence: 0,
     dealerCounter: 0,
     locketState: { armed: false, cadence: 0 },
+    stillwater: { progress: 0, charged: false },
+    recoilWindows: [],
+    pendingRefunds: [],
+    bonanzaHistory: {},
+    locketOrbitals: [],
+    decoy: undefined,
     paused: false,
     lastShotAt: null,
     lastHurtAt: null,
@@ -189,6 +215,8 @@ export function setArtifactLoadout(state: GameState, loadout: ArtifactLoadout): 
     artifacts,
     build,
     weapon: deriveWeapon(build, fireRateBuffAt(state.cylinder, state.time)),
+    stillwater: artifacts.stillwater ? state.stillwater : { progress: 0, charged: false },
+    locketState: artifacts.lastGaspLocket ? state.locketState : { armed: false, cadence: 0 },
   };
 }
 
@@ -239,6 +267,7 @@ export function clearTargets(state: GameState): GameState {
   const activeRoots = new Set([
     ...state.projectiles.map(({ rootTriggerId }) => rootTriggerId),
     ...state.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
+    ...state.pendingRefunds.map(({ rootTriggerId }) => rootTriggerId),
   ]);
   const wakeTrails = Object.fromEntries(Object.entries(state.wakeTrails)
     .filter(([, { rootTriggerId }]) => activeRoots.has(rootTriggerId)));
@@ -248,7 +277,7 @@ export function clearTargets(state: GameState): GameState {
     targets: [],
     pendingEmissions: [],
     areas: [],
-    vfxCommands: [],
+    vfxCommands: state.vfxCommands.filter(({ kind, expiresAt }) => kind === "bonanzaClip.delivery" && expiresAt > state.time),
     teslaLinks: [],
     teslaCooldowns: Object.fromEntries(Object.entries(state.teslaCooldowns).filter(([key, expiresAt]) => {
       if (expiresAt <= state.time) return false;
@@ -294,6 +323,10 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   let lastHurtAt = state.lastHurtAt;
   let diedAt = state.diedAt;
   const canAct = diedAt === null && state.player.health > 0;
+  let decoy = state.decoy && state.decoy.expiresAt > now ? state.decoy : undefined;
+  let recoilWindows = state.recoilWindows.filter(({ expiresAt, refunded }) => expiresAt > now && !refunded);
+  let pendingRefunds = [...state.pendingRefunds];
+  let locketOrbitals = state.locketOrbitals.filter(({ expiresAt }) => expiresAt > now);
   let cylinder = advanceReload(state.cylinder, now);
   if (now >= cylinder.buffUntil && cylinder.fireRateBuff !== 0) cylinder = { ...cylinder, fireRateBuff: 0, buffUntil: 0 };
   let weapon = deriveWeapon(state.build, fireRateBuffAt(cylinder, now));
@@ -325,12 +358,29 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     vx: x === nextX ? velocity.vx : 0,
     vy: y === nextY ? velocity.vy : 0,
   };
+  const boundary = resolveBoundaryClamp({ recoilWindows, pendingRefunds }, {
+    left: x !== nextX && velocity.vx < 0,
+    right: x !== nextX && velocity.vx > 0,
+    top: y !== nextY && velocity.vy < 0,
+    bottom: y !== nextY && velocity.vy > 0,
+  }, now, player);
+  recoilWindows = boundary.recoilWindows;
+  pendingRefunds = boundary.pendingRefunds;
+  let stillwater = resolveStillwater(
+    state.stillwater,
+    state.artifacts.stillwater === true,
+    Math.hypot(player.vx, player.vy),
+    dt,
+    false,
+  );
   const aim = { x: input.aimX, y: input.aimY };
   let metrics = state.metrics;
   let scheduledProjectiles = [...state.scheduledProjectiles];
   let rootSequence = state.rootSequence;
   let dealerCounter = state.dealerCounter;
-  let locketState: LocketState = player.health > 40 ? { armed: false, cadence: 0 } : state.locketState;
+  let locketState: LocketState = state.artifacts.lastGaspLocket !== true || player.health > 40
+    ? { armed: false, cadence: 0 }
+    : state.locketState;
   let nextShotAt = state.nextShotAt;
   let satellites = state.satellites
     .filter(({ expiresAt }) => expiresAt > now)
@@ -356,8 +406,9 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       aimDistance: Math.hypot(input.aimX - player.x, input.aimY - player.y),
       origin: player,
       now,
-      stationaryCharged: false,
-      lowHealth: player.health <= 40,
+      stationaryCharged: stillwater.charged,
+      health: player.health,
+      activeOrbitalCount: locketOrbitals.length,
       dealerCounter,
       locketState,
       build: state.build,
@@ -365,13 +416,28 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
       rng: state.rng,
       satellites,
     });
-    if (trigger.projectiles.length > 0) lastShotAt = now;
+    if (trigger.projectiles.length > 0 || trigger.locketOrbital) lastShotAt = now;
     scheduledProjectiles.push(...trigger.projectiles);
     dealerCounter = trigger.dealerCounter;
     locketState = trigger.locketState;
     satellites = [...trigger.satellites];
+    if (stillwater.charged) stillwater = { progress: 0, charged: false };
+    if (trigger.locketOrbital) locketOrbitals.push(createLocketOrbital(trigger.locketOrbital, locketOrbitals, now));
+    const recoil = state.build.triggers.find((rule) => rule.kind === "recoil");
+    if (recoil?.kind === "recoil") {
+      const vector = { x: -Math.cos(aimAngle) * recoil.impulse, y: -Math.sin(aimAngle) * recoil.impulse };
+      player = { ...player, vx: player.vx + vector.x, vy: player.vy + vector.y };
+      recoilWindows.push({
+        effectId: "recoilBoots.recoil",
+        rootTriggerId: trigger.rootTriggerId,
+        rootIndex: trigger.rootIndex,
+        vector,
+        expiresAt: now + recoil.duration,
+        refunded: false,
+      });
+    }
     const descendantCount = trigger.projectiles.filter(({ generation }) => generation === 1).length;
-    if (descendantCount > 0) descendantsByRoot[trigger.rootTriggerId] = {
+    if (descendantCount > 0 || state.build.maxDescendants > 0) descendantsByRoot[trigger.rootTriggerId] = {
       rootTriggerId: trigger.rootTriggerId,
       count: (descendantsByRoot[trigger.rootTriggerId]?.count ?? 0) + descendantCount,
       limit: Math.min(294, Math.max(state.build.maxDescendants, descendantCount)),
@@ -383,12 +449,13 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   }
 
   const snares = state.areas.filter((area): area is SnareAreaState => "kind" in area && area.kind === "snare");
+  const chasePoint = decoy ?? player;
   let targets = state.targets.map((target) => {
     const effects = normalizeTargetEffects(target.effects, now);
     const normalized = { ...target, frozenUntil: now < target.frozenUntil ? target.frozenUntil : 0, effects };
     if (target.kind !== "chaser" || now < target.frozenUntil) return normalized;
-    const dx = player.x - target.x;
-    const dy = player.y - target.y;
+    const dx = chasePoint.x - target.x;
+    const dy = chasePoint.y - target.y;
     const distance = Math.hypot(dx, dy) || 1;
     const slow = effectiveSlow(effects.slows, now, snareSlowAt(target, snares, now));
     return {
@@ -398,21 +465,28 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     };
   });
 
-  for (const target of targets) {
+  let acceptedDamage = false;
+  const coat = state.build.triggers.find((rule) => rule.kind === "hurtDecoy");
+  for (const target of [...targets].sort((a, b) => a.id.localeCompare(b.id))) {
     if (target.kind === "chaser" && diedAt === null && overlaps(player, target) && now >= player.invulnerableUntil) {
+      const preHit = { x: player.x, y: player.y };
       const health = Math.max(0, player.health - 10);
+      acceptedDamage = true;
       lastHurtAt = now;
       if (health === 0) diedAt = now;
+      const invulnerability = coat?.kind === "hurtDecoy" && health > 0 ? coat.invulnerability : 0.5;
       player = {
         ...player,
         health,
         vx: health === 0 ? 0 : player.vx,
         vy: health === 0 ? 0 : player.vy,
-        invulnerableUntil: now + 0.5,
+        invulnerableUntil: now + invulnerability,
       };
+      if (coat?.kind === "hurtDecoy" && health > 0) decoy = { ...preHit, expiresAt: now + coat.duration };
       break;
     }
   }
+  if (acceptedDamage) stillwater = resolveStillwater(stillwater, state.artifacts.stillwater === true, 0, 0, true);
 
   const combat = resolveCombatPhases({
     projectiles: state.projectiles,
@@ -438,6 +512,8 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     crossfireParticipation: state.crossfireParticipation,
     bigIronPairHits: state.bigIronPairHits,
     descendantsByRoot,
+    pendingRefunds,
+    bonanzaHistory: state.bonanzaHistory,
   }, {
     dt,
     room: state.room,
@@ -445,12 +521,148 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     build: state.build,
     rng: state.rng,
     player,
-    trajectoryTargets: state.targets,
+    trajectoryTargets: targets,
     teslaLinks: state.teslaLinks,
     teslaCooldowns: state.teslaCooldowns,
     fireRate: weapon.fireRate,
   });
   metrics = combat.metrics;
+  let finalTargets = [...combat.targets];
+  let nextId = combat.nextId;
+  const vfxCommands = [...combat.vfxCommands];
+  const orbitalResult = advanceLocketOrbitals(
+    locketOrbitals,
+    player,
+    finalTargets.filter(({ kind }) => kind === "chaser"),
+    dt,
+    now,
+  );
+  locketOrbitals = orbitalResult.orbitals;
+  for (const hit of orbitalResult.hits) {
+    const target = finalTargets.find(({ id }) => id === hit.targetId);
+    if (!target || (!target.immortal && target.health <= 0)) continue;
+    const damaged = target.immortal ? target : { ...target, health: target.health - hit.damage };
+    finalTargets = finalTargets.map((candidate) => candidate.id === target.id ? damaged : candidate);
+    metrics = recordDamage(metrics, {
+      source: "reactive",
+      damage: hit.damage,
+      time: now,
+      targetId: hit.targetId,
+      artifactId: hit.artifactId,
+      effectId: hit.effectId,
+      rootTriggerId: hit.rootTriggerId,
+      lineageId: hit.lineageId,
+      killReactionDepth: 0,
+      originPower: hit.originPower,
+      generation: 0,
+      reactiveEffectIds: [],
+      x: hit.x,
+      y: hit.y,
+    });
+    if (!damaged.immortal && damaged.health <= 0) metrics = recordKill(metrics, damaged.id);
+    vfxCommands.push({
+      id: `vfx-${nextId++}`,
+      kind: "lastGaspLocket.consume",
+      artifactId: "lastGaspLocket",
+      effectId: "lastGaspLocket.orbital",
+      rootTriggerId: hit.rootTriggerId,
+      lineageId: hit.lineageId,
+      destination: "world",
+      bornAt: now,
+      expiresAt: now + 0.2,
+      x: hit.x,
+      y: hit.y,
+      targetId: hit.targetId,
+    });
+  }
+  finalTargets = finalTargets.filter((target) => target.immortal || target.health > 0);
+
+  const resolvedRefunds = resolvePendingRefunds(cylinder, combat.pendingRefunds ?? pendingRefunds, now);
+  cylinder = resolvedRefunds.cylinder;
+  pendingRefunds = resolvedRefunds.pendingRefunds;
+  const activeBonanzaRoots = new Set([
+    ...combat.projectiles.map(({ rootTriggerId }) => rootTriggerId),
+    ...combat.scheduledProjectiles.map(({ rootTriggerId }) => rootTriggerId),
+    ...combat.pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
+    ...combat.areas.map(({ rootTriggerId }) => rootTriggerId),
+    ...Object.values(combat.wakeTrails ?? {}).map(({ rootTriggerId }) => rootTriggerId),
+    ...(combat.crossfirePulses ?? []).map(({ rootTriggerId }) => rootTriggerId),
+    ...statusRootIds(finalTargets.map((target) => ({
+      ...target,
+      effects: normalizeTargetEffects(target.effects, now),
+    })) as StatusTarget[]),
+    ...pendingRefunds.map(({ rootTriggerId }) => rootTriggerId),
+  ]);
+  const bonanzaHistory = Object.fromEntries(Object.entries(combat.bonanzaHistory ?? {})
+    .filter(([, { rootTriggerId }]) => activeBonanzaRoots.has(rootTriggerId)));
+  for (const refund of resolvedRefunds.resolved.filter(({ effectId }) => effectId === "recoilBoots.recoil")) {
+    vfxCommands.push({
+      id: `vfx-${nextId++}`,
+      kind: "recoilBoots.skid",
+      artifactId: "recoilBoots",
+      effectId: refund.effectId,
+      rootTriggerId: refund.rootTriggerId,
+      lineageId: refund.lineageId,
+      destination: "world",
+      bornAt: now,
+      expiresAt: now + 0.2,
+      x: player.x,
+      y: player.y,
+    });
+  }
+  const priorStillwater = vfxCommands.find(({ id }) => id === "reactive:stillwater");
+  const withoutReactiveState = vfxCommands.filter(({ id, kind }) =>
+    id !== "reactive:stillwater" && id !== "reactive:coat" && kind !== "lastGaspLocket.orbital");
+  if (state.artifacts.stillwater && (stillwater.progress > 0 || stillwater.charged)) withoutReactiveState.push({
+    id: "reactive:stillwater",
+    kind: "stillwater.ward",
+    artifactId: "stillwater",
+    effectId: "stillwater.charge",
+    rootTriggerId: "player",
+    destination: "world",
+    bornAt: Math.max(priorStillwater?.bornAt ?? now - stillwater.progress, now - 2.9),
+    expiresAt: now + 1 / 120,
+    x: player.x,
+    y: player.y,
+  });
+  if (decoy) withoutReactiveState.push({
+    id: "reactive:coat",
+    kind: "undertakersCoat.decoy",
+    artifactId: "undertakersCoat",
+    effectId: "undertakersCoat.decoy",
+    rootTriggerId: "player",
+    destination: "world",
+    bornAt: decoy.expiresAt - 1,
+    expiresAt: decoy.expiresAt,
+    x: decoy.x,
+    y: decoy.y,
+  });
+  for (const orbital of locketOrbitals) withoutReactiveState.push({
+    id: `reactive:${orbital.id}`,
+    kind: "lastGaspLocket.orbital",
+    artifactId: "lastGaspLocket",
+    effectId: "lastGaspLocket.orbital",
+    rootTriggerId: orbital.rootTriggerId,
+    lineageId: orbital.lineageId,
+    destination: "world",
+    bornAt: orbital.bornAt,
+    expiresAt: orbital.expiresAt,
+    x: player.x + Math.cos(orbital.angle) * orbital.radius,
+    y: player.y + Math.sin(orbital.angle) * orbital.radius,
+  });
+  const recoilRule = state.build.triggers.find((rule) => rule.kind === "recoil");
+  const reloadRule = state.build.triggers.find((rule) => rule.kind === "activeReload");
+  const maximumFireRate = deriveWeapon(state.build, reloadRule?.kind === "activeReload" ? reloadRule.buff : 0).fireRate;
+  const recoilBound = Math.ceil(maximumFireRate * (recoilRule?.kind === "recoil" ? recoilRule.duration : 0.35));
+  if (recoilWindows.length > recoilBound) throw new Error(`Recoil window count exceeds derived bound ${recoilBound}`);
+  if (locketOrbitals.length > 3) throw new Error("Last Gasp Locket orbital cap exceeds three");
+  const vfxIds = withoutReactiveState.map(({ id }) => id);
+  if (new Set(vfxIds).size !== vfxIds.length) throw new Error("duplicate reactive VFX id");
+  if (withoutReactiveState.some(({ artifactId, effectId, rootTriggerId, destination, bornAt, expiresAt }) =>
+    !artifactId || !effectId || !rootTriggerId || (destination !== "world" && destination !== "hud")
+    || expiresAt <= bornAt || expiresAt - bornAt > 3)) {
+    throw new Error("invalid reactive VFX provenance or lifetime");
+  }
   const telemetry = summarizeMetrics(metrics, now);
   return {
     ...state,
@@ -461,9 +673,9 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     scheduledProjectiles: [...combat.scheduledProjectiles],
     pendingEmissions: [...combat.pendingEmissions],
     projectiles: [...combat.projectiles],
-    targets: [...combat.targets],
+    targets: finalTargets,
     areas: [...combat.areas],
-    vfxCommands: [...combat.vfxCommands],
+    vfxCommands: withoutReactiveState,
     teslaLinks: [...combat.teslaLinks],
     teslaCooldowns: { ...combat.teslaCooldowns },
     satellites,
@@ -480,12 +692,18 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     hexCounter: combat.hexCounter ?? 0,
     snareRoots: { ...(combat.snareRoots ?? {}) },
     killReactionHistory: { ...(combat.killReactionHistory ?? {}) },
+    pendingRefunds,
+    bonanzaHistory,
+    recoilWindows,
+    stillwater,
+    locketOrbitals,
+    decoy,
     metrics,
     telemetry,
     time: now,
     step: combat.step,
     nextShotAt,
-    nextId: combat.nextId,
+    nextId,
     rootSequence,
     dealerCounter,
     locketState,

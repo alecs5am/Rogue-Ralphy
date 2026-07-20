@@ -41,7 +41,8 @@ const triggerContext = (options: ContextOptions = {}): TriggerContext => {
     origin: { x: 480, y: 288 },
     now: 0,
     stationaryCharged: false,
-    lowHealth: false,
+    health: 100,
+    activeOrbitalCount: 0,
     dealerCounter: 0,
     locketState: { armed: false, cadence: 0 },
     build,
@@ -214,15 +215,15 @@ test("Deadeye and Grave copy finished roots at each source time without copying 
     ],
     round: { slot: 0, echo: deadeyeEcho, ammoBefore: 6 },
     stationaryCharged: true,
-    lowHealth: true,
+    health: 40,
     locketState: { armed: true, cadence: 0 },
   }));
   const roots = result.projectiles.filter(({ generation }) => generation === 0);
-  const locket = roots.find(({ effectIds }) => effectIds.includes("lastGaspLocket.orbital"))!;
+  const locket = result.locketOrbital!;
   const copies = result.projectiles.filter(({ generation, emission }) => generation === 1 &&
     (emission?.artifactId === "deadeye" || emission?.artifactId === "graveEcho"));
 
-  expect(copies).toHaveLength((roots.length - 1) * 2);
+  expect(copies).toHaveLength(roots.length * 2);
   expect(copies.some(({ lineageId }) => lineageId === locket.lineageId)).toBe(false);
   expect(copies.every(({ effectIds, emission }) => !effectIds.includes(emission!.effectId))).toBe(true);
   expect(copies.every(({ spec, effectIds }) =>
@@ -250,7 +251,7 @@ test("an armed Locket preserves a bell-only trigger and later converts the highe
   const bellOnly = expandTrigger(triggerContext({
     owned: ["lastBell", "lastGaspLocket", "deadeye", "graveEcho", "bigIron"],
     round: { slot: 5, echo: deadeyeEcho, ammoBefore: 1 },
-    lowHealth: true,
+    health: 40,
     locketState: { armed: true, cadence: 0 },
   }));
   expect(bellOnly.projectiles.filter(({ generation }) => generation === 0)).toHaveLength(1);
@@ -259,28 +260,77 @@ test("an armed Locket preserves a bell-only trigger and later converts the highe
   const converted = expandTrigger(triggerContext({
     owned: ["twinChamber", "lastGaspLocket", "deadeye", "graveEcho", "bigIron"],
     round: { slot: 0, echo: deadeyeEcho, ammoBefore: 2 },
-    lowHealth: true,
+    health: 40,
     locketState: bellOnly.locketState,
   }));
   const roots = converted.projectiles.filter(({ generation }) => generation === 0);
-  const orbital = roots.find(({ effectIds }) => effectIds.includes("lastGaspLocket.orbital"))!;
-  expect(orbital.localOrdinal).toBe(Math.max(...roots.map(({ localOrdinal }) => localOrdinal)));
+  const orbital = converted.locketOrbital!;
+  expect(orbital.localOrdinal).toBe(Math.max(...roots.map(({ localOrdinal }) => localOrdinal)) + 1);
   expect(converted.locketState).toEqual({ armed: false, cadence: 0 });
   expect(converted.projectiles.filter(({ generation, lineageId }) => generation === 1 && lineageId === orbital.lineageId)).toEqual([]);
-  expect(orbital.effectIds).not.toContain("bigIron.heavy");
+  expect(orbital.eligibleEffectIds).not.toContain("bigIron.heavy");
 });
 
 test("an armed Locket converts a sole ordinary final cartridge when Last Bell is not owned", () => {
   const result = expandTrigger(triggerContext({
     owned: ["lastGaspLocket"],
     round: { slot: 5, echo: null, ammoBefore: 1 },
-    lowHealth: true,
+    health: 40,
     locketState: { armed: true, cadence: 0 },
   }));
 
-  expect(result.projectiles).toHaveLength(1);
-  expect(result.projectiles[0]?.effectIds).toContain("lastGaspLocket.orbital");
+  expect(result.projectiles).toHaveLength(0);
+  expect(result.locketOrbital).toMatchObject({
+    rootTriggerId: "trigger-7", lineageId: "trigger-7:0", localOrdinal: 0,
+    damage: 20, radius: 5, originPower: 20, triggeredAt: 0,
+  });
   expect(result.locketState).toEqual({ armed: false, cadence: 0 });
+});
+
+test("Locket remains armed at its three-orbital cap and excludes later transforms", () => {
+  const capped = expandTrigger(triggerContext({
+    owned: ["lastGaspLocket", "bigIron", "teslaBullets"],
+    health: 40,
+    activeOrbitalCount: 3,
+    locketState: { armed: true, cadence: 0 },
+  }));
+  expect(capped.locketOrbital).toBeUndefined();
+  expect(capped.locketState).toEqual({ armed: true, cadence: 0 });
+  expect(capped.projectiles.filter(({ generation }) => generation === 0)).toHaveLength(2);
+
+  const transformed = expandTrigger(triggerContext({
+    owned: ["stillwater", "lastGaspLocket", "bigIron", "teslaBullets", "deadeye", "graveEcho", "dustlineDuel"],
+    round: { slot: 0, echo: deadeyeEcho, ammoBefore: 2 },
+    stationaryCharged: true,
+    health: 40,
+    locketState: { armed: true, cadence: 0 },
+  }));
+  expect(transformed.locketOrbital).toMatchObject({
+    damage: 20 * 1.6,
+    radius: 5 * 2,
+    originPower: 20 * 1.6,
+    eligibleEffectIds: ["stillwater.charge"],
+  });
+});
+
+test("Stillwater then Bell then Locket then Big Iron use the locked transform order", () => {
+  const result = expandTrigger(triggerContext({
+    owned: ["twinChamber", "stillwater", "lastBell", "lastGaspLocket", "bigIron"],
+    round: { slot: 5, echo: null, ammoBefore: 1 },
+    stationaryCharged: true,
+    health: 40,
+    locketState: { armed: true, cadence: 0 },
+  }));
+
+  const bell = result.projectiles.find(({ generation }) => generation === 0)!;
+  expect(bell.spec.damage).toBeCloseTo(20 * 0.7 * 1.6 * 1.5 * 1.2, 12);
+  expect(bell.spec.radius).toBeCloseTo(5 * 2 * 1.6 * 1.25, 12);
+  expect(result.locketOrbital).toMatchObject({
+    localOrdinal: 1,
+    eligibleEffectIds: ["stillwater.charge"],
+  });
+  expect(result.locketOrbital!.damage).toBeCloseTo(20 * 0.7 * 1.6, 12);
+  expect(result.locketOrbital!.radius).toBeCloseTo(5 * 2, 12);
 });
 
 test("trigger expansion freezes numeric ordering and explicit copy provenance", () => {
