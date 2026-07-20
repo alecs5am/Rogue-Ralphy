@@ -1634,7 +1634,8 @@ test("same-step fatal contact never retroactively cancels an accepted root", () 
     }],
   };
   game = updateGame(game, { ...idle, firing: true }, 0, 1);
-  expect(game).toMatchObject({ rootSequence: 1, diedAt: 1, player: { health: 0 }, decoy: undefined });
+  expect(game).toMatchObject({ rootSequence: 1, diedAt: 1, player: { health: 0 } });
+  expect(game.decoy).toBeUndefined();
   expect(game.metrics.triggers).toBe(1);
   expect(ammoCount(game.cylinder)).toBe(5);
   expect(game.metrics.projectiles).toBe(1);
@@ -1671,7 +1672,8 @@ test("earned Bonanza delivery survives Clear Targets and expired reactive state 
   expect(game.pendingRefunds).toHaveLength(1);
   expect(game.vfxCommands.map(({ destination }) => destination)).toEqual(["hud"]);
   game = updateGame(game, idle, 0, 1.5);
-  expect(game).toMatchObject({ recoilWindows: [], locketOrbitals: [], decoy: undefined });
+  expect(game).toMatchObject({ recoilWindows: [], locketOrbitals: [] });
+  expect(game.decoy).toBeUndefined();
   expect(game.pendingRefunds).toHaveLength(1);
   expect(game.vfxCommands.every(({ artifactId, effectId, rootTriggerId, destination }) =>
     artifactId && effectId && rootTriggerId && (destination === "world" || destination === "hud"))).toBe(true);

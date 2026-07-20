@@ -20,6 +20,7 @@ import {
   effectiveSlow,
   normalizeTargetEffects,
   snareSlowAt,
+  statusRootIds,
   type RootStatusRecord,
   type SnareAreaState,
   type WantedBrand,
@@ -124,6 +125,8 @@ const EDGE_POINTS: Point[] = [
 ];
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+const exceeds = (value: number, limit: number): boolean =>
+  value - limit > Number.EPSILON * 128 * Math.max(1, Math.abs(value), Math.abs(limit));
 function moveVelocityToward(
   vx: number,
   vy: number,
@@ -191,7 +194,6 @@ export function createGame(rng: () => number = Math.random): GameState {
     pendingRefunds: [],
     bonanzaHistory: {},
     locketOrbitals: [],
-    decoy: undefined,
     paused: false,
     lastShotAt: null,
     lastHurtAt: null,
@@ -328,7 +330,13 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   let decoy = state.decoy && state.decoy.expiresAt > now ? state.decoy : undefined;
   let recoilWindows = state.recoilWindows.filter(({ expiresAt, refunded }) => expiresAt > now && !refunded);
   let pendingRefunds = [...state.pendingRefunds];
-  const validationRootIds = Object.freeze(state.locketOrbitals.map(({ rootTriggerId }) => rootTriggerId));
+  const validationRootIds = Object.freeze([
+    ...state.locketOrbitals.map(({ rootTriggerId }) => rootTriggerId),
+    ...statusRootIds(state.targets.map((target) => ({
+      ...target,
+      effects: normalizeTargetEffects(target.effects, state.time),
+    }))),
+  ]);
   let locketOrbitals = state.locketOrbitals.filter(({ expiresAt }) => expiresAt > now);
   let cylinder = advanceReload(state.cylinder, now);
   if (now >= cylinder.buffUntil && cylinder.fireRateBuff !== 0) cylinder = { ...cylinder, fireRateBuff: 0, buffUntil: 0 };
@@ -706,11 +714,12 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
   if (new Set(vfxIds).size !== vfxIds.length) throw new Error("duplicate reactive VFX id");
   if (withoutReactiveState.some(({ artifactId, effectId, rootTriggerId, destination, bornAt, expiresAt }) =>
     !artifactId || !effectId || !rootTriggerId || (destination !== "world" && destination !== "hud")
-    || expiresAt <= bornAt || expiresAt - bornAt > 3)) {
+    || expiresAt <= bornAt || exceeds(expiresAt - bornAt, 3))) {
     throw new Error("invalid reactive VFX provenance or lifetime");
   }
+  metrics = { ...metrics, hitEvents: metrics.hitEvents.filter(({ time }) => time > now - 3) };
   const telemetry = summarizeMetrics(metrics, now);
-  return {
+  const next: GameState = {
     ...state,
     player,
     aim,
@@ -758,4 +767,7 @@ export function updateGame(state: GameState, input: InputIntent, dt: number, now
     lastHurtAt,
     diedAt,
   };
+  if (next.wantedBrand === undefined) delete next.wantedBrand;
+  if (next.decoy === undefined) delete next.decoy;
+  return next;
 }

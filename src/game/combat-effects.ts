@@ -71,6 +71,14 @@ export type CombatEvent = Readonly<{
   distanceEffect?: "shotgun" | "dustline" | MotionDistanceEffect;
 }>;
 
+export class DescendantOverflowError extends Error {
+  override name = "DescendantOverflowError";
+
+  constructor(rootTriggerId: string, limit: number) {
+    super(`generation-one descendant overflow: ${rootTriggerId} exceeds ${limit} (generation-one descendant bound)`);
+  }
+}
+
 export type { KillContext, PendingEmission } from "./emissions";
 
 type GenericAreaState = Readonly<{
@@ -413,7 +421,7 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
       ? Math.min(294, runtime.descendantsByRoot[rootTriggerId]?.limit ?? context.build.maxDescendants)
       : 294;
     if (count > descendantLimit) {
-      throw new Error(`generation-one descendant overflow: ${rootTriggerId} exceeds ${descendantLimit} (generation-one descendant bound)`);
+      throw new DescendantOverflowError(rootTriggerId, descendantLimit);
     }
   }
   for (const event of runtime.metrics.hitEvents) {
@@ -422,16 +430,16 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
 
   const areaInstances = new Set<string>();
   for (const area of runtime.areas) {
-    if (area.expiresAt <= area.bornAt || area.expiresAt - area.bornAt > 3) {
+    if (area.expiresAt <= area.bornAt || tolerantDifference(area.expiresAt - area.bornAt, 3) > 0) {
       throw new Error("area lifetime must be positive and at most three seconds");
     }
-    if (area.tickInterval < 0.1) throw new Error("area tick rate must not exceed ten hertz");
+    if (tolerantDifference(area.tickInterval, 0.1) < 0) throw new Error("area tick rate must not exceed ten hertz");
     const key = `${area.effectId}\0${area.rootTriggerId}\0${area.instanceKey}`;
     if (areaInstances.has(key)) throw new Error("duplicate area instance");
     areaInstances.add(key);
     if ("kind" in area && area.kind === "snare" && (
-      area.radius !== 40 || Math.abs(area.expiresAt - area.bornAt - 1.5) > Number.EPSILON
-      || Math.abs(area.tickInterval - 0.1) > Number.EPSILON || area.slow !== 0.5
+      area.radius !== 40 || tolerantDifference(area.expiresAt - area.bornAt, 1.5) !== 0
+      || tolerantDifference(area.tickInterval, 0.1) !== 0 || area.slow !== 0.5
     )) throw new Error("Snare runtime geometry must remain 40 px for 1.5 seconds at 10 Hz with 0.50 slow");
     if ("kind" in area && area.kind === "snare" && (area.damage <= 0 || area.nextTickAt < area.bornAt)) {
       throw new Error("Snare runtime damage and tick deadline must be positive");
@@ -479,6 +487,8 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
     ...runtime.pendingEmissions.map(({ rootTriggerId }) => rootTriggerId),
     ...(runtime.pendingRefunds ?? []).map(({ rootTriggerId }) => rootTriggerId),
     ...runtime.areas.map(({ rootTriggerId }) => rootTriggerId),
+    ...Object.values(runtime.wakeTrails ?? {}).map(({ rootTriggerId }) => rootTriggerId),
+    ...(runtime.crossfirePulses ?? []).map(({ rootTriggerId }) => rootTriggerId),
     ...statusRootIds(runtime.targets.map((target) => ({
       ...target,
       effects: normalizeTargetEffects(target.effects),
@@ -525,7 +535,7 @@ function assertRuntime(runtime: CombatRuntime, context: CombatContext): void {
 
   const vfxIds = new Set<string>();
   for (const command of runtime.vfxCommands) {
-    if (command.expiresAt <= command.bornAt || command.expiresAt - command.bornAt > 3) {
+    if (command.expiresAt <= command.bornAt || tolerantDifference(command.expiresAt - command.bornAt, 3) > 0) {
       throw new Error("VFX lifetime must be positive and at most three seconds");
     }
     if (!command.artifactId || !command.effectId || !command.rootTriggerId
@@ -1885,7 +1895,7 @@ export function resolveEmissionPhase(runtime: CombatRuntime | CombatPhaseState, 
     const descendantCount = (previousDescendants?.count ?? 0) + count;
     const limit = Math.min(294, previousDescendants?.limit ?? context.build.maxDescendants);
     if (descendantCount > limit) {
-      throw new Error(`generation-one descendant overflow: ${request.projectile.rootTriggerId} exceeds ${limit} (generation-one descendant bound)`);
+      throw new DescendantOverflowError(request.projectile.rootTriggerId, limit);
     }
     descendantsByRoot[request.projectile.rootTriggerId] = {
       rootTriggerId: request.projectile.rootTriggerId,
@@ -2534,7 +2544,7 @@ export function resolveKillAndCleanupPhase(runtime: CombatRuntime | CombatPhaseS
       ?? killed.sourceSnapshot?.killReaction?.descendantLimit
       ?? context.build.maxDescendants);
     if (descendantCount > descendantLimit) {
-      throw new Error(`generation-one descendant overflow: ${killed.rootTriggerId} exceeds ${descendantLimit} (generation-one descendant bound)`);
+      throw new DescendantOverflowError(killed.rootTriggerId, descendantLimit);
     }
     descendantsByRoot[killed.rootTriggerId] = {
       rootTriggerId: killed.rootTriggerId,
