@@ -9,6 +9,7 @@ from build_artifact_pack import (
     EXPECTED,
     ICON_FAMILIES,
     PADDING,
+    PRODUCTION_OUTPUT,
     build_contact_sheet,
     build_family,
     build_pack,
@@ -68,6 +69,9 @@ def alpha_has_padding(image: Image.Image, padding: int = PADDING) -> bool:
 
 
 class ArtifactPackTests(TestCase):
+    def test_committed_production_pack_is_valid(self) -> None:
+        self.assertEqual(validate_production_pack(PRODUCTION_OUTPUT), [])
+
     def test_runtime_pack_is_complete_rgba_padded_and_unique(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
