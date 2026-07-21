@@ -123,14 +123,18 @@ export async function bootstrap({
         if (mode !== "run" || !run || run.phase !== "choice") {
             runChoice.hidden = true;
             runChoice.replaceChildren();
+            delete runChoice.dataset.signature;
             return;
         }
         runChoice.hidden = false;
+        const choices = run.choices.length > 0 ? run.choices : [];
+        const signature = `${run.wave}:${choices.join(",")}:${run.artifactsTaken}`;
+        if (runChoice.dataset.signature === signature) return;
+        runChoice.dataset.signature = signature;
         const title = document.createElement("h2");
         title.textContent = `Wave ${run.wave}`;
         const row = document.createElement("div");
         row.className = "choice-row";
-        const choices = run.choices.length > 0 ? run.choices : [];
         if (choices.length === 0) {
             const start = document.createElement("button");
             start.type = "button";
@@ -155,12 +159,7 @@ export async function bootstrap({
                 row.append(option);
             }
         }
-        const current = runChoice.dataset.signature;
-        const signature = `${run.wave}:${choices.join(",")}:${run.artifactsTaken}`;
-        if (current !== signature) {
-            runChoice.dataset.signature = signature;
-            runChoice.replaceChildren(title, row);
-        }
+        runChoice.replaceChildren(title, row);
     }
 
     required<HTMLButtonElement>(mainMenu, '[data-action="play"]').addEventListener("click", () => {

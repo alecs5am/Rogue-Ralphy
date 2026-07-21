@@ -402,7 +402,37 @@ function spawnRunTargetWithRetries(
 
 function spawnRunWave(state: GameState): GameState {
   if (!state.run) return state;
-  let next: GameState = { ...state, targets: [], projectiles: [], hazards: [], pickups: [], pendingEmissions: [], scheduledProjectiles: [] };
+  let next: GameState = {
+    ...state,
+    targets: [],
+    projectiles: [],
+    scheduledProjectiles: [],
+    pendingEmissions: [],
+    areas: [],
+    vfxCommands: [],
+    pickups: [],
+    hazards: [],
+    teslaLinks: [],
+    teslaCooldowns: {},
+    satellites: [],
+    wakeTrails: {},
+    wakeCooldowns: {},
+    crossfirePulses: [],
+    crossfireParticipation: {},
+    bigIronPairHits: {},
+    descendantsByRoot: {},
+    relayLedger: {},
+    emittedEffects: {},
+    pendingEffectTokens: [],
+    wantedBrand: undefined,
+    snareRoots: {},
+    killReactionHistory: {},
+    pendingRefunds: [],
+    bonanzaHistory: {},
+    recoilWindows: [],
+    locketOrbitals: [],
+    decoy: undefined,
+  };
 	for (let index = 0; index < CRATE_POINTS.length; index += 1) {
 		const kind = PICKUP_KINDS[(state.run.wave + index) % PICKUP_KINDS.length]!;
 		next = spawnDestructibleCrate(next, CRATE_POINTS[index]!, kind);

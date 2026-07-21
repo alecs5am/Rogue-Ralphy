@@ -259,6 +259,41 @@ test("main menu starts the arena demo with artifact choice and generated enemy a
     expect(errors).toEqual([]);
 });
 
+test("run artifact choice does not allocate new DOM every frame while idle", async ({ page }) => {
+	await page.addInitScript(() => {
+		let active = false;
+		let creates = 0;
+		const original = Document.prototype.createElement;
+		Document.prototype.createElement = function (...args: Parameters<typeof original>) {
+			if (active) creates += 1;
+			return Reflect.apply(original, this, args);
+		};
+		Object.defineProperty(window, "__choiceCreateProbe", {
+			value: {
+				start() { creates = 0; active = true; },
+				stop() { active = false; return creates; },
+			},
+		});
+	});
+	await page.goto("/");
+	await waitForReady(page);
+	await page.getByRole("button", { name: "Play" }).click();
+	await expect(page.locator("#run-choice .choice-card")).toHaveCount(2);
+
+	const creates = await page.evaluate(async () => {
+		const probe = (window as typeof window & {
+			__choiceCreateProbe: { start(): void; stop(): number };
+		}).__choiceCreateProbe;
+		probe.start();
+		await new Promise<void>((resolve) =>
+			requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+		);
+		return probe.stop();
+	});
+
+	expect(creates).toBe(0);
+});
+
 for (const viewport of [
 	{ width: 3440, height: 1440 },
 	{ width: 900, height: 1200 },

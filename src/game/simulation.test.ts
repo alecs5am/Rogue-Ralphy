@@ -74,6 +74,138 @@ test("demo wave includes ranged enemies, bonus carriers, obstacles, and a boss b
   expect(game.targets.some(({ kind }) => kind === "sheriffBoss")).toBe(true);
 });
 
+test("new run waves start without stale transient combat state", () => {
+  let game = createRunGame(() => 0.42);
+  const shot = buildShot(game.weapon, 0, () => 0.9, "stale").projectiles[0]!;
+  const { triggerId: _, ...scheduledSpec } = shot;
+  const staleProjectile = {
+    ...shot,
+    id: "stale-projectile",
+    triggerId: "stale-root",
+    rootTriggerId: "stale-root",
+    lineageId: "stale-root:0",
+    localOrdinal: 0,
+    generation: 0 as const,
+    activatedEffectIds: ["baseRevolver.direct"],
+    reactiveEffectIds: [],
+    emittedEffectIds: [],
+    originPower: shot.damage,
+    x: game.player.x,
+    y: game.player.y,
+    vx: shot.speed,
+    vy: 0,
+    bornAt: 1,
+    remainingBounces: shot.bounces,
+    hitTargetIds: [],
+    everHit: false,
+    travelled: 0,
+  };
+  game = {
+    ...game,
+    run: { ...game.run!, wave: 6, phase: "choice" },
+    projectiles: [staleProjectile],
+    scheduledProjectiles: [{
+      at: 10,
+      generation: 0,
+      rootTriggerId: "stale-root",
+      rootIndex: 1,
+      localOrdinal: 0,
+      lineageId: "stale-root:0",
+      effectIds: ["stale.effect"],
+      spec: scheduledSpec,
+    }],
+    pendingEmissions: [{
+      atStep: 10,
+      effectId: "stale.emission",
+      artifactId: "shotgun",
+      rootTriggerId: "stale-root",
+      lineageId: "stale-root:0",
+      generation: 1,
+      originPower: 1,
+      activatedEffectIds: [],
+      specs: [],
+    }],
+    areas: [{
+      id: "stale-area",
+      effectId: "ectoplasmSnare.pool",
+      artifactId: "ectoplasmSnare",
+      rootTriggerId: "stale-root",
+      instanceKey: "stale",
+      bornAt: 1,
+      expiresAt: 2,
+      tickInterval: 0.1,
+    }],
+    vfxCommands: [{
+      id: "stale-vfx",
+      kind: "stillwater.ward",
+      artifactId: "stillwater",
+      effectId: "stillwater.charge",
+      rootTriggerId: "stale-root",
+      destination: "world",
+      bornAt: 1,
+      expiresAt: 2,
+      geometry: { type: "point", at: { x: game.player.x, y: game.player.y } },
+    }],
+    hazards: [{ id: "stale-hazard", x: game.player.x, y: game.player.y, vx: 0, vy: 0, radius: 8, damage: 1, expiresAt: 2 }],
+    pickups: [{ id: "stale-pickup", kind: "damage", x: game.player.x, y: game.player.y, radius: 16 }],
+    teslaLinks: [{ id: "a:b", a: "a", b: "b", distance: 1, damageScale: 0.25, cooldown: 0.15 }],
+    teslaCooldowns: { "teslaBullets.link\0a:b\0target": 2 },
+    wakeTrails: { "stale-lineage": { lineageId: "stale-lineage", rootTriggerId: "stale-root", artifactId: "ectoplasmicWake", effectId: "ectoplasmicWake.trail", nextTickAt: 2, tickInterval: 0.1, cooldown: 0.2, width: 14, duration: 1.5, damageScale: 0.05, segments: [] } },
+    wakeCooldowns: { "wake\0stale-lineage\0target": 2 },
+    crossfirePulses: [{ id: "stale-crossfire", pairId: "pair", rootTriggerId: "stale-root", bornAt: 1, expiresAt: 2, x: game.player.x, y: game.player.y, ax: 1, ay: 0, bx: 0, by: 1, length: 48, damage: 1, projectileId: "stale-projectile" }],
+    crossfireParticipation: { stale: { rootTriggerId: "stale-root", pairId: "pair" } },
+    bigIronPairHits: {
+      stale: {
+        rootTriggerId: "stale-root",
+        mainId: "stale-main",
+        moonletId: "stale-moonlet",
+        targetId: "stale-target",
+        firstAt: 1,
+        firstProjectileId: "stale-projectile",
+        mainDamage: 1,
+        heading: 0,
+        spent: false,
+      },
+    },
+    descendantsByRoot: { "stale-root": { rootTriggerId: "stale-root", count: 1, limit: 1 } },
+    relayLedger: { stale: { rootTriggerId: "stale-root" } },
+    emittedEffects: { stale: { rootTriggerId: "stale-root", lineageId: "stale-root:0" } },
+    pendingEffectTokens: [{ effectId: "stale.effect", rootTriggerId: "stale-root", lineageId: "stale-root:0", distance: 1 }],
+    snareRoots: { stale: { rootTriggerId: "stale-root" } },
+    killReactionHistory: { stale: { rootTriggerId: "stale-root" } },
+    pendingRefunds: [{ effectId: "bonanzaClip.refund", artifactId: "bonanzaClip", rootTriggerId: "stale-root", rootIndex: 1, arrivesAt: 2, from: { x: game.player.x, y: game.player.y }, slot: 0 }],
+    bonanzaHistory: { stale: { rootTriggerId: "stale-root" } },
+  };
+
+  game = chooseRunArtifact(game, game.run!.choices[0]!);
+
+  expect(game).toMatchObject({
+    projectiles: [],
+    scheduledProjectiles: [],
+    pendingEmissions: [],
+    areas: [],
+    vfxCommands: [],
+    hazards: [],
+    pickups: [],
+    teslaLinks: [],
+    teslaCooldowns: {},
+    wakeTrails: {},
+    wakeCooldowns: {},
+    crossfirePulses: [],
+    crossfireParticipation: {},
+    bigIronPairHits: {},
+    descendantsByRoot: {},
+    relayLedger: {},
+    emittedEffects: {},
+    pendingEffectTokens: [],
+    snareRoots: {},
+    killReactionHistory: {},
+    pendingRefunds: [],
+    bonanzaHistory: {},
+  });
+  expect(game.targets.length).toBeGreaterThan(0);
+});
+
 test("every non-boss wave retries a blocked guaranteed bonus carrier spawn", () => {
   for (let wave = 1; wave < 10; wave += 1) {
     let game = createRunGame(seededRng(241));
